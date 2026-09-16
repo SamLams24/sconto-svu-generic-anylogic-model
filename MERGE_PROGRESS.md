@@ -106,8 +106,8 @@ diagnostic commandes bloquées) ; absent du master — Bloc A/C.
   traités), **pas** liés au bug de sous-chaîne — volontairement non touchés.
 
 ## Bloc A — corrections sûres
-- [x] Matching strict flux/commande — **PORTÉ** (2026-09-16, commit voir ci-dessous)
-- [ ] Diagnostic commandes bloquées
+- [x] Matching strict flux/commande — **PORTÉ** (2026-09-16, commit `bf0e490`, Build/run utilisateur OK)
+- [x] Diagnostic commandes bloquées — **PORTÉ** (2026-09-16, commit voir Journal A.2 ci-dessous, Build/run utilisateur EN ATTENTE)
 - [ ] Stock matière détaillé
 - [ ] Historique Dashboard / Excel
 - [ ] États holoniques cohérents
@@ -148,10 +148,97 @@ diagnostic commandes bloquées) ; absent du master — Bloc A/C.
     (`commandesClotureesTracees`, `aerCommandesRetardTracees`) vérifiés comme
     `HashSet<String>.contains()` (membership exact), non concernés par le bug,
     volontairement non modifiés.
+- **Build AnyLogic** : **OK** (0 erreur, validé par l'utilisateur, 2026-09-16).
+- **Run** : **OK** — run nominal Generic/ZENER, aucune exception observée,
+  comportement des commandes et flux cohérent (validé par l'utilisateur, 2026-09-16).
+- **Commit** : `bf0e490` (message `fix(generic): strict command-flow matching`).
+
+## Bloc A — corrections sûres (suite)
+
+### Journal — Bloc A.2 : diagnostic des commandes bloquées (2026-09-16)
+
+**Analyse préalable (collègue)** :
+- `diagnostiquerCommandesBloquees()` (collègue, ~ligne 7770, correctif `C15.29`) :
+  parcourt `commandes`, ne retient que les commandes au statut `EN_COURS`/`EN_LIVRAISON`,
+  compare `produitsTerminesParCommandeRuntime.get(idCommande)` à `cmd.qte`, et journalise
+  l'écart via `board.logEvent("[DIAG-BLOQUEE] ...")`. Aucune écriture d'état : ni
+  `cmd.statut`, ni stock, ni production, ni PI, ni routage — confirmé purement
+  observateur à la lecture du code (seules opérations : lecture de champs + `Map.get` +
+  `logEvent`, le tout dans un `try { } catch (Throwable ignored) {}`).
+  La seule variable qu'elle lit et qui n'existe pas dans le master est
+  `cmd.retardConstate` (mécanisme de retard du collègue, Bloc C).
+- Événement `bilanPeriodique` (collègue, `Main`, cyclique 60 s, condition
+  `modeExecution`) : son `Action` **mélange trois responsabilités** :
+  1. `evaluerRetardsCommandesOuvertes()` — détection continue des retards / engagement
+     client → appartient au **Bloc C**, non portée ici ;
+  2. `diagnostiquerCommandesBloquees()` — diagnostic pur → **Bloc A.2, porté** ;
+  3. `logBilanCommandes()` — bilan agrégé `[BILAN]` (commandes total/livrées/bloquées/
+     refusées, client vs réappro) — fonction **absente du master**, non demandée pour ce
+     bloc, non portée (aucun événement périodique équivalent n'existe déjà dans le
+     master ; ajoutée seule elle introduirait une fonctionnalité hors du périmètre
+     validé pour A.2).
+  - Périodicité : 60 s, `OccurrenceDate=1781078400000` — valeur identique à celle déjà
+    utilisée par les événements cycliques existants du master (`snapshotWIP`, etc.),
+    donc convention générique du modèle, pas une date ZENER codée en dur.
+  - Dépendances vérifiées présentes dans le master avant portage : `commandes`,
+    `produitsTerminesParCommandeRuntime`, `board` (type `BlackboardAgent`, méthode
+    `logEvent(String)` déjà présente), champs `CommandeAgent.idCommande/statut/
+    typeCommande/qte/tCreation`.
+- **Décision de séparation** : le bloc A.2 ne porte que `diagnostiquerCommandesBloquees()`
+  et un événement `bilanPeriodique` dont l'`Action` n'appelle **que** cette fonction.
+  `evaluerRetardsCommandesOuvertes()` et `logBilanCommandes()` restent à porter
+  respectivement au Bloc C et à une décision ultérieure explicite.
+
+**Fichier modifié** : `model/SCONTO_SVU_GENERIC_MASTER.alp`.
+
+**Fonctions/variables/événements touchés** :
+- ajout `void diagnostiquerCommandesBloquees()` dans `Main` (juste après
+  `fluxAppartientACommande`, avant `definirIdentiteMovable`) — copie fonctionnelle du
+  collègue, avec la ligne de log amputée de `| retardConstate=" + cmd.retardConstate`
+  (champ inexistant dans ce master, Bloc C) ;
+- ajout de l'événement `Main.bilanPeriodique` (cyclique 60 s, condition
+  `modeExecution`, IDs `1791000009401`/`1791000009402` réutilisés du collègue — aucune
+  collision constatée dans le master), `Action` = appel unique à
+  `diagnostiquerCommandesBloquees();`, avec commentaire explicite indiquant que
+  `evaluerRetardsCommandesOuvertes()` et `logBilanCommandes()` sont volontairement hors
+  périmètre.
+
+**Ce qui a été porté** : le diagnostic pur des commandes bloquées, journalisé toutes les
+60 s de simulation via `[DIAG-BLOQUEE]`, sans aucune incidence sur l'état de simulation.
+
+**Ce qui a été adapté** : suppression de la référence à `cmd.retardConstate` (absent du
+master) dans la ligne de log, sans quoi le code n'aurait pas compilé.
+
+**Ce qui n'a pas été porté (et pourquoi)** :
+- `evaluerRetardsCommandesOuvertes()` + champ `retardConstate` + `modeEngagementClient`
+  + `dureeClientAccumulee` → Bloc C, à composer avec le mécanisme de délai déjà présent
+  dans le master (`attenteStockOuverte`, `leadTimeClientReelSec`, etc., cf. audit
+  structurel ci-dessus) ;
+- `logBilanCommandes()` (bilan `[BILAN]` agrégé) → fonctionnalité utile mais hors
+  périmètre explicitement demandé pour A.2 ; à proposer séparément si souhaité.
+
+**Incident constaté et corrigé pendant ce bloc** : après édition, `git diff` faisait
+apparaître un changement non intentionnel et non expliqué du champ interne
+`Model/Name` (`SCONTO_SVU_FINAL_VALIDATED` → `SCONTO_SVU_GENERIC_MASTER`), sans lien
+avec les modifications demandées et non issu d'une commande explicite de cette session.
+Par prudence, cette ligne a été restaurée à sa valeur committée avant tout commit,
+pour garder ce bloc strictement single-responsibility. À surveiller sur les prochains
+blocs.
+
+**Validations statiques** :
+- XML bien formé (`xml.etree.ElementTree`) : OK.
+- IDs AnyLogic : 1677/1677 uniques (+2 par rapport à A.1, correspondant aux deux
+  `<Id>` de l'événement `bilanPeriodique` ; aucun doublon).
+- `git diff --check` : aucune erreur d'espace blanc.
+- `git diff --stat` : 73 insertions, 0 suppression (confirme l'absence de régression
+  ailleurs dans le fichier, notamment sur le champ `Model/Name` après restauration).
+- Grep DataCo (`DATACO_*|Prophet|Recalibrator|AutoCommande`) sur
+  `model/SCONTO_SVU_GENERIC_MASTER.alp` : 0 occurrence.
+- Références : `diagnostiquerCommandesBloquees()` n'est appelée qu'à un seul endroit
+  (l'événement `bilanPeriodique`), aucune fonction supprimée/renommée.
 - **Build AnyLogic** : EN ATTENTE (utilisateur).
 - **Run** : EN ATTENTE (utilisateur).
-- **Commit** : voir SHA en tête de section Git ci-dessous (message
-  `fix(generic): strict command-flow matching`).
+- **Commit** : voir SHA ci-dessous (message `feat(generic): add blocked-order diagnostic`).
 
 ## Bloc B — PI / SCOR
 - [ ] Warm-up / amorçage

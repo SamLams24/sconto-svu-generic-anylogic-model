@@ -7740,6 +7740,41 @@ boolean fluxAppartientACommande(String idFlux, String idCommande) {
     return idFlux.startsWith(idCommande + "_");
 }
 
+// DIAGNOSTIC des commandes qui ne se cloturent jamais. Une commande de production
+// ne se referme que lorsque le compteur d'unites terminees
+// (produitsTerminesParCommandeRuntime) atteint sa quantite commandee ; meme apres
+// un rattachement flux/commande correct (fluxAppartientACommande), une commande peut
+// rester figee en EN_COURS jusqu'a la fin du run sans cause evidente au dashboard.
+// Cette trace journalise, pour chaque commande encore en production, l'ecart exact
+// entre unites comptees et unites commandees : elle indique si le blocage vient d'un
+// sous-comptage (et de combien d'unites) ou d'autre chose.
+// Purement diagnostique : ne lit que des etats existants (commandes,
+// produitsTerminesParCommandeRuntime) et se contente de journaliser via
+// board.logEvent() -- aucune ecriture sur cmd.statut, aucun stock, aucune production,
+// aucun impact PI, aucun routage. Portage generique du correctif collegue
+// (reference/colleague, diagnostiquerCommandesBloquees) ; le champ cmd.retardConstate
+// du collegue n'existe pas encore dans ce master (mecanisme de retard = Bloc C, non
+// porte ici) et a donc ete omis de la ligne de log.
+void diagnostiquerCommandesBloquees() {
+    if (board == null) return;
+    try {
+        for (CommandeAgent cmd : commandes) {
+            if (cmd == null || cmd.idCommande == null) continue;
+            String s = cmd.statut == null ? "" : cmd.statut;
+            if (!("EN_COURS".equals(s) || "EN_LIVRAISON".equals(s))) continue;
+            Integer comptees = produitsTerminesParCommandeRuntime.get(cmd.idCommande);
+            int n = (comptees == null ? 0 : comptees.intValue());
+            int attendu = Math.max(1, cmd.qte);
+            board.logEvent("[DIAG-BLOQUEE] " + cmd.idCommande
+                + " | statut=" + s
+                + " | mode=" + (cmd.typeCommande == null ? "?" : cmd.typeCommande)
+                + " | unites comptees=" + n + "/" + attendu
+                + " (manque " + Math.max(0, attendu - n) + ")"
+                + " | age=" + String.format("%.0f", Math.max(0.0, time() - cmd.tCreation)) + "s");
+        }
+    } catch (Throwable ignored) {}
+}
+
 void definirIdentiteMovable(Movable m, String nom, String typeVisuel) {
     if (m == null) return;
     m.definirIdentiteVisuelle(nom, typeVisuel);
@@ -10755,6 +10790,44 @@ rafraichirComboPosteConsomme();]]></Action>
 // Se desactive tout seul si exportExcelActif = false ou hors simulation.
 if (!modeExecution || !exportExcelActif || c14SnapshotFinalEffectue) return;
 exporterToutesLesTablesExcel();]]></Action>
+				</Event>
+				<Event>
+					<Id>1791000009401</Id>
+					<Name><![CDATA[bilanPeriodique]]></Name>
+					<X>-200</X><Y>250</Y>
+					<Label><X>10</X><Y>0</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>true</ShowLabel>
+					<Properties TriggerType="timeout" Mode="cyclic">
+						<Timeout Class="CodeUnitValue">
+							<Code><![CDATA[60]]></Code>
+							<Unit Class="TimeUnits"><![CDATA[SECOND]]></Unit>
+						</Timeout>
+						<Rate Class="CodeUnitValue">
+							<Code><![CDATA[1]]></Code>
+							<Unit Class="RateUnits"><![CDATA[PER_SECOND]]></Unit>
+						</Rate>
+						<Id>1791000009402</Id>
+						<OccurrenceAtTime>true</OccurrenceAtTime>
+						<OccurrenceDate>1781078400000</OccurrenceDate>
+						<OccurrenceTime Class="CodeUnitValue">
+							<Code><![CDATA[0]]></Code>
+							<Unit Class="TimeUnits"><![CDATA[SECOND]]></Unit>
+						</OccurrenceTime>
+						<RecurrenceCode Class="CodeUnitValue">
+							<Code><![CDATA[60]]></Code>
+							<Unit Class="TimeUnits"><![CDATA[SECOND]]></Unit>
+						</RecurrenceCode>
+						<Condition><![CDATA[modeExecution]]></Condition>
+					</Properties>
+					<Action><![CDATA[// Bloc A.2 -- diagnostic pur des commandes bloquees, toutes les 60s de
+// simulation. Ne fait qu'inspecter et journaliser (voir diagnostiquerCommandesBloquees) :
+// aucun changement de statut, de stock, de production, de PI ni de routage.
+// La detection continue des retards (evaluerRetardsCommandesOuvertes, engagement
+// client) et le bilan agrege (logBilanCommandes) restent hors perimetre de ce bloc
+// et appartiennent au Bloc C -- non portes ici.
+diagnostiquerCommandesBloquees();]]></Action>
 				</Event>
 				<Event>
 					<Id>1783700000030</Id>

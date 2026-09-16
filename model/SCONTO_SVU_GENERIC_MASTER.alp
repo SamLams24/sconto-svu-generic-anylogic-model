@@ -7723,6 +7723,23 @@ String normaliserIdentifiantAgentAnimation(String identifiant) {
     return domaine + id + suffixeSpecial;
 }
 
+// Rattachement STRICT d'une entite de flux a sa commande.
+// Les unites de production portent un idFlux du type "CMD_6_F_32" (identifiant de
+// commande + "_F_" + numero d'unite). Un rattachement par simple contains(idCommande)
+// est incorrect : "CMD_44_F_12".contains("CMD_4") est VRAI, ce qui credite les unites
+// de CMD_44 a CMD_4 (parcourue en premier car creee avant) -- CMD_44 ne voit alors
+// jamais arriver ses unites et reste bloquee en EN_COURS pour le reste du run, jamais
+// livree, alors meme que le stock fini deborde. Le defaut n'apparait qu'avec assez de
+// commandes pour que CMD_N et CMD_NM coexistent, la plus courte etant encore ouverte.
+// Portage generique du correctif collegue (reference/colleague, fluxAppartientACommande).
+boolean fluxAppartientACommande(String idFlux, String idCommande) {
+    if (idFlux == null || idCommande == null || idCommande.isEmpty()) return false;
+    if (idFlux.equals(idCommande)) return true;
+    // seule forme acceptee au-dela de l'egalite : "<idCommande>_..." (ex. "_F_12"),
+    // ce qui interdit qu'un identifiant plus court capture les unites d'un plus long.
+    return idFlux.startsWith(idCommande + "_");
+}
+
 void definirIdentiteMovable(Movable m, String nom, String typeVisuel) {
     if (m == null) return;
     m.definirIdentiteVisuelle(nom, typeVisuel);
@@ -11733,7 +11750,7 @@ String refCommandeFlux = idFlux;
 if (refCommandeFlux.contains("CMD_") || refCommandeFlux.contains("REAPPRO_")) {
     for (CommandeAgent cmd : commandes) {
         if (cmd == null || cmd.idCommande == null) continue;
-        if (("EN_COURS".equals(cmd.statut) || "EN_LIVRAISON".equals(cmd.statut)) && refCommandeFlux.contains(cmd.idCommande)) {
+        if (("EN_COURS".equals(cmd.statut) || "EN_LIVRAISON".equals(cmd.statut)) && fluxAppartientACommande(refCommandeFlux, cmd.idCommande)) {
 
             int termines = 1;
             try {
@@ -12774,7 +12791,7 @@ board.notifierRebut(idPosteRebut, codeSCORPoste);
 if (e != null && e.idFlux != null) {
     for (CommandeAgent cmdRebut : commandes) {
         if (cmdRebut == null || cmdRebut.idCommande == null) continue;
-        if (e.idFlux.contains(cmdRebut.idCommande)) {
+        if (fluxAppartientACommande(e.idFlux, cmdRebut.idCommande)) {
             Integer ancienR = produitsTerminesParCommandeRuntime.get(cmdRebut.idCommande);
             produitsTerminesParCommandeRuntime.put(cmdRebut.idCommande, (ancienR == null ? 0 : ancienR.intValue()) + 1);
             break;

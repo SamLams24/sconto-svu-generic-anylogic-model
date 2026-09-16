@@ -6975,6 +6975,27 @@ String niveauStockMatiereText() {
     return sb.length() > 0 ? sb.toString() : "Stock matière : —";
 }
 
+// 5bis. Detail du stock matiere premiere, matiere par matiere, pour ne plus
+// exposer que la somme brute heterogene (kg de GPL + unites de bouteilles +
+// unites de kits additionnes sans conversion, cf. stockMatiereDisponibleTotal()).
+// Format generique (nombre de matieres variable selon le scenario JSON) :
+// "idMatiere=valeur|idMatiere=valeur|...". Separateur '|' choisi pour ne pas
+// entrer en collision avec le ';' du format CSV francais utilise en aval.
+// Portage generique du correctif collegue (reference/colleague,
+// detailStockMatiereParMatiere) ; fonction autonome, pas encore appelee depuis
+// un export -- son branchement dans l'historique Dashboard/Excel releve du
+// bloc A.4, non traite ici.
+String detailStockMatiereParMatiere() {
+    if (fichesMatiere == null || fichesMatiere.isEmpty()) return "";
+    StringBuilder sb = new StringBuilder();
+    for (FicheMatiere f : fichesMatiere) {
+        if (f == null || f.idMatiere == null) continue;
+        if (sb.length() > 0) sb.append("|");
+        sb.append(f.idMatiere).append("=").append(String.format(java.util.Locale.US, "%.2f", f.stockDisponible));
+    }
+    return sb.toString();
+}
+
 // 6. Delai fournisseur NOMINAL moyen configure dans les fiches matiere.
 // Le scenario de perturbation fournisseur conserve cette valeur comme reference
 // et decale uniquement la date d'arrivee effective : on peut donc comparer

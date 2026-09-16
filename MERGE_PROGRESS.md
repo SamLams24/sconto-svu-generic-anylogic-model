@@ -108,7 +108,7 @@ diagnostic commandes bloquées) ; absent du master — Bloc A/C.
 ## Bloc A — corrections sûres
 - [x] Matching strict flux/commande — **PORTÉ** (2026-09-16, commit `bf0e490`, Build/run utilisateur OK)
 - [x] Diagnostic commandes bloquées — **PORTÉ** (2026-09-16, commit `0363b6b`, Build/run nominal utilisateur OK ; test fonctionnel forcé [DIAG-BLOQUEE] À TESTER ULTÉRIEUREMENT)
-- [ ] Stock matière détaillé
+- [x] Stock matière détaillé — **PORTÉ** (2026-09-16, commit voir Journal A.3 ci-dessous, Build/run utilisateur EN ATTENTE)
 - [ ] Historique Dashboard / Excel
 - [ ] États holoniques cohérents
 - [ ] Build AnyLogic utilisateur
@@ -246,6 +246,72 @@ blocs.
   n'est pas un signal de non-régression négatif, mais le test positif du diagnostic
   (avec une commande maintenue ouverte/bloquée) reste à faire séparément.
 - **Commit** : `0363b6b` (message `feat(generic): add blocked-order diagnostic`).
+
+### Journal — Bloc A.3 : stock matière détaillé par article (2026-09-16)
+
+**Analyse préalable (collègue et master)** :
+- `detailStockMatiereParMatiere()` (collègue, ~ligne 6848) : parcourt `fichesMatiere`
+  et produit une chaîne `"idMatiere=valeur|idMatiere=valeur|..."` (une valeur par
+  matière, format machine-parseable, séparateur `|` choisi pour ne pas entrer en
+  collision avec le `;` du CSV français). Purement lecture — aucune écriture d'état.
+  Chez le collègue, sa **seule et unique** consommatrice est
+  `capturerPointHistoriqueDashboard()` (ligne ~6954), qui appartient au **Bloc A.4**
+  (Historique Dashboard/Excel), non encore porté.
+- Master : possède déjà la fonction sœur `niveauStockMatiereText()` (ligne ~6966,
+  identique caractère pour caractère à la version collègue), qui affiche la même
+  information sous forme de texte lisible (`"GPL_VRAC : 600\n..."`) sur une carte du
+  tableau de bord (`TextCode` à la ligne ~29836) — **usage UI uniquement, pas
+  d'export**. Le master expose par ailleurs un agrégat hétérogène équivalent au
+  problème documenté par le collègue : la fonction AnyLogic `stockMatiereDisponibleTotal()`
+  (ligne ~19523) somme `f.stockDisponible` sur toutes les matières sans distinction
+  d'unité (kg + bouteilles + kits additionnés), utilisée uniquement dans
+  `valeurRuntimeMetriqueSCOR()` pour `AM.3.16`/`AM.2.8`. `detailStockMatiereParMatiere()`
+  était totalement **absente** du master avant ce bloc.
+- Vérifié : ni `exporterCSV()` (master ou collègue) ni aucune autre fonction d'export
+  existante n'utilisent `detailStockMatiereParMatiere()` — son seul point de
+  branchement réel (l'historique Dashboard) n'existe pas encore dans ce master.
+
+**Décision de portage** : porter uniquement la fonction `detailStockMatiereParMatiere()`
+elle-même, comme utilitaire autonome, sans la brancher sur un export ou une carte
+dashboard prématurément — exactement le même traitement que `niveauStockMatiereText()`
+qui coexiste déjà dans le master sans être reliée à un export CSV/Excel. Le branchement
+dans l'historique Dashboard/Excel (colonne dédiée) est laissé au Bloc A.4, pour ne pas
+préempter les décisions de format de cette fonctionnalité pas encore auditée.
+
+**Fichier modifié** : `model/SCONTO_SVU_GENERIC_MASTER.alp`.
+
+**Fonctions touchées** :
+- ajout `String detailStockMatiereParMatiere()` dans `Main`, juste après
+  `niveauStockMatiereText()` (même famille de fonctions de reporting stock matière,
+  numérotée "5bis" dans le commentaire pour rester cohérente avec la numérotation
+  "5."/"6." déjà présente dans le master à cet endroit).
+
+**Ce qui a été porté** : la fonction telle quelle (portage à l'identique, aucune
+adaptation de logique nécessaire — `FicheMatiere.idMatiere`/`stockDisponible`
+existent déjà dans le master avec la même sémantique).
+
+**Ce qui n'a pas été porté (et pourquoi)** : le branchement dans
+`capturerPointHistoriqueDashboard()` / une colonne d'export — cette fonction n'existe
+pas encore dans le master (Bloc A.4). Ajouter le branchement maintenant aurait
+anticipé une décision de format (nom de colonne, position) qui appartient à l'audit du
+Bloc A.4.
+
+**Validations statiques** :
+- XML bien formé : OK.
+- IDs AnyLogic : 1677/1677 uniques, inchangé (nouvelle méthode Java libre uniquement,
+  aucun élément `<Function>`/`<Variable>` AnyLogic ajouté).
+- `git diff --check` : aucune erreur d'espace blanc.
+- `git diff --stat` : 21 insertions, 0 suppression (aucune régression ailleurs, champ
+  `Model/Name` toujours à sa valeur committée).
+- Grep DataCo (`DATACO_*|Prophet|Recalibrator|AutoCommande`) : 0 occurrence.
+- Références : `detailStockMatiereParMatiere()` n'est appelée nulle part pour l'instant
+  (fonction disponible, non encore consommée) — comportement intentionnel, cf. décision
+  de portage ci-dessus ; aucune fonction supprimée/renommée.
+- **Build AnyLogic** : EN ATTENTE (utilisateur).
+- **Run** : EN ATTENTE (utilisateur). Note : cette fonction n'étant appelée par rien
+  dans ce bloc, un Build réussi suffit à valider sa compilation ; sa sortie ne sera
+  observable qu'une fois branchée (Bloc A.4).
+- **Commit** : voir SHA ci-dessous (message `feat(generic): add per-material stock detail`).
 
 ## Audit des fichiers non suivis apparus sous model/ (2026-09-16)
 

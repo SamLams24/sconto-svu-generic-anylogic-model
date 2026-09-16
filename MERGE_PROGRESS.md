@@ -107,7 +107,7 @@ diagnostic commandes bloquées) ; absent du master — Bloc A/C.
 
 ## Bloc A — corrections sûres
 - [x] Matching strict flux/commande — **PORTÉ** (2026-09-16, commit `bf0e490`, Build/run utilisateur OK)
-- [x] Diagnostic commandes bloquées — **PORTÉ** (2026-09-16, commit voir Journal A.2 ci-dessous, Build/run utilisateur EN ATTENTE)
+- [x] Diagnostic commandes bloquées — **PORTÉ** (2026-09-16, commit `0363b6b`, Build/run nominal utilisateur OK ; test fonctionnel forcé [DIAG-BLOQUEE] À TESTER ULTÉRIEUREMENT)
 - [ ] Stock matière détaillé
 - [ ] Historique Dashboard / Excel
 - [ ] États holoniques cohérents
@@ -236,9 +236,115 @@ blocs.
   `model/SCONTO_SVU_GENERIC_MASTER.alp` : 0 occurrence.
 - Références : `diagnostiquerCommandesBloquees()` n'est appelée qu'à un seul endroit
   (l'événement `bilanPeriodique`), aucune fonction supprimée/renommée.
-- **Build AnyLogic** : EN ATTENTE (utilisateur).
-- **Run** : EN ATTENTE (utilisateur).
-- **Commit** : voir SHA ci-dessous (message `feat(generic): add blocked-order diagnostic`).
+- **Build AnyLogic** : **OK** (0 erreur, validé par l'utilisateur, 2026-09-16).
+- **Run nominal** : **OK** — run nominal Generic/ZENER, aucune exception, chargement du
+  scénario ZENER OK, flux Source/Make/Deliver cohérents, politique autonome de stock et
+  approvisionnement fonctionnelle (validé par l'utilisateur, 2026-09-16).
+- **Diagnostic fonctionnel forcé (commande volontairement bloquée)** : **À TESTER
+  ULTÉRIEUREMENT**. Aucune ligne `[DIAG-BLOQUEE]` observée sur ce run nominal — attendu,
+  puisque aucune commande n'y est restée `EN_COURS`/`EN_LIVRAISON` sans clôturer ; ce
+  n'est pas un signal de non-régression négatif, mais le test positif du diagnostic
+  (avec une commande maintenue ouverte/bloquée) reste à faire séparément.
+- **Commit** : `0363b6b` (message `feat(generic): add blocked-order diagnostic`).
+
+## Audit des fichiers non suivis apparus sous model/ (2026-09-16)
+
+Suite au Build/Run AnyLogic de l'utilisateur sur `model/SCONTO_SVU_GENERIC_MASTER.alp`,
+`git status --short` a révélé 32 chemins non suivis (30 icônes PNG dont `box (1).png`,
+`CLAUDE.md`, `README.md`, `scenario_ZENER_SA_Togo_v39.json`, `database/` avec `db.data`/
+`db.properties`/`db.script`). **Audit purement descriptif — rien n'a été committé,
+supprimé ni ajouté au `.gitignore`.**
+
+Méthode : `git status --short`, SHA-256 de chaque fichier comparé à ses équivalents
+(racine du repo, `assets/`), recherche du nom de fichier dans
+`model/SCONTO_SVU_GENERIC_MASTER.alp`, inspection de la section `<Database>` du modèle.
+
+| Fichier(s) | SHA-256 identique à | Référencé dans le `.alp` | Classification | Explication |
+|---|---|---|---|---|
+| 30× `model/*.png` (dont `box (1).png`) | racine **et** `assets/` (3 copies identiques) | **Oui** — `<ClassName>`/`<Path>` (ex. `aiguillage.png` ligne ~44770/~53479) | **REQUIRED_RESOURCE** | Le `.alp` référence ces icônes par chemin relatif ; AnyLogic les cherche à côté du fichier `.alp` qu'il ouvre. Absentes de `model/` avant le Build, il les a matérialisées là au moment de l'ouverture/sauvegarde du projet. |
+| `model/scenario_ZENER_SA_Togo_v39.json` | racine (identique) | Non (0 occurrence — le chargement de scénario est dynamique, pas une ressource intégrée au build) | **USER_SCENARIO** | Probablement chargé/copié par l'utilisateur pendant le test de chargement ZENER (dialogue de sélection de fichier ouvrant par défaut dans le dossier du `.alp`). |
+| `model/CLAUDE.md`, `model/README.md` | racine (identique) | Non (0 occurrence) | **DUPLICATE** | Aucun lien avec le moteur AnyLogic ; correspond à une copie complète du dossier source plutôt qu'à une ressource requise par le modèle — origine exacte non certaine (AnyLogic "Save Model As" avec copie de dossier, ou action manuelle). |
+| `model/database/db.data`, `db.properties`, `db.script` | **Différent** de `database/` racine (`SET DATABASE UNIQUE NAME` distinct : `HSQLDBA0AB809148` vs `HSQLDB9F47CA2508` ; tailles différentes ; pas de `.lck`/`.log`) | Section `<Database><Logging>true</Logging></Database>` présente (ligne ~52340), sans chemin explicite | **RUNTIME_GENERATED** | Base HSQLDB de logging technique AnyLogic, régénérée par le run effectué depuis `model/` (chemin par défaut relatif au `.alp` ouvert) — distincte et indépendante de la base déjà présente à la racine du dépôt (héritée du clone initial, liée à l'ancien `SCONTO_VSM_Generic.alp`). |
+
+Aucun fichier classé `UNKNOWN` — une explication cohérente a été trouvée pour chacun.
+
+**Aparté (hors périmètre de cet audit, noté pour information)** : `reference/dataco-multiproduct/`
+a été ajouté avec un fichier nommé `SCONTO_SVU_FINAL_VALIDATED_FORECAST_DATACO_MULTIPRODUCT_CONCURRENT_FIX.alp`
+(2 244 316 octets) — nom différent de celui annoncé dans le message utilisateur
+(`SCONTO_SVU_DATACO_MULTIPRODUCT_REFERENCE.alp`), mais taille identique à l'ancien
+"maître" DataCo déjà répertorié dans `docs/merge/ANALYSE_FUSION_COLLEGUE_VS_MASTER.md`.
+Non analysé plus avant : le Bloc M n'a pas commencé (cf. section Bloc M ci-dessous).
+
+**Aucune action de nettoyage effectuée.** Décision laissée à l'utilisateur.
+
+## Bloc M — Fondation multi-produit Generic (2026-09-16, PLANIFIÉ — NON COMMENCÉ)
+
+**Ordonnancement décidé** : après les blocs SAFE A.3/A.4/A.5, avant la refonte PI/SCOR
+du Bloc B (le multi-produit influence stocks, demande, réappro, Make, stratégique et
+plusieurs KPI — architecture à stabiliser avant de finaliser PI/SCOR).
+
+**Fondation existante dans le master à auditer avant toute implémentation (ne pas
+supprimer/réécrire aveuglément)** :
+- Variables : `modeMultiProduitActif`, `rotationProduitsActive`, `nomProduitParDefaut`,
+  `LigneCommandeProduit`, `listeProduits`, `catalogueProduits`, `stockFiniParProduit`,
+  `lignesProduitParCommande`.
+- Fonctions : `synchroniserListeProduits()`, `scenarioProduitParNom()`,
+  `scenarioProduitParDefaut()`, `choisirScenarioProduit()`,
+  `enregistrerLigneProduitCommande()`, `stockFiniDisponiblePourScenario()`,
+  `consommerStockFiniProduit()`, `verifierPolitiqueStockProduit()`.
+
+**Nouvelle source donneuse (technique uniquement)** :
+`reference/dataco-multiproduct/SCONTO_SVU_FINAL_VALIDATED_FORECAST_DATACO_MULTIPRODUCT_CONCURRENT_FIX.alp`
+(2 244 316 octets — nom réel différent de celui annoncé initialement
+`SCONTO_SVU_DATACO_MULTIPRODUCT_REFERENCE.alp`, cf. aparté ci-dessus). Donneur pour les
+seuls mécanismes multi-produit génériques : `stockInitialParProduit`,
+`sommeStockFiniParProduit()`, `synchroniserStockFiniAgrege()`,
+`stockInitialConfigurePourProduit()`, `initialiserStocksProduits()`,
+`crediterStockFiniProduit()`, `consommerStockFiniProduit()`,
+`stockFiniDisponiblePourScenario()`, initialisation/sauvegarde JSON multi-produit,
+politique autonome par produit, correction `ConcurrentModificationException` par
+snapshot stable.
+
+**Interdiction absolue** : ne jamais porter depuis cette référence
+`DATACO_SPORTS`/`DATACO_CLOTHING`/`DATACO_ELECTRONICS`, Prophet, Recalibrator,
+AutoCommande DataCo, calendrier 2017, fichiers/vues Forecast DataCo, logique de demande
+DataCo, ou tout nom/acteur spécifique DataCo.
+
+**Invariants du futur multi-produit Generic** (13, résumés) :
+1. Compatibilité mono-produit totale (`modeMultiProduitActif=false` par défaut,
+   comportement historique inchangé).
+2. Source de vérité unique : mono-produit → `niveauStock` ; multi-produit →
+   `stockFiniParProduit` (agrégat `niveauStock` = somme, affichage/KPI seulement).
+3. Jamais de duplication du stock global entre produits (répartition, pas multiplication).
+4. JSON peut fournir optionnellement `modeMultiProduitActif` + `stockInitialParProduit`.
+5. Aucun nombre de produits codé en dur (N produits).
+6. Aucun nom de produit codé en dur.
+7. Une référence ne consomme jamais le stock d'une autre.
+8. La production d'une référence crédite uniquement cette référence.
+9. Réapprovisionnement calculé par produit.
+10. Snapshot stable pour toute boucle multi-produit itérant une collection
+    reconstructible par une fonction appelée (anti-ConcurrentModificationException).
+11. `rotationProduitsActive` reste un outil de test générique, `false` par défaut,
+    jamais une règle métier par défaut.
+12. Ne pas assimiler automatiquement tout scénario à un produit — respecter la
+    séparation scénario/produit existante, à analyser avant modification.
+13. ZENER actuel doit continuer à fonctionner exactement comme avant si le
+    multi-produit n'est pas activé.
+
+**Tests attendus (M-1 à M-10)** :
+- [ ] M-1 — legacy mono-produit ZENER (`modeMultiProduitActif=false`) = comportement identique à la baseline
+- [ ] M-2 — multi-produit synthétique 2 produits : stock A indépendant du stock B
+- [ ] M-3 — consommation : commande A ne modifie pas stock B
+- [ ] M-4 — production : production A crédite uniquement A
+- [ ] M-5 — stock global : somme(stockFiniParProduit) == niveauStock agrégé
+- [ ] M-6 — JSON sans nouveaux champs : compatibilité descendante
+- [ ] M-7 — JSON avec stockInitialParProduit : valeurs exactes restaurées
+- [ ] M-8 — JSON avec stock global mais sans répartition : aucune multiplication du stock
+- [ ] M-9 — politique autonome : rupture A ne déclenche pas artificiellement une production B
+- [ ] M-10 — concurrence : aucune ConcurrentModificationException lors du parcours produit
+
+**Statut** : PLANIFIÉ. Aucune implémentation commencée. Audit détaillé de la fondation
+existante et de la référence donneuse à réaliser en ouverture du bloc.
 
 ## Bloc B — PI / SCOR
 - [ ] Warm-up / amorçage

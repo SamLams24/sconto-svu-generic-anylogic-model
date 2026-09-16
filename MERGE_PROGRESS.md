@@ -109,7 +109,7 @@ diagnostic commandes bloquées) ; absent du master — Bloc A/C.
 - [x] Matching strict flux/commande — **PORTÉ** (2026-09-16, commit `bf0e490`, Build/run utilisateur OK)
 - [x] Diagnostic commandes bloquées — **PORTÉ** (2026-09-16, commit `0363b6b`, Build/run nominal utilisateur OK ; test fonctionnel forcé [DIAG-BLOQUEE] À TESTER ULTÉRIEUREMENT)
 - [x] Stock matière détaillé — **PORTÉ** (2026-09-16, commit `d52d431`, Build AnyLogic utilisateur OK ; validation fonctionnelle différée au Bloc A.4, où la fonction sera consommée pour la première fois)
-- [x] Historique Dashboard / Excel — **PORTÉ ET VALIDÉ** (2026-09-16, commit `69c78d6`, Build/run utilisateur OK, vérification unités Lead Time OK)
+- [x] Historique Dashboard / Excel — **PORTÉ, CORRIGÉ (A.4-FIX-1/2/3)** ; validation définitive **EN ATTENTE** du nouveau run utilisateur post-fix (2026-09-16, commits `69c78d6`, `afc3e16`, voir A.4-FIX ci-dessous)
 - [ ] États holoniques cohérents
 - [ ] Build AnyLogic utilisateur
 - [ ] Run court générique utilisateur
@@ -441,7 +441,7 @@ collègue — 2 reportées, voir plus bas) :
 |---|---|---|---|---|---|
 | 1 | Temps simulation (s) | `time()` | Oui (natif AnyLogic) | Oui | PORTER |
 | 2 | Order Throughput (ent/h) | `nbTermines` | Oui | Oui | PORTER |
-| 3 | Avg Lead Time (min) | `board.kpiGlobal.avgLeadTime()` | Oui | Oui | PORTER |
+| 3 | Avg Lead Time (min) | `board.kpiGlobal.avgLeadTime() / 60.0` (correction 2026-09-16 : le `/ 60.0` manquait dans cette table, voir A.4-FIX-1 — présent dans le code depuis le portage initial) | Oui | Oui | PORTER |
 | 4 | Work In Process (Products) | `wipReelSansJetonsVisuels()` | Oui, corps identique (vérifié) | Oui | PORTER |
 | 5 | Finished Stock (Products) | boucle `postes`/`estPosteStockFini()` | Oui, `estPosteStockFini()` identique | Oui | PORTER |
 | 6 | PCE (%) | `board.kpiZener`/`kpiGlobal.pce()` | Oui | Oui | PORTER |
@@ -626,7 +626,147 @@ périmètre de cette vérification.
 - **Aucune exception**.
 - **Vérification unités Lead Time** : effectuée ci-dessus, aucune incohérence trouvée.
 
-**Bloc A.4 définitivement validé.**
+**Validation revue à la baisse** : cette entrée reposait sur une observation visuelle
+du classeur (feuille présente, 26 colonnes, plusieurs lignes). Une analyse plus
+approfondie de l'export réel et de l'ABox du même run (ci-dessous, A.4-FIX-1 à 3) a
+révélé un défaut fonctionnel réel (A.4-FIX-2) masqué par cette observation de surface
+— l'historique contenait bien "plusieurs" lignes, mais s'arrêtait à t=60 s sur un run
+allant jusqu'à t=582 s. **La validation définitive du Bloc A.4 est reportée après
+A.4-FIX-1/2/3 et un nouveau run utilisateur.**
+
+### A.4-FIX — corrections suite à l'analyse de l'export réel (2026-09-16)
+
+Analyse demandée de l'export Excel + ABox d'un run réel (582 s, PI=8,192, 3 commandes
+closes, Lead Time final=15250,79 s). Trois corrections identifiées.
+
+#### A.4-FIX-1 — Unité du Lead Time (colonne 3)
+
+**Vérification demandée** : définition exacte de `avgLeadTime()`, son unité réelle,
+usages existants, valeurs de run, conclusion explicite.
+
+- **Définition** (`KPIBundle`, ligne ~53123) : `avgLeadTime() = avgCycleTime() + avgWaitTime()`.
+- **Unité réelle : SECONDES.** Déjà établi lors de la vérification unités du tour
+  précédent (voir section ci-dessus) : variable source `cmd.leadTimeClientReelSec`
+  (suffixe `Sec` explicite), en-tête CSV existant `avgLeadTime_s`, unité `"s"` dans
+  l'export ABox. Confirmé une seconde fois par l'export réel analysé : "Order
+  Fulfillment Lead Time (secondes) = 15250.79" (Dashboard Global) et
+  `LEAD_TIME_MOYEN = 15250.79` (Traces Agrégées) désignent la même grandeur.
+- **Vérification de la colonne 3 dans le CODE actuel** (`model/SCONTO_SVU_GENERIC_MASTER.alp`,
+  fonction `capturerPointHistoriqueDashboard()`) :
+  ```java
+  fmt1(board.kpiGlobal.avgLeadTime() / 60.0),   // colonne 3 "Avg Lead Time (min)"
+  ...
+  fmt1(board.kpiGlobal.avgLeadTime() / 60.0),   // colonne 16 "Order Lead Time (min)"
+  ```
+  **Le code porte déjà la conversion `/ 60.0` sur les deux colonnes** — vérifié par
+  grep direct sur le fichier committé (`69c78d6`), avant toute modification de ce
+  correctif. **Il n'y a pas de bug fonctionnel dans le code.**
+- **Origine réelle de l'alerte** : le tableau d'analyse consigné dans ce document (ligne
+  "3 | Avg Lead Time (min) | `board.kpiGlobal.avgLeadTime()` | ...") **omettait
+  par erreur d'écriture le `/ 60.0`** dans la colonne "Source / fonction", donnant
+  l'impression trompeuse d'une valeur brute en secondes sous une étiquette "(min)".
+  Corrigé ci-dessus (voir la ligne 3 du tableau, section Journal A.4).
+- **Décision** : aucune modification de code nécessaire (déjà correct : conversion
+  `/60.0` + libellé "(min)" cohérents sur les deux colonnes). Correction apportée
+  uniquement à la documentation.
+
+#### A.4-FIX-2 — l'historique s'arrête prématurément (défaut réel, corrigé)
+
+**Cause racine identifiée** : `capturerPointHistoriqueDashboard()` était appelée depuis
+l'`Action` de l'événement `ExcelExportManager`, dont la `Condition` est
+`modeExecution && exportExcelActif && !c14SnapshotFinalEffectue`. Or `c14SnapshotFinalEffectue`
+passe à `true` de façon **permanente pour le reste du run** dès la **première** clôture
+de commande cliente, dans deux chemins de code identiques (fin de parcours normal et
+un second chemin de clôture Deliver), tous deux gardés uniquement par
+`aboxExportActif && aboxExportSurClotureCommande` (pas de garde `!c14SnapshotFinalEffectue`
+avant d'y entrer — chaque clôture réexporte et re-positionne le drapeau à `true`).
+Conséquence : dès qu'une commande se clôt (souvent tôt dans le run), `ExcelExportManager`
+— et donc la capture qui y était piggybackée — s'arrête définitivement, même si la
+simulation continue ensuite pendant plusieurs centaines de secondes. Confirmé
+exactement par l'observation utilisateur : capture arrêtée à t=60 s sur un run allant
+jusqu'à t=582 s.
+
+**Correctif appliqué — capture DÉCOUPLÉE de l'écriture Excel**, solution la moins
+invasive retenue (nouvel événement dédié plutôt que restructuration d'`ExcelExportManager`) :
+
+1. Nouvel événement `Main.DashboardHistoryManager` (cyclique, période
+   `champIntervalleExportExcel` — même cadence générique que l'export, aucun nouveau
+   champ de configuration), **condition réduite à `modeExecution` seul** (indépendant
+   de `exportExcelActif` et de `c14SnapshotFinalEffectue`) : `Action` = appel unique à
+   `capturerPointHistoriqueDashboard()`.
+2. `ExcelExportManager` **revient à son état exact d'avant le Bloc A.4** (plus d'appel
+   de capture dans son `Action`) — aucun changement à sa logique d'écriture existante,
+   conformément à la consigne de ne pas réintroduire une réécriture des ~25 feuilles
+   toutes les 30 s.
+3. **Garde anti-doublon temporel** : nouveau champ `dernierTempsCaptureHistoriqueDashboard`
+   (double, réinitialisé à `-1.0` dans `demarrerSimulation()` aux côtés de
+   `historiqueDashboard.clear()`) ; `capturerPointHistoriqueDashboard()` retourne
+   immédiatement si `time()` égale déjà ce champ (tolérance `1e-4`), et le met à jour
+   sinon. Empêche toute double ligne pour le même instant si un cycle
+   `DashboardHistoryManager` coïncide avec une clôture de commande.
+4. **Snapshot final garanti** : `arreterSimulation()` appelle désormais
+   `capturerPointHistoriqueDashboard()` (protégée par try/catch) avant de positionner
+   `modeExecution = false`, puis `exporterToutesLesTablesExcel()` si
+   `exportExcelActif` — pour que l'arrêt manuel d'un run (cas exact observé : dernier
+   cycle périodique antérieur à l'arrêt réel) capture et écrive bien le dernier point,
+   même si l'écriture périodique était déjà désactivée par `c14SnapshotFinalEffectue`.
+   Sans cet ajout, `arreterSimulation()` ne réécrivait jamais le classeur (comportement
+   d'origine, antérieur à tout portage), et les points capturés après la dernière
+   écriture physique auraient été perdus.
+
+**Ce qui n'a pas été modifié** : les deux points d'export "sur clôture de commande"
+(`finDeParcours()`/second chemin Deliver) et leur positionnement de
+`c14SnapshotFinalEffectue` sont **inchangés** — la capture continue désormais
+indépendamment d'eux, donc leur comportement d'origine (export immédiat + flag) reste
+utile (écrit l'historique accumulé jusqu'à cet instant) sans qu'il soit nécessaire d'y
+toucher.
+
+#### A.4-FIX-3 — agrégat stock matière hétérogène : renommage de l'en-tête
+
+**Constat** : la colonne "Raw Material Stock (unités)" additionne des grandeurs
+physiquement hétérogènes (`GPL_VRAC=600` + `BOUTEILLE_VIDE_12KG=250` +
+`ACCESSOIRES_KIT=300` = `1150`), déjà signalé comme limite connue de
+`stockMatiereDisponibleTotal()` (conservée pour compatibilité avec les métriques SCOR
+`AM.3.16`/`AM.2.8` existantes — **non modifiées dans ce correctif**, leur refonte
+appartient au Bloc B).
+
+**Correctif** : en-tête renommé dans `historiqueDashboardColumns()` uniquement :
+`"Raw Material Stock (unites)"` → `"Raw Material Stock (agrégat legacy, unités hétérogènes)"`.
+Aucun changement de la valeur calculée ni de la fonction `stockMatiereDisponibleTotal()`
+elle-même. La colonne "Raw Material Stock — détail par matière"
+(`detailStockMatiereParMatiere()`, Bloc A.3) reste la représentation scientifiquement
+exploitable, inchangée.
+
+**Fichier modifié** : `model/SCONTO_SVU_GENERIC_MASTER.alp`.
+
+**Validations statiques** :
+- XML bien formé : OK.
+- IDs AnyLogic : 1679/1679 uniques (+2 pour les deux `<Id>` du nouvel événement
+  `DashboardHistoryManager`), aucun doublon.
+- `git diff --check` : aucune erreur d'espace blanc.
+- Grep DataCo : 0 occurrence.
+- Colonnes == valeurs par ligne : toujours **26 == 26** (aucune colonne ajoutée/retirée,
+  un seul libellé renommé), revérifié programmatiquement.
+- Aucune mutation métier depuis la capture : `capturerPointHistoriqueDashboard()`
+  n'écrit toujours que dans `historiqueDashboard` et le nouveau
+  `dernierTempsCaptureHistoriqueDashboard` (bookkeeping interne à l'historique
+  lui-même, pas un état métier) ; `arreterSimulation()` ne modifie que
+  `modeExecution` (comportement déjà existant, inchangé dans son ordre logique) et
+  déclenche des écritures fichier (I/O), pas une mutation de commande/stock/routage/PI.
+- Aucune duplication abusive de timestamp : garde `dernierTempsCaptureHistoriqueDashboard`
+  vérifiée (tolérance `1e-4`).
+- Snapshot final garanti : `arreterSimulation()` capture et exporte avant de couper
+  `modeExecution`, y compris si le dernier cycle périodique remonte à plusieurs
+  secondes.
+- **Build AnyLogic** : EN ATTENTE (utilisateur).
+- **Run** : EN ATTENTE (utilisateur). Protocole suggéré : reproduire un run similaire
+  au run analysé (au moins une commande close avant la fin), vérifier que
+  l'historique Dashboard continue d'accumuler des lignes après la première clôture de
+  commande et jusqu'à la fin réelle du run (y compris un point à l'arrêt manuel s'il
+  est utilisé), et que la colonne 17 porte son nouveau libellé.
+- **Commit** : voir SHA ci-dessous (message `fix(generic): correct dashboard history semantics`).
+
+**Bloc A.4 : validation définitive EN ATTENTE du nouveau run utilisateur post-fix.**
 
 ## Bloc M — Fondation multi-produit Generic (2026-09-16, PLANIFIÉ — NON COMMENCÉ)
 

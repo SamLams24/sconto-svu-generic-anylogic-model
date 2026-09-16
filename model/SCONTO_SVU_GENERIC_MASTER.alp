@@ -27,6 +27,10 @@ public int nombreFluxInformationnelsVisibles = 5;
 // tableau de bord (voir capturerPointHistoriqueDashboard()). Vide a chaque
 // demarrerSimulation() afin que l'export ne contienne que le run en cours.
 public java.util.ArrayList<Object[]> historiqueDashboard = new java.util.ArrayList<Object[]>();
+// A.4-FIX-2 -- garde anti-doublon : dernier time() effectivement capture, pour
+// qu'un cycle de DashboardHistoryManager et une cloture de commande survenant
+// au meme instant simule ne produisent jamais deux lignes pour le meme temps.
+public double dernierTempsCaptureHistoriqueDashboard = -1.0;
 
 // File FIFO de visualisation des communications.
 // Les communications métier restent distribuées immédiatement, mais leur
@@ -7004,13 +7008,15 @@ String detailStockMatiereParMatiere() {
 
 // Bloc A.4 -- historique temporel du Dashboard (KPI + SCOR + PI), pour permettre
 // de retracer dans Excel les courbes/diagrammes du tableau de bord au lieu d'un
-// simple instantane final. Capture un point PAR APPEL (voir call sites : t=0 dans
-// demarrerSimulation(), puis un point par cycle de l'evenement ExcelExportManager,
-// cadence = champIntervalleExportExcel, explicite et inchangee). Purement
-// observateur : ne lit que des champs/fonctions existants et n'ecrit que dans
-// historiqueDashboard -- aucun impact sur commande/stock/routage/production/PI/
-// strategie. Portage generique du correctif collegue (reference/colleague,
-// capturerPointHistoriqueDashboard), avec 3 adaptations documentees :
+// simple instantane final. Capture un point PAR APPEL (voir call sites : t=0 et
+// arret dans demarrerSimulation()/arreterSimulation(), puis un point par cycle
+// de l'evenement dedie DashboardHistoryManager -- DECOUPLE de l'ecriture Excel
+// depuis A.4-FIX-2, cadence = champIntervalleExportExcel, explicite et
+// inchangee). Purement observateur : ne lit que des champs/fonctions existants
+// et n'ecrit que dans historiqueDashboard -- aucun impact sur commande/stock/
+// routage/production/PI/strategie. Portage generique du correctif collegue
+// (reference/colleague, capturerPointHistoriqueDashboard), avec 3 adaptations
+// documentees :
 //  - "Waiting Time (s)" utilise ici tempsAttenteGlobalCoherent() DU MASTER
 //    (deja corrige, commentaire "VSM-FIX-05"), pas la version collegue qui
 //    reconstruit differemment a partir de kpiZener/kpiGlobal.pce() ;
@@ -7018,16 +7024,32 @@ String detailStockMatiereParMatiere() {
 //    (EN_RETARD + client uniquement) ; la version collegue compte aussi
 //    cmd.retardConstate, champ du mecanisme de retard continu du Bloc C, absent
 //    de ce master -- non introduit ici ;
-//  - "Raw Material Stock (unites)" appelle stockMatiereDisponibleTotal(), deja
-//    present dans le master (utilise par valeurRuntimeMetriqueSCOR() pour
-//    AM.3.16/AM.2.8), plutot que de recalculer une seconde boucle equivalente.
+//  - "Raw Material Stock (agrégat legacy, unités hétérogènes)" appelle
+//    stockMatiereDisponibleTotal(), deja present dans le master (utilise par
+//    valeurRuntimeMetriqueSCOR() pour AM.3.16/AM.2.8), plutot que de recalculer
+//    une seconde boucle equivalente -- en-tete renomme (A.4-FIX-3) pour ne pas
+//    presenter cette somme heterogene (kg + bouteilles + kits) comme une
+//    quantite physique homogene ; formules SCOR AM inchangees (Bloc B).
 // Les 2 colonnes de tracabilite du perimetre PI du collegue ("Attributs ponderes
 // dans le PI", "Somme des poids effectifs") ne sont PAS portees : elles dependent
 // de strategic.attributsPonderesPI/sommePoidsEffectifsPI, absents de ce master
 // (Bloc B, non traite ici) -- RL/RS/AG/CO/AM/PI/PI cible utilisent les valeurs
 // courantes de calculerPIGlobal() du master tel qu'il existe aujourd'hui, sans
 // anticiper sa refonte.
+// "Avg Lead Time (min)" et "Order Lead Time (min)" utilisent toutes deux
+// board.kpiGlobal.avgLeadTime() / 60.0 (A.4-FIX-1 : avgLeadTime() est en
+// SECONDES -- cf. KPIBundle.avgLeadTime() = avgCycleTime()+avgWaitTime(),
+// alimentees via des champs *ReelSec -- la conversion /60 est deja correcte
+// dans le code ; seul le tableau d'analyse de MERGE_PROGRESS.md manquait ce
+// "/60.0" pour la 1re colonne, corrige sans impact sur le comportement).
 void capturerPointHistoriqueDashboard() {
+    // A.4-FIX-2 -- garde anti-doublon temporel : si ce temps de simulation a deja
+    // ete capture (ex. DashboardHistoryManager et une cloture de commande au meme
+    // instant, ou arreterSimulation() appele juste apres un cycle periodique),
+    // ne pas ajouter une seconde ligne identique.
+    if (Math.abs(time() - dernierTempsCaptureHistoriqueDashboard) < 0.0001) return;
+    dernierTempsCaptureHistoriqueDashboard = time();
+
     double rl = 0, rs = 0, ag = 0, co = 0, am = 0, pi = 0, piCible = 0;
     if (strategic != null) {
         rl = (Double.isNaN(strategic.scoreRL) || Double.isInfinite(strategic.scoreRL)) ? 0.0 : strategic.scoreRL;
@@ -7091,7 +7113,7 @@ String[] historiqueDashboardColumns() {
         "Takt Time (s)",
         "Production Throughput (ent/h)",
         "Order Lead Time (min)",
-        "Raw Material Stock (unites)",
+        "Raw Material Stock (agrégat legacy, unités hétérogènes)",
         "Raw Material Stock — détail par matière",
         "Supplier Lead Time (h)",
         "SCOR RL (Reliability)",
@@ -10930,13 +10952,55 @@ rafraichirComboPosteConsomme();]]></Action>
 // par defaut : 30 s, ajustable via champIntervalleExportExcel.
 // Se desactive tout seul si exportExcelActif = false ou hors simulation.
 if (!modeExecution || !exportExcelActif || c14SnapshotFinalEffectue) return;
-// Bloc A.4 -- un point d'historique Dashboard par cycle, a la meme cadence que
-// l'export Excel lui-meme (champIntervalleExportExcel) : aucune duplication de
-// point temporel, aucun decouplage capture/ecriture (le mecanisme collegue de
-// throttling de l'ecriture via compteurCyclesExportExcel n'est pas porte ici --
-// optimisation de performance distincte, hors perimetre du Bloc A.4).
-capturerPointHistoriqueDashboard();
 exporterToutesLesTablesExcel();]]></Action>
+				</Event>
+				<Event>
+					<Id>1791000009410</Id>
+					<Name><![CDATA[DashboardHistoryManager]]></Name>
+					<X>-200</X><Y>270</Y>
+					<Label><X>10</X><Y>0</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>true</ShowLabel>
+					<Properties TriggerType="timeout" Mode="cyclic">
+						<Timeout Class="CodeUnitValue">
+							<Code><![CDATA[champIntervalleExportExcel]]></Code>
+							<Unit Class="TimeUnits"><![CDATA[SECOND]]></Unit>
+						</Timeout>
+						<Rate Class="CodeUnitValue">
+							<Code><![CDATA[1]]></Code>
+							<Unit Class="RateUnits"><![CDATA[PER_SECOND]]></Unit>
+						</Rate>
+						<Id>1791000009411</Id>
+						<OccurrenceAtTime>true</OccurrenceAtTime>
+						<OccurrenceDate>1783584000000</OccurrenceDate>
+						<OccurrenceTime Class="CodeUnitValue">
+							<Code><![CDATA[0]]></Code>
+							<Unit Class="TimeUnits"><![CDATA[SECOND]]></Unit>
+						</OccurrenceTime>
+						<RecurrenceCode Class="CodeUnitValue">
+							<Code><![CDATA[champIntervalleExportExcel]]></Code>
+							<Unit Class="TimeUnits"><![CDATA[SECOND]]></Unit>
+						</RecurrenceCode>
+						<Condition><![CDATA[modeExecution]]></Condition>
+					</Properties>
+					<Action><![CDATA[// A.4-FIX-2 -- capture de l'historique Dashboard DECOUPLEE de l'ecriture
+// physique du classeur Excel (ExcelExportManager). Avant ce correctif, la
+// capture etait declenchee depuis ExcelExportManager, dont la condition
+// inclut !c14SnapshotFinalEffectue -- or ce drapeau passe a true des la
+// PREMIERE cloture de commande (avec export ABox sur cloture actif), ce qui
+// arretait aussi la capture pour le reste du run, bien avant sa fin reelle
+// (observe : capture arretee a t=60s sur un run allant jusqu'a t=582s).
+// Cet evenement dedie tourne pendant toute la duree de modeExecution, a la
+// meme cadence generique que l'export Excel (champIntervalleExportExcel),
+// mais independamment du fait que le classeur soit physiquement reecrit a ce
+// cycle precis : c'est la prochaine ecriture reelle (cycle periodique tant
+// qu'actif, cloture de commande, ou arret manuel -- voir arreterSimulation())
+// qui exportera l'integralite de l'historique accumule en memoire.
+// capturerPointHistoriqueDashboard() protege elle-meme contre les doublons de
+// timestamp (voir son corps), donc aucun risque de double capture au meme
+// instant si ce cycle et une cloture de commande coincident.
+capturerPointHistoriqueDashboard();]]></Action>
 				</Event>
 				<Event>
 					<Id>1791000009401</Id>
@@ -11604,6 +11668,7 @@ reinitialiserHistoriqueFluxInformationnels();
 // Bloc A.4 -- l'historique Dashboard appartient au run courant : reparti a vide a
 // chaque demarrerSimulation() pour que l'export Excel ne melange jamais deux runs.
 historiqueDashboard.clear();
+dernierTempsCaptureHistoriqueDashboard = -1.0;
 
 // Initialiser les agents tactiques
 while (tacticals.size() > 0) {
@@ -11709,11 +11774,24 @@ viewExecution.navigateTo();]]></Body>
 					<PublicFlag>false</PublicFlag>
 					<PresentationFlag>true</PresentationFlag>
 					<ShowLabel>true</ShowLabel>
-					<Body><![CDATA[modeExecution = false;
+					<Body><![CDATA[// A.4-FIX-2 -- garantit un point d'historique Dashboard au temps reel d'arret,
+// meme si le dernier cycle periodique de DashboardHistoryManager remonte a
+// plusieurs secondes (ex. dernier cycle a t=570, arret reel a t=582) : sans
+// cela, la portion finale d'activite entre le dernier cycle et l'arret manuel
+// n'apparaitrait jamais dans l'historique. capturerPointHistoriqueDashboard()
+// ignore elle-meme cet appel si un point existe deja pour ce temps exact.
+try { capturerPointHistoriqueDashboard(); } catch (Throwable ignoredHistoriqueDashboardArret) {}
+modeExecution = false;
 arrivee.reset();
 strategic.piGlobalCourant = strategic.calculerPIGlobal();
 board.logEvent("=== SIMULATION ARRETEE - PI=" + String.format("%.3f", strategic.piGlobalCourant) + " ===");
 if (aboxExportActif && aboxExportSurArret) exporterABoxRuntimeTTL("SIMULATION_STOP");
+// A.4-FIX-2 -- ecrit l'historique Dashboard accumule (dont le point ci-dessus)
+// dans le classeur final, y compris si le cycle periodique d'export etait deja
+// arrete (c14SnapshotFinalEffectue) : sans cet appel, les points captures apres
+// la derniere ecriture physique resteraient uniquement en memoire, perdus a la
+// fin de la simulation.
+if (exportExcelActif) { try { exporterToutesLesTablesExcel(); } catch (Throwable ignoredExportFinal) {} }
 //viewDashboard.navigateTo();]]></Body>
 				</Function>
 				<Function AccessType="default" StaticFunction="false">

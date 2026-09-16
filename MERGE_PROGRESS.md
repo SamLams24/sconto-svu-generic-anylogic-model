@@ -108,7 +108,7 @@ diagnostic commandes bloquées) ; absent du master — Bloc A/C.
 ## Bloc A — corrections sûres
 - [x] Matching strict flux/commande — **PORTÉ** (2026-09-16, commit `bf0e490`, Build/run utilisateur OK)
 - [x] Diagnostic commandes bloquées — **PORTÉ** (2026-09-16, commit `0363b6b`, Build/run nominal utilisateur OK ; test fonctionnel forcé [DIAG-BLOQUEE] À TESTER ULTÉRIEUREMENT)
-- [x] Stock matière détaillé — **PORTÉ** (2026-09-16, commit voir Journal A.3 ci-dessous, Build/run utilisateur EN ATTENTE)
+- [x] Stock matière détaillé — **PORTÉ** (2026-09-16, commit `d52d431`, Build AnyLogic utilisateur OK ; validation fonctionnelle différée au Bloc A.4, où la fonction sera consommée pour la première fois)
 - [ ] Historique Dashboard / Excel
 - [ ] États holoniques cohérents
 - [ ] Build AnyLogic utilisateur
@@ -307,11 +307,12 @@ Bloc A.4.
 - Références : `detailStockMatiereParMatiere()` n'est appelée nulle part pour l'instant
   (fonction disponible, non encore consommée) — comportement intentionnel, cf. décision
   de portage ci-dessus ; aucune fonction supprimée/renommée.
-- **Build AnyLogic** : EN ATTENTE (utilisateur).
-- **Run** : EN ATTENTE (utilisateur). Note : cette fonction n'étant appelée par rien
-  dans ce bloc, un Build réussi suffit à valider sa compilation ; sa sortie ne sera
-  observable qu'une fois branchée (Bloc A.4).
-- **Commit** : voir SHA ci-dessous (message `feat(generic): add per-material stock detail`).
+- **Build AnyLogic** : **OK** (0 erreur, validé par l'utilisateur, 2026-09-16).
+- **Validation fonctionnelle** : **différée au Bloc A.4**. `detailStockMatiereParMatiere()`
+  n'étant appelée par rien dans ce bloc, aucun run fonctionnel spécifique n'est requis
+  avant A.4 (confirmé par l'utilisateur) ; sa sortie ne sera observable qu'une fois
+  branchée dans l'historique Dashboard.
+- **Commit** : `d52d431` (message `feat(generic): add per-material stock detail`).
 
 ## Audit des fichiers non suivis apparus sous model/ (2026-09-16)
 
@@ -342,6 +343,64 @@ a été ajouté avec un fichier nommé `SCONTO_SVU_FINAL_VALIDATED_FORECAST_DATA
 Non analysé plus avant : le Bloc M n'a pas commencé (cf. section Bloc M ci-dessous).
 
 **Aucune action de nettoyage effectuée.** Décision laissée à l'utilisateur.
+
+## Hygiène repository — ressources AnyLogic sous model/ (2026-09-16)
+
+Suite à l'audit ci-dessus, vérification précise avant toute action Git, pour rendre le
+repository reproductible depuis un clone propre.
+
+**1. Vérification par fichier — référence dans le `.alp` + identité SHA-256** :
+sur les 28 PNG non suivis sous `model/` (dont `box (1).png`), **25 sont réellement
+référencés** dans `model/SCONTO_SVU_GENERIC_MASTER.alp` (1 à 4 occurrences chacun, via
+`<ClassName>` et/ou `<Path>`) et **3 ne le sont pas du tout** (0 occurrence, vérifié
+aussi insensible à la casse, et absents également du `.alp` collègue) :
+`control-system.png`, `industrial-revolution.png`, `packages.png`. Reclassés
+**DUPLICATE** (probablement copiés en bloc par AnyLogic avec les fichiers réellement
+nécessaires, sans lien avec ce que le modèle utilise). Les 25 fichiers réellement
+référencés ont chacun un SHA-256 strictement identique à leur copie de la racine du
+dépôt **et** de `assets/` (3 copies identiques, vérifié individuellement).
+
+**2. Format de référence** : chaque ressource référencée l'est par **nom de fichier nu**
+(`<ClassName><![CDATA[aiguillage.png]]></ClassName>`, `<Path><![CDATA[aiguillage.png]]></Path>`),
+jamais par chemin explicite du type `../assets/aiguillage.png`. Chaque référence est
+accompagnée de `<Location>FILE_SYSTEM</Location>` dans le bloc `<Resource>` du modèle :
+AnyLogic résout donc ces fichiers **relativement au dossier du `.alp` lui-même**. Le
+`.alp` attend bien les fichiers à côté de lui — conformément à la règle donnée, aucune
+modification en masse des chemins internes du `.alp` n'a été effectuée.
+
+**Décision** : ajouter au Git uniquement les 25 PNG `REQUIRED_RESOURCE` sous `model/`
+(liste : `aiguillage.png`, `back-office.png`, `box (1).png`, `container.png`,
+`delay02.png`, `delivery-truck.png`, `email.png`, `enterprise.png`, `facility.png`,
+`factory-machine.png`, `forklift.png`, `gestion.png`, `jacket.png`, `manufacturing.png`,
+`ordre.png`, `produit.png`, `replacement.png`, `roadmap.png`, `stock.png`,
+`stockage.png`, `stockage02.png`, `stocks.png`, `storage.png`,
+`supply-chain-management.png`, `task.png`), dans un commit administratif distinct
+(`chore(anylogic): track model runtime resources`). Les 3 PNG non référencés
+(`control-system.png`, `industrial-revolution.png`, `packages.png`) restent non
+suivis, comme les autres duplicatas.
+
+**3. `model/database/`** : contenu inspecté avant toute décision `.gitignore`.
+`model/database/db.script` ne contient que des tables `*_RAW_LOG` standard
+(`AGENTS_RAW_LOG`, `AGENT_TYPES_RAW_LOG`, `EVENTS_RAW_LOG`, `TRACE_RAW_LOG`,
+`STATISTICS_RAW_LOG`, etc.) et des tables internes `AL_*` de l'explorateur de base
+AnyLogic — aucune table métier SCOR/VSM custom, cohérent avec la description déjà
+faite de la base racine `database/` dans `reference/colleague/docs/SCENARIOS_AND_DATA.md`
+§2 ("logging technique standard AnyLogic"). Le `.alp` déclare
+`<Database><Logging>true</Logging>...</Database>` sans chemin explicite : AnyLogic
+régénère cette base au dossier courant du `.alp` à chaque run avec DB logging actif.
+`model/database/db.script` porte d'ailleurs un `SET DATABASE UNIQUE NAME` différent de
+celui de la racine (`HSQLDBA0AB809148` vs `HSQLDB9F47CA2508`), confirmant deux bases
+indépendantes. **Confirmé : donnée runtime régénérable, pas une donnée source.**
+Règle `.gitignore` ajoutée : `model/database/`.
+
+**Exclu de tout commit/`.gitignore` pour l'instant, conformément à la consigne** :
+`model/CLAUDE.md`, `model/README.md`, `model/scenario_ZENER_SA_Togo_v39.json` (restent
+non suivis, non supprimés du disque — possible copie faite par AnyLogic, pas de
+perturbation du modèle local de l'utilisateur), ainsi que `control-system.png`,
+`industrial-revolution.png`, `packages.png` (DUPLICATE non référencés, mêmes égards).
+
+**Commit administratif** : voir SHA en tête de la prochaine section (message
+`chore(anylogic): track model runtime resources`).
 
 ## Bloc M — Fondation multi-produit Generic (2026-09-16, PLANIFIÉ — NON COMMENCÉ)
 

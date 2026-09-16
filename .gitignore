@@ -17,6 +17,11 @@ _run*.csv
 database/*.lck
 database/*.log
 
+# HSQLDB de logging technique regeneree par AnyLogic a chaque run depuis model/
+# (tables *_RAW_LOG standard uniquement, verifie 2026-09-16 -- cf. MERGE_PROGRESS.md,
+# section "Hygiene repository -- ressources AnyLogic sous model/")
+model/database/
+
 # OS/editor
 .DS_Store
 Thumbs.db

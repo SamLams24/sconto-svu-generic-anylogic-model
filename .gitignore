@@ -1,0 +1,24 @@
+# AnyLogic / Java transient files
+*.autosave
+*.tmp
+*.log
+*.lck
+__pycache__/
+*.pyc
+
+# Generated simulation outputs
+SCONTO_SVU_RESULTS_*_RUN_*.xlsx
+SCONTO_SVU_ABOX_*_RUN_*.ttl
+export_*.xlsx
+_run*.csv
+
+# Embedded database runtime state
+# Conserver le schéma/source explicitement si nécessaire, mais pas les verrous/logs runtime
+database/*.lck
+database/*.log
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

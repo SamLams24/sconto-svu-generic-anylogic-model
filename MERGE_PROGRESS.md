@@ -109,7 +109,7 @@ diagnostic commandes bloquées) ; absent du master — Bloc A/C.
 - [x] Matching strict flux/commande — **PORTÉ** (2026-09-16, commit `bf0e490`, Build/run utilisateur OK)
 - [x] Diagnostic commandes bloquées — **PORTÉ** (2026-09-16, commit `0363b6b`, Build/run nominal utilisateur OK ; test fonctionnel forcé [DIAG-BLOQUEE] À TESTER ULTÉRIEUREMENT)
 - [x] Stock matière détaillé — **PORTÉ** (2026-09-16, commit `d52d431`, Build AnyLogic utilisateur OK ; validation fonctionnelle différée au Bloc A.4, où la fonction sera consommée pour la première fois)
-- [x] Historique Dashboard / Excel — **PORTÉ** (2026-09-16, commit voir Journal A.4 ci-dessous, Build/run utilisateur EN ATTENTE)
+- [x] Historique Dashboard / Excel — **PORTÉ ET VALIDÉ** (2026-09-16, commit `69c78d6`, Build/run utilisateur OK, vérification unités Lead Time OK)
 - [ ] États holoniques cohérents
 - [ ] Build AnyLogic utilisateur
 - [ ] Run court générique utilisateur
@@ -551,7 +551,82 @@ colonnes, lignes, feuille Excel, reset par run, capture initiale + périodique),
   export Excel actif, ouvrir le classeur généré, vérifier la feuille "Historique
   Dashboard" (26 colonnes, ≥1 ligne après le premier cycle `champIntervalleExportExcel`),
   confirmer que les 25 autres feuilles existantes sont inchangées.
-- **Commit** : voir SHA ci-dessous (message `feat(generic): add dashboard history export`).
+- **Commit** : `69c78d6` (message `feat(generic): add dashboard history export`).
+
+### Vérification unités — Avg Lead Time / Order Lead Time (2026-09-16)
+
+Demandée avant validation définitive du Bloc A.4 : les colonnes "Avg Lead Time (min)"
+et "Order Lead Time (min)" utilisent toutes deux `board.kpiGlobal.avgLeadTime() / 60.0`
+— vérification qu'il n'y a pas d'incohérence d'unité entre elles ou avec le reste du
+master.
+
+**1. Définition exacte** (`KPIBundle`, ligne ~53123) :
+```java
+public double avgLeadTime() { return avgCycleTime() + avgWaitTime(); }
+```
+`avgCycleTime()`/`avgWaitTime()` = moyenne (pondérée si `weightTotal>0`, sinon simple)
+de `sumCycleTime`/`sumWaitTime`, alimentées par `addObservation(cycleTime, waitTime, ...)`.
+
+**2. Unité réelle** : les valeurs passées à `addObservation()` proviennent de deltas de
+temps de simulation bruts (`ModelTimeUnit = Second`, déclaré en tête du `.alp`). Preuve
+directe la plus explicite : `enregistrerFinCommandeGlobale()` calcule
+`double lt = Math.max(0.001, cmd.leadTimeClientReelSec);` — le suffixe `Sec` du nom de
+variable est sans ambiguïté — puis appelle `board.notifierFin(lt, wt, vat, ...)`, qui
+alimente `kpiGlobal`. Confirmation supplémentaire dans l'export CSV existant
+(`exporterToutesLesTablesExcel`/`exporterCSV`, ligne 47294) :
+`pw.println("entreprise;niveau;cle;avgCycleTime_s;avgWaitTime_s;avgLeadTime_s;pce_pct;count");`
+— le suffixe `_s` de l'en-tête CSV est explicite. Egalement confirmé dans l'export ABox
+RDF (ligne ~8802) : `{"order_fulfillment_lead_time","core:LeadTime",...,orderFulfillmentLeadTimeGlobal(),"s"}`.
+
+**3. Usages existants dans le master** : deux cartes dashboard *déjà en place avant ce
+bloc* convertissent déjà `avgLeadTime()` en minutes par `/ 60.0` :
+- carte "Avg Lead Time" (TextCode ligne ~30323) :
+  `String.format("%.1f", board.kpiGlobal.avgLeadTime() / 60.0)` ;
+- carte "Order Lead Time", fonction `orderLeadTimeText()` (ligne ~15330-15347), qui
+  calcule **quatre** valeurs (MTS, MTO, Global, ZENER), toutes divisées par 60 et
+  suffixées `" min"` dans la chaîne retournée : `glob = board.kpiGlobal.avgLeadTime() / 60.0`
+  en est très exactement la composante "Global".
+
+**4. Valeurs de run documentées** (`reference/colleague/docs/DOCUMENTATION_SCENARIOS_VALIDATION.md`,
+scénario 0) : "Lead time global | 18364,97 s" (brut, secondes) coexistant avec
+"Délai de livraison (Order Lead Time) | MTS=329,0 min ; Global=329,0 min" pour le même
+type de métrique dans le même document — cohérent avec une métrique nativement en
+secondes, affichée en minutes après conversion explicite.
+
+**5. Conclusion explicite : SECONDES.** `board.kpiGlobal.avgLeadTime()` retourne des
+secondes ; toute conversion en minutes doit diviser par 60. C'est exactement ce que
+font les deux colonnes de l'historique Dashboard.
+
+**6. Vérification des deux colonnes de l'historique Dashboard** :
+
+| Colonne | Expression | Conversion | Libellé | Verdict |
+|---|---|---|---|---|
+| "Avg Lead Time (min)" | `fmt1(board.kpiGlobal.avgLeadTime() / 60.0)` | `/ 60.0` (s → min) | "(min)" | Correct, cohérent avec la carte dashboard "Avg Lead Time" existante |
+| "Order Lead Time (min)" | `fmt1(board.kpiGlobal.avgLeadTime() / 60.0)` | `/ 60.0` (s → min) | "(min)" | Correct — équivaut exactement à la composante "Global" de la carte "Order Lead Time" (`orderLeadTimeText()`) existante |
+
+**Aucune incohérence d'unité.** Les deux colonnes portent la même conversion et le même
+libellé d'unité ; **aucun commit fonctionnel supplémentaire n'est requis**. La seule
+observation (déjà notée au moment du portage A.4, sans lien avec les unités) est que
+les deux colonnes portent la **même valeur** — un doublon volontaire hérité du design
+original du collègue (déjà présent tel quel dans son propre fichier, reproduit à
+l'identique lors du portage), qui correspond désormais précisément à la composante
+"Global" (par opposition à MTS/MTO/ZENER) de la carte enrichie `orderLeadTimeText()`
+du master. Ce n'est pas un défaut d'unité et n'appelle aucune correction dans le
+périmètre de cette vérification.
+
+### Validation utilisateur A.4 (2026-09-16)
+
+- **Build AnyLogic** : OK, 0 erreur.
+- **Run ZENER court** : OK.
+- **Feuille "Historique Dashboard"** : présente.
+- **26 colonnes** : confirmées.
+- **Plusieurs snapshots temporels** : confirmés (plusieurs lignes capturées au fil du run).
+- **`detailStockMatiereParMatiere()`** : correctement exporté (colonne détail par matière).
+- **Feuilles historiques existantes** : inchangées.
+- **Aucune exception**.
+- **Vérification unités Lead Time** : effectuée ci-dessus, aucune incohérence trouvée.
+
+**Bloc A.4 définitivement validé.**
 
 ## Bloc M — Fondation multi-produit Generic (2026-09-16, PLANIFIÉ — NON COMMENCÉ)
 

@@ -109,7 +109,7 @@ diagnostic commandes bloquées) ; absent du master — Bloc A/C.
 - [x] Matching strict flux/commande — **PORTÉ** (2026-09-16, commit `bf0e490`, Build/run utilisateur OK)
 - [x] Diagnostic commandes bloquées — **PORTÉ** (2026-09-16, commit `0363b6b`, Build/run nominal utilisateur OK ; test fonctionnel forcé [DIAG-BLOQUEE] À TESTER ULTÉRIEUREMENT)
 - [x] Stock matière détaillé — **PORTÉ** (2026-09-16, commit `d52d431`, Build AnyLogic utilisateur OK ; validation fonctionnelle différée au Bloc A.4, où la fonction sera consommée pour la première fois)
-- [ ] Historique Dashboard / Excel
+- [x] Historique Dashboard / Excel — **PORTÉ** (2026-09-16, commit voir Journal A.4 ci-dessous, Build/run utilisateur EN ATTENTE)
 - [ ] États holoniques cohérents
 - [ ] Build AnyLogic utilisateur
 - [ ] Run court générique utilisateur
@@ -399,8 +399,159 @@ non suivis, non supprimés du disque — possible copie faite par AnyLogic, pas 
 perturbation du modèle local de l'utilisateur), ainsi que `control-system.png`,
 `industrial-revolution.png`, `packages.png` (DUPLICATE non référencés, mêmes égards).
 
-**Commit administratif** : voir SHA en tête de la prochaine section (message
-`chore(anylogic): track model runtime resources`).
+**Commit administratif** : `bf9bea4` (message `chore(anylogic): track model runtime resources`).
+
+### Journal — Bloc A.4 : historique Dashboard / export Excel (2026-09-16)
+
+**Analyse préalable (collègue)** :
+- `historiqueDashboard` : `ArrayList<Object[]>` sur `Main`, un point par appel de
+  `capturerPointHistoriqueDashboard()`, vidé à chaque `demarrerSimulation()`.
+- `capturerPointHistoriqueDashboard()` : capture 28 valeurs par point (KPI dashboard +
+  SCOR + PI), purement lecture, écrit uniquement dans `historiqueDashboard`.
+- `historiqueDashboardColumns()`/`historiqueDashboardRows()` : en-têtes + lignes pour
+  `ecrireFeuilleExcel()`, avec repli à 1 cellule si l'historique est vide.
+- `compteurCyclesExportExcel` : **découple** la capture (chaque cycle
+  `champIntervalleExportExcel`, léger) de l'écriture physique du classeur complet
+  (~25 feuilles, lourde et synchrone), reportée toutes les ~300 s simulées via
+  `cyclesParEcriture = round(300 / champIntervalleExportExcel)`. Optimisation de
+  performance documentée par le collègue (`C15.16`) — **distincte** de l'ajout de
+  l'historique lui-même.
+- Événement concerné : `ExcelExportManager` (cyclique, période
+  `champIntervalleExportExcel`, condition `modeExecution && exportExcelActif &&
+  !c14SnapshotFinalEffectue`). Chez le collègue, son `Action` appelle
+  `capturerPointHistoriqueDashboard()` puis, seulement tous les `cyclesParEcriture`
+  cycles, `exporterToutesLesTablesExcel()`.
+- `exporterToutesLesTablesExcel()` : diff complet avec le master — **une seule ligne
+  diffère** entre les deux versions (confirmé par diff textuel des deux corps de
+  fonction) : le master appelle `ecrireFeuilleExcel(..., "Manifeste Run", ...)` à cet
+  endroit (feuille propre au master, absente chez le collègue), le collègue y appelle
+  l'équivalent Historique Dashboard. Tout le reste de la fonction (dont le mécanisme
+  d'écriture atomique par fichier temporaire) est déjà identique.
+- Nom de feuille Excel : `"Historique Dashboard"` (dernière feuille écrite avant la
+  finalisation du classeur, chez le collègue comme dans le master après portage).
+- Fréquence de capture : un point par cycle de `champIntervalleExportExcel` (30 s par
+  défaut), plus une capture initiale à `t=0` dans `demarrerSimulation()`.
+- `detailStockMatiereParMatiere()` : déjà portée au Bloc A.3, consommée ici pour la
+  première fois (colonne 18).
+
+**Tableau d'analyse colonne par colonne** (26 colonnes retenues sur 28 chez le
+collègue — 2 reportées, voir plus bas) :
+
+| # | Colonne collègue | Source / fonction | Présente dans master ? | Sémantique identique ? | Décision |
+|---|---|---|---|---|---|
+| 1 | Temps simulation (s) | `time()` | Oui (natif AnyLogic) | Oui | PORTER |
+| 2 | Order Throughput (ent/h) | `nbTermines` | Oui | Oui | PORTER |
+| 3 | Avg Lead Time (min) | `board.kpiGlobal.avgLeadTime()` | Oui | Oui | PORTER |
+| 4 | Work In Process (Products) | `wipReelSansJetonsVisuels()` | Oui, corps identique (vérifié) | Oui | PORTER |
+| 5 | Finished Stock (Products) | boucle `postes`/`estPosteStockFini()` | Oui, `estPosteStockFini()` identique | Oui | PORTER |
+| 6 | PCE (%) | `board.kpiZener`/`kpiGlobal.pce()` | Oui | Oui | PORTER |
+| 7 | Waiting Time (s) | `tempsAttenteGlobalCoherent()` | Oui, **corps différent** (master : `orderWaitingTimeGlobal()`, commentaire "VSM-FIX-05 — wrapper de compatibilité, aucune reconstruction par PCE") | Non — le master a sa propre correction, plus récente | **ADAPTER** : appeler la fonction du master telle quelle, ne pas écraser par la version collègue |
+| 8 | Order Mode - MTS (nb) | `board.nbMTS` | Oui | Oui | PORTER |
+| 9 | Order Mode - MTO (nb) | `board.nbMTO` | Oui | Oui | PORTER |
+| 10 | Delayed Orders (nb) | `commandesRetardeesCount()` | Oui, **corps différent** (collègue ajoute `\|\| c.retardConstate`, champ Bloc C absent du master) | Non | **ADAPTER** : appeler la fonction du master telle quelle (EN_RETARD + client uniquement) |
+| 11 | Taux de conformité qualité (%) | `tauxRemplissagePct()` | Oui, `<Function>` identique | Oui | PORTER |
+| 12 | Scrap Rate (%) | `tauxRebutPct()` | Oui, identique | Oui | PORTER |
+| 13 | Rework Rate (%) | `tauxReprisePct()` | Oui, identique | Oui | PORTER |
+| 14 | Takt Time (s) | `calculerTaktTimeSec()` | Oui, identique | Oui | PORTER |
+| 15 | Production Throughput (ent/h) | `throughputMakeAffiche()` | Oui, identique | Oui | PORTER |
+| 16 | Order Lead Time (min) | `board.kpiGlobal.avgLeadTime() / 60.0` | Oui (doublon volontaire de la colonne 3 déjà présent chez le collègue) | Oui | PORTER (doublon conservé tel quel, non corrigé — décision de design du collègue, pas de notre ressort dans un portage à l'identique) |
+| 17 | Raw Material Stock (unités) | boucle locale sur `fichesMatiere` | Le master a une fonction équivalente déjà existante `stockMatiereDisponibleTotal()` (utilisée par `valeurRuntimeMetriqueSCOR()` pour AM.3.16/AM.2.8) | Oui (même somme), avec clamp `Math.max(0, ...)` côté master | **ADAPTER** : appeler `stockMatiereDisponibleTotal()` du master plutôt que dupliquer une boucle équivalente |
+| 18 | Raw Material Stock — détail par matière | `detailStockMatiereParMatiere()` | Oui — portée au Bloc A.3 | Oui | PORTER |
+| 19 | Supplier Lead Time (h) | `delaiFournisseurMoyenHeures()` | Oui, identique | Oui | PORTER |
+| 20-24 | SCOR RL/RS/AG/CO/AM | `strategic.scoreRL/RS/AG/CO/AM` | Oui (champs présents, alimentés par le `calculerPIGlobal()` **actuel** du master) | Champs identiques, calcul différent (Bloc B) | PORTER **en l'état** : valeurs actuelles du master, sans anticiper la refonte PI/SCOR |
+| 25 | PI (indice de performance courant) | `strategic.piGlobalCourant` | Oui | Idem | PORTER en l'état |
+| 26 | PI cible | `strategic.ciblePIGlobal` | Oui | Idem | PORTER en l'état |
+| 27 | Attributs pondérés dans le PI | `strategic.attributsPonderesPI` | **Non** — champ absent du master | — | **REPORTER** (Bloc B) |
+| 28 | Somme des poids effectifs | `strategic.sommePoidsEffectifsPI` | **Non** — champ absent du master | — | **REPORTER** (Bloc B) |
+
+**Décision sur les colonnes reportées** : les colonnes 27/28 ne sont pas ajoutées avec
+une valeur factice (ex. `"N/A"`) — elles sont simplement absentes de la feuille pour
+l'instant, pour ne pas laisser croire à une traçabilité de périmètre PI qui n'existe
+pas encore dans ce master. La feuille "Historique Dashboard" du master compte donc
+**26 colonnes** (au lieu de 28 chez le collègue). Elles seront ajoutées au Bloc B en
+même temps que les champs `attributsPonderesPI`/`sommePoidsEffectifsPI`.
+
+**`compteurCyclesExportExcel` (mécanisme de throttling d'écriture)** : **non porté**.
+Décision : c'est une optimisation de performance indépendante de l'ajout de
+l'historique (le collègue les a livrées ensemble, mais elles n'ont pas de dépendance
+fonctionnelle l'une envers l'autre — la capture peut très bien être appelée à chaque
+cycle sans changer la cadence d'écriture du fichier). La porter maintenant aurait
+changé un comportement existant du master (fréquence de réécriture du classeur pour
+les ~25 feuilles déjà en place), ce qui dépasse le périmètre "ajouter un historique
+Dashboard" de ce bloc. Peut être proposée séparément si des runs longs révèlent un
+problème de performance à l'écriture Excel.
+
+**Fichier modifié** : `model/SCONTO_SVU_GENERIC_MASTER.alp`.
+
+**Fonctions/variables/appels touchés** :
+- ajout `public java.util.ArrayList<Object[]> historiqueDashboard` (champ `Main`, à
+  côté de `historiqueFluxInformationnels`) ;
+- ajout `void capturerPointHistoriqueDashboard()`, `String[] historiqueDashboardColumns()`,
+  `Object[][] historiqueDashboardRows()` (juste après `detailStockMatiereParMatiere()`) ;
+- `demarrerSimulation()` : ajout de `historiqueDashboard.clear();` (juste après
+  `reinitialiserHistoriqueFluxInformationnels();`) et d'une capture initiale
+  `try { capturerPointHistoriqueDashboard(); } catch (Throwable ignoredHistoriqueDashboard) {}`
+  (juste après `actualiserTempsSimulation();`) ;
+- `exporterToutesLesTablesExcel()` : ajout d'une ligne
+  `ecrireFeuilleExcel(wb, styleEntete, styleNormal, "Historique Dashboard", historiqueDashboardColumns(), historiqueDashboardRows());`
+  juste après la feuille "Manifeste Run" (déjà propre au master, conservée) ;
+- événement `ExcelExportManager` : ajout de l'appel `capturerPointHistoriqueDashboard();`
+  juste avant l'appel existant à `exporterToutesLesTablesExcel();`.
+
+**Ce qui a été porté** : le mécanisme complet d'historique temporel (champ, capture,
+colonnes, lignes, feuille Excel, reset par run, capture initiale + périodique), pour
+26 des 28 colonnes du collègue.
+
+**Ce qui a été adapté** :
+- colonne 7 (Waiting Time) → fonction déjà corrigée du master (`tempsAttenteGlobalCoherent()`,
+  "VSM-FIX-05"), pas la reconstruction PCE du collègue ;
+- colonne 10 (Delayed Orders) → fonction déjà présente du master (EN_RETARD + client),
+  sans le `retardConstate` du Bloc C ;
+- colonne 17 (Raw Material Stock agrégat) → réutilisation de `stockMatiereDisponibleTotal()`
+  déjà existante dans le master, au lieu de dupliquer une boucle équivalente.
+
+**Ce qui n'a pas été porté (et pourquoi)** :
+- colonnes 27/28 (traçabilité du périmètre PI) → champs `attributsPonderesPI`/
+  `sommePoidsEffectifsPI` absents du master, Bloc B ;
+- `compteurCyclesExportExcel` (throttling d'écriture Excel) → optimisation de
+  performance distincte, changerait un comportement existant du master, hors
+  périmètre de "ajouter un historique Dashboard" ;
+- `evaluerRetardsCommandesOuvertes()`/`retardConstate` (déjà exclus depuis A.2) →
+  toujours Bloc C.
+
+**Validations statiques** :
+- XML bien formé : OK.
+- IDs AnyLogic : 1677/1677 uniques, inchangé (nouvelles méthodes Java libres
+  uniquement, aucun élément `<Function>`/`<Variable>` AnyLogic ajouté, `historiqueDashboard`
+  est un champ Java libre comme `historiqueFluxInformationnels`).
+- `git diff --check` : aucune erreur d'espace blanc.
+- `git diff --stat` : 136 insertions, 3 suppressions (les 3 suppressions correspondent
+  à la mise à jour du commentaire, devenu obsolète, au-dessus de
+  `detailStockMatiereParMatiere()` — plus aucune trace de "pas encore appelée depuis
+  un export").
+- Grep DataCo : 0 occurrence.
+- Nombre de colonnes == nombre de valeurs par ligne : vérifié programmatiquement,
+  **26 == 26**, dans le même ordre.
+- `capturerPointHistoriqueDashboard()` : vérifié qu'elle n'écrit que dans
+  `historiqueDashboard` (variables locales `rl/rs/ag/co/am/pi/piCible/stockFini` mises
+  à part) — aucune écriture sur `commandes`, `postes`, `strategic`, `board`, aucun
+  appel à une fonction de mutation (uniquement des lectures/fonctions déjà utilisées
+  ailleurs comme sources d'affichage/export en lecture seule).
+- Échappement Excel/chaînes : `ecrireFeuilleExcel()` (inchangée) gère déjà la
+  distinction numérique/texte cellule par cellule (`estCelluleNumerique()`) — la seule
+  chaîne libre introduite est `detailStockMatiereParMatiere()`
+  (`"idMatiere=valeur\|idMatiere=valeur"`), déjà validée au Bloc A.3, sans caractère
+  spécial Excel (`=`, `\|` ne déclenchent pas d'interprétation de formule car la
+  cellule est écrite via `setCellValue(String)`, pas en tant que formule).
+- `ecrireFeuilleExcel()` : vérifié qu'elle itère sur
+  `min(ligne.length, colonnes.length)` — confirme qu'un repli à 1 cellule (historique
+  vide) ne provoque aucun crash face à un en-tête de 26 colonnes.
+- **Build AnyLogic** : EN ATTENTE (utilisateur).
+- **Run** : EN ATTENTE (utilisateur). Protocole suggéré : lancer un run court avec
+  export Excel actif, ouvrir le classeur généré, vérifier la feuille "Historique
+  Dashboard" (26 colonnes, ≥1 ligne après le premier cycle `champIntervalleExportExcel`),
+  confirmer que les 25 autres feuilles existantes sont inchangées.
+- **Commit** : voir SHA ci-dessous (message `feat(generic): add dashboard history export`).
 
 ## Bloc M — Fondation multi-produit Generic (2026-09-16, PLANIFIÉ — NON COMMENCÉ)
 

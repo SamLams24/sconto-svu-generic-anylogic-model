@@ -22,6 +22,12 @@
 public java.util.ArrayList<String> historiqueFluxInformationnels = new java.util.ArrayList<String>();
 public int nombreFluxInformationnelsVisibles = 5;
 
+// Bloc A.4 -- historique des points de dashboard (KPI + SCOR + PI) captes au fil
+// du run courant, pour permettre de retracer dans Excel les courbes/diagrammes du
+// tableau de bord (voir capturerPointHistoriqueDashboard()). Vide a chaque
+// demarrerSimulation() afin que l'export ne contienne que le run en cours.
+public java.util.ArrayList<Object[]> historiqueDashboard = new java.util.ArrayList<Object[]>();
+
 // File FIFO de visualisation des communications.
 // Les communications métier restent distribuées immédiatement, mais leur
 // affichage et leur animation sont cadencés afin de respecter l'ordre
@@ -6982,9 +6988,9 @@ String niveauStockMatiereText() {
 // "idMatiere=valeur|idMatiere=valeur|...". Separateur '|' choisi pour ne pas
 // entrer en collision avec le ';' du format CSV francais utilise en aval.
 // Portage generique du correctif collegue (reference/colleague,
-// detailStockMatiereParMatiere) ; fonction autonome, pas encore appelee depuis
-// un export -- son branchement dans l'historique Dashboard/Excel releve du
-// bloc A.4, non traite ici.
+// detailStockMatiereParMatiere). Consommee depuis le Bloc A.4 par
+// capturerPointHistoriqueDashboard() ci-dessous (colonne "Raw Material Stock --
+// detail par matiere" de la feuille Excel "Historique Dashboard").
 String detailStockMatiereParMatiere() {
     if (fichesMatiere == null || fichesMatiere.isEmpty()) return "";
     StringBuilder sb = new StringBuilder();
@@ -6994,6 +7000,120 @@ String detailStockMatiereParMatiere() {
         sb.append(f.idMatiere).append("=").append(String.format(java.util.Locale.US, "%.2f", f.stockDisponible));
     }
     return sb.toString();
+}
+
+// Bloc A.4 -- historique temporel du Dashboard (KPI + SCOR + PI), pour permettre
+// de retracer dans Excel les courbes/diagrammes du tableau de bord au lieu d'un
+// simple instantane final. Capture un point PAR APPEL (voir call sites : t=0 dans
+// demarrerSimulation(), puis un point par cycle de l'evenement ExcelExportManager,
+// cadence = champIntervalleExportExcel, explicite et inchangee). Purement
+// observateur : ne lit que des champs/fonctions existants et n'ecrit que dans
+// historiqueDashboard -- aucun impact sur commande/stock/routage/production/PI/
+// strategie. Portage generique du correctif collegue (reference/colleague,
+// capturerPointHistoriqueDashboard), avec 3 adaptations documentees :
+//  - "Waiting Time (s)" utilise ici tempsAttenteGlobalCoherent() DU MASTER
+//    (deja corrige, commentaire "VSM-FIX-05"), pas la version collegue qui
+//    reconstruit differemment a partir de kpiZener/kpiGlobal.pce() ;
+//  - "Delayed Orders (nb)" utilise ici commandesRetardeesCount() DU MASTER
+//    (EN_RETARD + client uniquement) ; la version collegue compte aussi
+//    cmd.retardConstate, champ du mecanisme de retard continu du Bloc C, absent
+//    de ce master -- non introduit ici ;
+//  - "Raw Material Stock (unites)" appelle stockMatiereDisponibleTotal(), deja
+//    present dans le master (utilise par valeurRuntimeMetriqueSCOR() pour
+//    AM.3.16/AM.2.8), plutot que de recalculer une seconde boucle equivalente.
+// Les 2 colonnes de tracabilite du perimetre PI du collegue ("Attributs ponderes
+// dans le PI", "Somme des poids effectifs") ne sont PAS portees : elles dependent
+// de strategic.attributsPonderesPI/sommePoidsEffectifsPI, absents de ce master
+// (Bloc B, non traite ici) -- RL/RS/AG/CO/AM/PI/PI cible utilisent les valeurs
+// courantes de calculerPIGlobal() du master tel qu'il existe aujourd'hui, sans
+// anticiper sa refonte.
+void capturerPointHistoriqueDashboard() {
+    double rl = 0, rs = 0, ag = 0, co = 0, am = 0, pi = 0, piCible = 0;
+    if (strategic != null) {
+        rl = (Double.isNaN(strategic.scoreRL) || Double.isInfinite(strategic.scoreRL)) ? 0.0 : strategic.scoreRL;
+        rs = (Double.isNaN(strategic.scoreRS) || Double.isInfinite(strategic.scoreRS)) ? 0.0 : strategic.scoreRS;
+        ag = (Double.isNaN(strategic.scoreAG) || Double.isInfinite(strategic.scoreAG)) ? 0.0 : strategic.scoreAG;
+        co = (Double.isNaN(strategic.scoreCO) || Double.isInfinite(strategic.scoreCO)) ? 0.0 : strategic.scoreCO;
+        am = (Double.isNaN(strategic.scoreAM) || Double.isInfinite(strategic.scoreAM)) ? 0.0 : strategic.scoreAM;
+        pi = (Double.isNaN(strategic.piGlobalCourant) || Double.isInfinite(strategic.piGlobalCourant)) ? 0.0 : strategic.piGlobalCourant;
+        piCible = (Double.isNaN(strategic.ciblePIGlobal) || Double.isInfinite(strategic.ciblePIGlobal)) ? 0.0 : strategic.ciblePIGlobal;
+    }
+
+    double stockFini = 0;
+    for (PosteGenericAgent p : postes) {
+        if (p != null && estPosteStockFini(p)) stockFini += p.niveauStock;
+    }
+
+    historiqueDashboard.add(new Object[] {
+        fmt1(time()),
+        fmt1(time() > 0 ? nbTermines * 3600.0 / time() : 0.0),
+        fmt1(board.kpiGlobal.avgLeadTime() / 60.0),
+        wipReelSansJetonsVisuels(),
+        (int) stockFini,
+        fmt1((board.kpiZener != null ? board.kpiZener : board.kpiGlobal).pce() * 100),
+        fmt1(tempsAttenteGlobalCoherent()),
+        board.nbMTS,
+        board.nbMTO,
+        commandesRetardeesCount(),
+        fmt1(tauxRemplissagePct()),
+        fmt1(tauxRebutPct()),
+        fmt1(tauxReprisePct()),
+        fmt1(calculerTaktTimeSec()),
+        fmt1(throughputMakeAffiche()),
+        fmt1(board.kpiGlobal.avgLeadTime() / 60.0),
+        fmt1(stockMatiereDisponibleTotal()),
+        detailStockMatiereParMatiere(),
+        fmt1(delaiFournisseurMoyenHeures()),
+        fmt3(rl), fmt3(rs), fmt3(ag), fmt3(co), fmt3(am),
+        fmt3(pi), fmt3(piCible)
+    });
+}
+
+// Bloc A.4 -- en-tetes de la feuille Excel "Historique Dashboard", dans le meme
+// ordre que capturerPointHistoriqueDashboard() ci-dessus (26 colonnes = 26 valeurs
+// par ligne). Volontairement sans les 2 colonnes de tracabilite PI du collegue
+// (cf. commentaire de capturerPointHistoriqueDashboard()).
+String[] historiqueDashboardColumns() {
+    return new String[] {
+        "Temps simulation (s)",
+        "Order Throughput (ent/h)",
+        "Avg Lead Time (min)",
+        "Work In Process (Products)",
+        "Finished Stock (Products)",
+        "PCE (%)",
+        "Waiting Time (s)",
+        "Order Mode - MTS (nb)",
+        "Order Mode - MTO (nb)",
+        "Delayed Orders (nb)",
+        "Taux de conformité qualité (%)",
+        "Scrap Rate (%)",
+        "Rework Rate (%)",
+        "Takt Time (s)",
+        "Production Throughput (ent/h)",
+        "Order Lead Time (min)",
+        "Raw Material Stock (unites)",
+        "Raw Material Stock — détail par matière",
+        "Supplier Lead Time (h)",
+        "SCOR RL (Reliability)",
+        "SCOR RS (Responsiveness)",
+        "SCOR AG (Agility)",
+        "SCOR CO (Cost)",
+        "SCOR AM (Asset Management)",
+        "PI (indice de performance courant)",
+        "PI cible"
+    };
+}
+
+// Bloc A.4 -- lignes de la feuille "Historique Dashboard". Repli explicite a une
+// seule cellule si aucun point n'a encore ete capture (run non demarre, ou pas
+// encore de cycle d'export ecoule) : ecrireFeuilleExcel() n'ecrit que
+// min(ligne.length, colonnes.length) cellules par ligne, donc aucun crash meme
+// avec une ligne plus courte que l'entete.
+Object[][] historiqueDashboardRows() {
+    if (historiqueDashboard.isEmpty()) {
+        return new Object[][] { new Object[] { "Aucun point capte pour ce run (simulation non demarree ou aucun cycle d'export ecoule)" } };
+    }
+    return historiqueDashboard.toArray(new Object[historiqueDashboard.size()][]);
 }
 
 // 6. Delai fournisseur NOMINAL moyen configure dans les fiches matiere.
@@ -10810,6 +10930,12 @@ rafraichirComboPosteConsomme();]]></Action>
 // par defaut : 30 s, ajustable via champIntervalleExportExcel.
 // Se desactive tout seul si exportExcelActif = false ou hors simulation.
 if (!modeExecution || !exportExcelActif || c14SnapshotFinalEffectue) return;
+// Bloc A.4 -- un point d'historique Dashboard par cycle, a la meme cadence que
+// l'export Excel lui-meme (champIntervalleExportExcel) : aucune duplication de
+// point temporel, aucun decouplage capture/ecriture (le mecanisme collegue de
+// throttling de l'ecriture via compteurCyclesExportExcel n'est pas porte ici --
+// optimisation de performance distincte, hors perimetre du Bloc A.4).
+capturerPointHistoriqueDashboard();
 exporterToutesLesTablesExcel();]]></Action>
 				</Event>
 				<Event>
@@ -11475,6 +11601,9 @@ appliquerStocksInitiauxConfig();
 creerStationsAnimation();
 fluxInfoInitialDejaDeclenche = false;
 reinitialiserHistoriqueFluxInformationnels();
+// Bloc A.4 -- l'historique Dashboard appartient au run courant : reparti a vide a
+// chaque demarrerSimulation() pour que l'export Excel ne melange jamais deux runs.
+historiqueDashboard.clear();
 
 // Initialiser les agents tactiques
 while (tacticals.size() > 0) {
@@ -11499,6 +11628,9 @@ tempsDebutSimulation = time();
 simStartRealMillis = 0L;
 initialiserHorlogeSimulation();
 actualiserTempsSimulation();
+// Bloc A.4 -- capture initiale a t=0, pour que la premiere ligne de l'historique
+// corresponde au vrai debut du run plutot qu'au premier cycle d'ExcelExportManager.
+try { capturerPointHistoriqueDashboard(); } catch (Throwable ignoredHistoriqueDashboard) {}
 
 ajouterSuiviDetaille(
     "Parametrage temps/budget",
@@ -20871,6 +21003,7 @@ try {
     ecrireFeuilleExcel(wb, styleEntete, styleNormal, "Dashboard Macro", dashboardMacroColumns(), dashboardMacroRows());
     ecrireFeuilleExcel(wb, styleEntete, styleNormal, "Dashboard Global", dashboardGlobalColumns(), dashboardGlobalRows());
     ecrireFeuilleExcel(wb, styleEntete, styleNormal, "Manifeste Run", manifesteRunColumns(), manifesteRunRows());
+    ecrireFeuilleExcel(wb, styleEntete, styleNormal, "Historique Dashboard", historiqueDashboardColumns(), historiqueDashboardRows());
     ecrireFeuilleExcel(wb, styleEntete, styleNormal, "Pipeline SCOR vers PI", n3ToN1Columns(), n3ToN1Rows());
     ecrireFeuilleExcel(wb, styleEntete, styleNormal, "Traçabilité performance", piTraceabilityColumns(), piTraceabilityRows());
     ecrireFeuilleExcel(wb, styleEntete, styleNormal, "Couverture métriques SCOR", piCoverageColumns(), piCoverageRows());

@@ -1736,8 +1736,19 @@ demandé explicitement par ce bloc.
   disponible (2 `ScenarioFlux` A/B intentionnels, `modeMultiProduitActif=true`),
   vérifier les tests M2-1 à M2-10 listés par l'utilisateur (non exécutables sans
   AnyLogic depuis cet environnement).
-- **Commit** : voir SHA ci-dessous (message
-  `feat(generic): wire per-product stock consumption and credit`).
+- **Commit** : `5a46764` (message `feat(generic): wire per-product stock consumption and credit`).
+
+### Validation utilisateur — M.2 legacy (2026-09-17)
+
+- **Build AnyLogic** : **VALIDÉ** (0 erreur).
+- **Run ZENER legacy** : **VALIDÉ** — `modeMultiProduitActif` absent/false ;
+  commandes, Source, Plan, Make, Deliver, stock PF, états holoniques, exports :
+  tous OK ; aucune exception observée.
+- **M2-1 (legacy mono-produit)** : **VALIDÉ**.
+
+**M.2 n'est PAS considéré entièrement validé** : le chemin multi-produit
+(`modeMultiProduitActif=true`) n'a pas encore été testé en conditions réelles —
+c'est l'objet du sous-bloc M.2-TEST ci-dessous.
 
 **PR reste DRAFT. Aucun merge vers `main`.**
 

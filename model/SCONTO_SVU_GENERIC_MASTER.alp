@@ -6987,13 +6987,40 @@ void consommerStockFiniProduit(ScenarioFlux sc, int qte, PosteGenericAgent fallb
     double avant = stockFiniParProduit.containsKey(cle) ? stockFiniParProduit.get(cle) : 0.0;
     stockFiniParProduit.put(cle, Math.max(0.0, avant - Math.max(1, qte)));
 
-    // Bloc M.1 -- mise a jour (2026-09-17) : la base d'initialisation N'EST PLUS
-    // dupliquee (voir initialiserStocksProduits()/stockInitialConfigurePourProduit(),
-    // corrige au Bloc M.1) et synchroniserStockFiniAgrege() existe desormais pour
-    // resynchroniser niveauStock depuis stockFiniParProduit. Elle n'est PAS encore
-    // appelee ICI : le reste de la logique de consommation/credit par produit
-    // (incluant cet appel) est traite dans le sous-bloc M suivant, pas au M.1
-    // (perimetre volontairement limite a la source de verite + l'initialisation).
+    // Bloc M.2 -- resynchronise niveauStock (agregat de compatibilite) depuis
+    // stockFiniParProduit (source de verite) juste apres la consommation. La
+    // fonction elle-meme est un no-op tant que modeMultiProduitActif=false ; ici
+    // on est deja dans la branche multi-produit, donc l'appel est actif.
+    synchroniserStockFiniAgrege(fallback);
+}
+
+// Bloc M.2 -- credit de production par produit : le pendant de
+// consommerStockFiniProduit() pour la reception au magasin produits finis.
+// Portage de la reference technique DataCo (reference/dataco-multiproduct),
+// avec UNE ADAPTATION explicite par rapport a cette reference : DataCo replie
+// une identite vide/nulle sur nomProduitParDefaut ; ici, une identite vide,
+// nulle ou non catalogee N'EST JAMAIS repliee sur un produit par defaut --
+// seulement un WARN explicite, aucun transfert silencieux vers une autre
+// reference (politique explicitement demandee pour ce bloc). Une cle
+// correspondant a un produit reellement catalogue mais absente de
+// stockFiniParProduit est initialisee proprement a 0 avant credit (via
+// containsKey ci-dessous), jamais traitee comme une erreur.
+void crediterStockFiniProduit(String typeProduit, double qte, PosteGenericAgent fallback) {
+    double delta = Math.max(0.0, qte);
+    if (delta <= 0.0) return;
+    if (!modeMultiProduitActif) {
+        if (fallback != null) fallback.niveauStock = Math.max(0.0, fallback.niveauStock) + delta;
+        return;
+    }
+    synchroniserListeProduits();
+    String cle = cleProduit(typeProduit);
+    if (cle.isEmpty() || !catalogueProduits.containsKey(cle)) {
+        if (board != null) board.logEvent("[MULTI-PRODUIT][WARN] credit stock ignore : produit inconnu='" + typeProduit + "'.");
+        return;
+    }
+    double avant = stockFiniParProduit.containsKey(cle) ? Math.max(0.0, stockFiniParProduit.get(cle)) : 0.0;
+    stockFiniParProduit.put(cle, avant + delta);
+    synchroniserStockFiniAgrege(fallback);
 }
 
 int nombreProduitsRuntimeUniques() {
@@ -7180,10 +7207,10 @@ void capturerPointHistoriqueDashboard() {
         piCible = (Double.isNaN(strategic.ciblePIGlobal) || Double.isInfinite(strategic.ciblePIGlobal)) ? 0.0 : strategic.ciblePIGlobal;
     }
 
-    double stockFini = 0;
-    for (PosteGenericAgent p : postes) {
-        if (p != null && estPosteStockFini(p)) stockFini += p.niveauStock;
-    }
+    // Bloc M.2 -- deleguee a stockProduitFiniDisponibleTotal() (deja corrigee pour
+    // ne jamais additionner N fois le meme total en mode multi-produit, voir
+    // son commentaire) plutot que de dupliquer ici la meme boucle sur les postes.
+    double stockFini = stockProduitFiniDisponibleTotal();
 
     historiqueDashboard.add(new Object[] {
         fmt1(time()),
@@ -20025,7 +20052,17 @@ return total;]]></Body>
 					<PublicFlag>false</PublicFlag>
 					<PresentationFlag>true</PresentationFlag>
 					<ShowLabel>true</ShowLabel>
-					<Body><![CDATA[double total = 0;
+					<Body><![CDATA[// Bloc M.2 -- en mode multi-produit, la somme des postes physiques n'est PLUS la
+// source de verite (voir audit M.1-FIX : synchroniserStockFiniAgrege() ecrit le
+// meme total dans chaque poste matchant estPosteStockFini(), ce que cette
+// fonction additionnerait alors N fois si plus d'un poste existait). On lit
+// directement stockFiniParProduit (deja tenu a jour par consommerStockFiniProduit()/
+// crediterStockFiniProduit()), qui reste correct quel que soit le nombre de
+// postes physiques. Aucun scenario fourni n'a aujourd'hui plus d'un poste
+// stock-fini (verifie), donc aucune regression sur le calcul legacy mono-produit,
+// conserve ci-dessous a l'identique.
+if (modeMultiProduitActif) return sommeStockFiniParProduit();
+double total = 0;
 try {
     for (PosteGenericAgent p : postes) {
         if (p != null && estPosteStockFini(p)) total += Math.max(0, p.niveauStock);
@@ -30648,7 +30685,7 @@ Index (PI)]]></Text>
 					<Rotation>0.0</Rotation>
 					<Color>-16777216</Color>
 					<Text><![CDATA[0]]></Text>
-					<TextCode><![CDATA[(int) postes.stream().filter(p -> estPosteStockFini(p)).mapToDouble(p -> p.niveauStock).sum()]]></TextCode>
+					<TextCode><![CDATA[(int) stockProduitFiniDisponibleTotal()]]></TextCode>
 					<Font>
 						<Name>SansSerif</Name>
 						<Size>14</Size>
@@ -45026,7 +45063,40 @@ if (regleAiguillage != null && !main.estFluxVisuelSeulement(agent)) {
 boolean estStockPhysique = typePoste == TypePoste.STOCKAGE
     || (codeSCOR != null && codeSCOR.trim().toUpperCase(java.util.Locale.ROOT).startsWith("M1.5"));
 if (estStockPhysique && !main.estFluxVisuelSeulement(agent)) {
-    niveauStock += 1;
+    // Bloc M.2 -- credit produit-conscient UNIQUEMENT pour le poste reconnu comme
+    // magasin produits finis (main.estPosteStockFini(this)) et seulement en mode
+    // multi-produit ; tout AUTRE poste de type STOCKAGE (buffers/stocks
+    // intermediaires non lies au suivi produit fini) garde EXACTEMENT le meme
+    // comportement qu'avant ce bloc (niveauStock += 1), pour ne jamais crediter
+    // deux fois la meme unite (une fois ici pour un buffer intermediaire, une
+    // seconde fois plus tard pour M1.5).
+    if (main.modeMultiProduitActif && main.estPosteStockFini(this)) {
+        // Identite produit resolue via LE MEME mecanisme deja valide au Bloc A.1
+        // (fluxAppartientACommande) : agent.idFlux = "<idCommande>_F_<n>", cree
+        // par lancerProductionCommandeOrchestree() pour toute unite MTO/REAPPRO en
+        // mode pilote par commande. On n'utilise PAS agent.typeProduit ici : ce
+        // champ sert de libelle de trace/affichage avec des conventions
+        // incompatibles selon les chemins de code (ex. "TRACE_VISUEL_SCOR" pour
+        // les jetons visuels, "LIVRAISON:"/"APPRO:" pour d'autres flux, le libelle
+        // libelleTypeProduitTrace() pour les commandes) -- pas une cle de
+        // catalogue produit fiable. cmd.idScenario, lui, est deja la cle utilisee
+        // partout ailleurs (codeProduitCommande(), verifierPolitiqueStockProduit()).
+        // Si aucune commande ne correspond (entite hors chemin pilote-par-commande,
+        // ex. flux autonome "generation 1" desactive par defaut), l'identite reste
+        // null et crediterStockFiniProduit() journalise un WARN explicite au lieu
+        // de deviner un produit -- jamais de credit silencieux a une reference
+        // par defaut, a la rotation, ou a la derniere traitee.
+        String identiteProduit = null;
+        for (CommandeAgent cmd : main.commandes) {
+            if (cmd != null && cmd.idCommande != null && main.fluxAppartientACommande(agent.idFlux, cmd.idCommande)) {
+                identiteProduit = cmd.idScenario;
+                break;
+            }
+        }
+        main.crediterStockFiniProduit(identiteProduit, 1, this);
+    } else {
+        niveauStock += 1;
+    }
 }
 
 // Consommation reelle de matiere (MRP) : un poste marque consommeMatiere=true

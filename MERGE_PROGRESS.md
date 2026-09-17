@@ -1581,6 +1581,164 @@ M.1-FIX configuration partielle = VALIDÉ ; run legacy ZENER = VALIDÉ.**
 
 **STATUT M.1 : TERMINÉ / FIGÉ.**
 
+## Bloc M.2 — consommation + crédit par produit (2026-09-17)
+
+**Objectif** : rendre opérationnel l'invariant `stockFiniParProduit` = source de
+vérité en multi-produit / `niveauStock` = agrégat de compatibilité, en connectant
+consommation, crédit de production, synchronisation agrégée et identité produit.
+**Politique/réapprovisionnement par produit non touchés (M.3+).**
+
+### Audit exhaustif des lecteurs/écrivains du stock produit fini
+
+| Fonction / ligne | Lecture ou écriture | Rôle métier | Mono actuel | Risque multi | Décision M.2 | Reporté à M.3 ? |
+|---|---|---|---|---|---|---|
+| `PosteGenericAgent` onExit, ~L45063 (`niveauStock += 1`) | **Écriture** (crédit) | Toute entité réelle (non visuelle) atteignant un poste `STOCKAGE`/`M1.5` crédite le stock physique — **seul point de crédit de production existant** | Incrémente `niveauStock` du poste, quel qu'il soit | **Élevé (avant M.2)** : aveugle au produit, créditerait la même variable pour tous produits confondus | **MODIFIÉ** : crédit produit-conscient uniquement si `modeMultiProduitActif && estPosteStockFini(this)` ; sinon comportement exact inchangé (autres postes STOCKAGE : buffers/matières, non concernés) | Non |
+| `consommerStockFiniProduit()` (`~L6980`) | **Écriture** (consommation) | Décrémente le stock lors d'une livraison MTS/directe | Décrémente `fallback.niveauStock` | Déjà isolé par produit depuis M.1, manquait la resynchro agrégat | **COMPLÉTÉ** : ajout de `synchroniserStockFiniAgrege(fallback)` en fin de branche multi | Non |
+| `crediterStockFiniProduit()` (nouvelle, `~L7000`) | **Écriture** (crédit) | Pendant générique de `consommerStockFiniProduit()` pour le crédit | N/A (nouvelle fonction) | — | **AJOUTÉE**, portée de la référence DataCo avec une adaptation explicite (voir plus bas) | Non |
+| `stockFiniDisponiblePourScenario()` (`~L6960`) | **Lecture** | Fournit le stock disponible pour la décision MTS d'un scénario donné | Lit `fallback.niveauStock` | Déjà corrigé en M.1 (isolation stricte) | Inchangé | Non |
+| `stockProduitFiniDisponibleTotal()` (`~L20055`) | **Lecture** (agrégat) | KPI SCOR `AM.3.45`/`AM.2.8`, additionne tous les postes `estPosteStockFini()` | Somme correcte tant qu'1 seul poste existe | **Démontré en M.1-FIX** : additionnerait N fois le même total si plusieurs postes stock-fini existaient | **MODIFIÉ** : `if (modeMultiProduitActif) return sommeStockFiniParProduit();` sinon calcul legacy inchangé (solution minimale demandée) | Non |
+| `capturerPointHistoriqueDashboard()` (`~L7210`, colonne "Finished Stock") | **Lecture** (agrégat) | Alimente l'historique Dashboard (Bloc A.4) | Même boucle dupliquée que `stockProduitFiniDisponibleTotal()` | Même risque latent | **MODIFIÉ** : délègue à `stockProduitFiniDisponibleTotal()` (déjà corrigée) au lieu de dupliquer la boucle | Non |
+| Carte dashboard "Finished Stock" (`TextCode`, `~L30688`) | **Lecture** (agrégat) | Affichage temps réel | Même boucle dupliquée (stream/sum) | Même risque latent | **MODIFIÉ** : `(int) stockProduitFiniDisponibleTotal()` au lieu de dupliquer la boucle | Non |
+| `calculerInventoryDaysOfSupply()` (`~L13084`, SCOR `AM.2.2`) | **Lecture** (agrégat) | Jours de couverture de stock | Somme `p.niveauStock` mais avec le prédicat **`typePoste==TypePoste.STOCKAGE` strict** (pas `estPosteStockFini()` — ne matche même pas `sM1.5.1` sur ZENER, qui est de type DELAI, cf. C14.67) | Non démontré : prédicat différent, portée probablement plus large que le seul stock produit fini (pourrait inclure du stock matière/tampon) | **NON MODIFIÉ** — prédicat et périmètre différents de "stock produit fini par référence" ; mélanger les deux serait une erreur conceptuelle, pas une correction | **Oui, à ré-auditer séparément si nécessaire** |
+| `verifierPolitiqueStockProduit()` (`~L2586`) | **Lecture** (`stockFini.niveauStock`) | Politique de réapprovisionnement (s,Q) — mono-scénario uniquement, ne boucle sur aucun produit | Lit directement le poste de référence | Réapprovisionnement multi-produit non traité | **NON MODIFIÉ** | **Oui (M.3, réapprovisionnement)** |
+| Logs/popups (`~L2597/2798/2813/12458/49843/49964`) | **Lecture** (cosmétique) | Messages `[MTS]`/popups affichant le stock restant | Lisent `stockFini.niveauStock` directement, à titre d'affichage | Aucun (affichage seulement, `niveauStock` reste synchronisé par `synchroniserStockFiniAgrege()`) | **NON MODIFIÉ** — purement cosmétique, correct tant qu'1 seul poste stock-fini existe (cas actuel) | Non (à revoir seulement si M.3 introduit plusieurs postes physiques) |
+
+### Chaîne d'identité produit — démontrée avant tout portage
+
+**Consommation** (`consommerStockFiniProduit()`, 2 sites d'appel) : l'identité est déjà
+résolue proprement par l'appelant AVANT l'appel — `sc`/`scLivraison` (`ScenarioFlux`)
+sont passés directement, sans devinette. **Aucun chaînon manquant.**
+
+**Crédit** (production → magasin PF) : chaîne tracée explicitement avant portage :
+```
+CommandeAgent (idCommande, idScenario)
+  -> lancerProductionCommandeOrchestree(cmd) crée, pour chaque unité :
+       e.idFlux = cmd.idCommande + "_F_" + (++seqProduitRuntime)   [L5275]
+  -> l'entité parcourt sa route Make (routeProductionMakeDepuisScenario(sc))
+  -> arrive au poste magasin produits finis (onExit, estPosteStockFini(this)==true)
+  -> identité résolue par fluxAppartientACommande(agent.idFlux, cmd.idCommande)
+     pour cmd dans main.commandes -- LE MÊME mécanisme déjà validé au Bloc A.1
+     (fix du bug CMD_4/CMD_44)
+  -> cmd.idScenario (déjà la clé produit utilisée partout ailleurs :
+     codeProduitCommande(), verifierPolitiqueStockProduit())
+  -> crediterStockFiniProduit(cmd.idScenario, 1, this)
+```
+**Rejeté explicitement comme source d'identité** : `agent.typeProduit` — vérifié par
+grep de tous ses points d'écriture (`.typeProduit =`) : ce champ sert de libellé de
+trace/affichage avec des conventions **incompatibles selon le chemin de code**
+(`"TRACE_VISUEL_SCOR"` pour les jetons visuels, `"LIVRAISON:"+nom`/`"APPRO:"+nom`
+pour d'autres flux, `"Produit"` littéral générique pour le flux autonome "génération 1"
+désactivé par défaut, `libelleTypeProduitTrace(cmd,sc)` — un libellé d'affichage, pas
+garanti égal à la clé de catalogue `cleProduit(sc.typeProduit)`). Utiliser ce champ
+aurait été deviner une identité non fiable ; `cmd.idScenario` via `idFlux` est la
+seule voie démontrée et déjà validée.
+
+**Chemin non couvert, documenté, non un chaînon manquant pour le périmètre actif** :
+le flux autonome "génération 1" (événement `arrivee`, actif seulement si
+`modePilotageParCommande=false` — **pas le mode utilisé par ZENER**, cf.
+`Condition><![CDATA[modeExecution && !modePilotageParCommande]`) crée des entités
+sans `CommandeAgent` associé (`e.idFlux = "F_" + seqFlux`, aucun `CMD_`). Si une
+telle entité atteignait un jour le magasin PF en mode multi-produit,
+`fluxAppartientACommande()` ne trouverait aucune correspondance,
+`identiteProduit` resterait `null`, et `crediterStockFiniProduit()` journaliserait
+un WARN sans créditer (comportement sûr, pas un crash, pas un vol de stock —
+mais le stock ne serait alors pas comptabilisé). Documenté ici pour un futur bloc
+si ce mode legacy est un jour combiné avec le multi-produit.
+
+### Décision — produit inconnu (crediterStockFiniProduit())
+
+**Adaptation explicite vs la référence DataCo** : DataCo réplie une identité
+vide/nulle sur `nomProduitParDefaut` (`typeProduit != null && !typeProduit.trim().isEmpty()
+? typeProduit : nomProduitParDefaut`). **Ce repli a été retiré ici** — conformément à
+la consigne de ce bloc ("si l'identité produit est vide/inconnue/non cataloguée : WARN
+explicite ; aucun transfert silencieux vers une autre référence"), une identité vide,
+nulle, ou ne correspondant à aucune entrée de `catalogueProduits` déclenche
+uniquement `[MULTI-PRODUIT][WARN] credit stock ignore : produit inconnu='...'`, sans
+crédit nulle part. Une clé correspondant à un produit **réellement catalogué** mais
+absente de `stockFiniParProduit` (cas limite, ex. juste après un rechargement JSON)
+est en revanche initialisée proprement à 0 puis créditée (`avant = containsKey(cle)
+? ... : 0.0`), pas traitée comme une erreur.
+
+### rotationProduitsActive
+
+Non touché par ce bloc — reste `false` par défaut, et `choisirScenarioProduit()`
+(qui l'utilise) n'est appelé nulle part dans le chemin de crédit ajouté ici : le
+crédit ne "devine" jamais un produit par rotation, uniquement par résolution
+d'identité explicite via `idFlux`/`idScenario`.
+
+### Fichier modifié
+
+`model/SCONTO_SVU_GENERIC_MASTER.alp` — 5 zones : `consommerStockFiniProduit()` +
+`crediterStockFiniProduit()` (~L6980-7025), `capturerPointHistoriqueDashboard()`
+(~L7210), `stockProduitFiniDisponibleTotal()` (~L20055),  carte dashboard "Finished
+Stock" (~L30688), `PosteGenericAgent` onExit (~L45063-45100).
+
+### Ce qui a été porté
+
+- `crediterStockFiniProduit(String typeProduit, double qte, PosteGenericAgent fallback)` :
+  porté de la référence DataCo avec l'adaptation "pas de repli sur défaut" décrite
+  ci-dessus.
+- `consommerStockFiniProduit()` : appel `synchroniserStockFiniAgrege(fallback)`
+  ajouté en fin de branche multi (comme prévu depuis le commentaire M.1).
+- `stockProduitFiniDisponibleTotal()`, historique Dashboard, carte "Finished Stock" :
+  basculent sur `sommeStockFiniParProduit()`/`stockProduitFiniDisponibleTotal()` en
+  mode multi-produit (solution minimale demandée), calcul legacy strictement
+  inchangé en mono.
+- Crédit de production (`PosteGenericAgent` onExit) : identité résolue via
+  `fluxAppartientACommande()` (Bloc A.1) + `cmd.idScenario`, jamais devinée.
+
+### Ce qui a été adapté
+
+`crediterStockFiniProduit()` diverge de la référence DataCo sur un seul point
+(politique produit inconnu, voir ci-dessus) — changement délibéré, documenté,
+demandé explicitement par ce bloc.
+
+### Ce qui n'a pas été porté (et pourquoi) — reporté à M.3+
+
+- `verifierPolitiqueStockProduit()` par produit (réapprovisionnement) — explicitement
+  hors périmètre de M.2.
+- `calculerInventoryDaysOfSupply()` — prédicat (`TypePoste.STOCKAGE` strict) et
+  périmètre (inventaire large, pas spécifiquement "produit fini par référence")
+  différents ; le modifier avec la même règle serait une erreur conceptuelle, pas
+  une correction. À ré-auditer séparément si un besoin précis se présente.
+- Flux autonome "génération 1" (`modePilotageParCommande=false`) combiné au
+  multi-produit : chemin non actif pour ZENER, documenté comme limite connue
+  (WARN sans crédit si jamais activé simultanément).
+- `ConcurrentModificationException` / snapshot stable de `listeProduits` : la
+  nouvelle boucle ajoutée (`for (CommandeAgent cmd : main.commandes)`) ne
+  reconstruit ni ne synchronise `commandes` pendant son parcours (lecture seule,
+  `break` dès la correspondance trouvée) — aucun risque introduit, snapshot non
+  nécessaire ici.
+
+### Validations statiques
+
+- XML bien formé : OK.
+- IDs AnyLogic : 1655/1655 uniques, inchangé (uniquement du code Java libre
+  modifié/ajouté, aucun élément `<Function>`/`<Variable>` AnyLogic ajouté ; seul le
+  `Body` de la `<Function>` `stockProduitFiniDisponibleTotal()` existante a été
+  édité, sans changer sa signature/Id).
+- `git diff --check` : aucune erreur d'espace blanc.
+- Grep DataCo : 0 occurrence.
+- Diff confiné aux 5 zones listées — **aucun changement** à `calculerPIGlobal()`,
+  aux snapshots C14 de clôture de commande, aux états holoniques (Bloc A.5), à
+  l'ordonnancement MTO, à `verifierPolitiqueStockProduit()`, aux exports Excel/ABox
+  (hors les 2 lectures d'agrégat corrigées), au format JSON des scénarios.
+- **Compatibilité legacy vérifiée par lecture de code** : tant que
+  `modeMultiProduitActif=false` (défaut), le nouveau bloc `if` dans le crédit
+  onExit tombe systématiquement dans la branche `else { niveauStock += 1; }`
+  (comportement identique à avant M.2) ; `crediterStockFiniProduit()`/
+  `consommerStockFiniProduit()` empruntent leur branche mono inchangée ;
+  `stockProduitFiniDisponibleTotal()` garde son calcul legacy exact.
+- **Build AnyLogic** : EN ATTENTE (utilisateur).
+- **Run** : EN ATTENTE (utilisateur). Protocole suggéré : (1) run ZENER legacy
+  (`modeMultiProduitActif` absent/false) — doit rester strictement identique aux
+  runs déjà validés (A.5, M.1) ; (2) si une fixture multi-produit synthétique est
+  disponible (2 `ScenarioFlux` A/B intentionnels, `modeMultiProduitActif=true`),
+  vérifier les tests M2-1 à M2-10 listés par l'utilisateur (non exécutables sans
+  AnyLogic depuis cet environnement).
+- **Commit** : voir SHA ci-dessous (message
+  `feat(generic): wire per-product stock consumption and credit`).
+
 **PR reste DRAFT. Aucun merge vers `main`.**
 
 ## Bloc B — PI / SCOR

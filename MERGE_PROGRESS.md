@@ -110,7 +110,7 @@ diagnostic commandes bloquées) ; absent du master — Bloc A/C.
 - [x] Diagnostic commandes bloquées — **PORTÉ ET VALIDÉ FONCTIONNELLEMENT** (2026-09-16/17, commit `0363b6b`, `[DIAG-BLOQUEE]` observé réellement sur `REAPPRO_1`)
 - [x] Stock matière détaillé — **PORTÉ ET VALIDÉ** (2026-09-16, commit `d52d431`, consommé et validé via le Bloc A.4)
 - [x] Historique Dashboard / Excel — **TERMINÉ / FIGÉ** (2026-09-16/17, commits `69c78d6`…`0da7d92`, `e32fbed` ; voir "Validation utilisateur définitive — Bloc A.4" ci-dessous)
-- [x] États holoniques cohérents — **PORTÉ** (2026-09-17, voir Journal A.5 ci-dessous, Build/run utilisateur EN ATTENTE)
+- [x] États holoniques cohérents — **PORTÉ ET VALIDÉ** (2026-09-17, commit `e7652ed`, Coordinateur ESCALADE réel observé et justifié par un vrai goulot Make, non-régression A.4 confirmée)
 - [ ] Build AnyLogic utilisateur
 - [ ] Run court générique utilisateur
 
@@ -1220,7 +1220,44 @@ modifier le comportement métier.
   et vérifier que son popup dit "Escalade" (pas "Inactif / en attente") ; ouvrir le
   popup d'un `OperationalAgent` en goulot de groupe et vérifier que seuls les
   postes individuellement en goulot l'affichent.
-- **Commit** : voir SHA ci-dessous (message `feat(generic): unify holonic agent states`).
+- **Commit** : `e7652ed` (message `feat(generic): unify holonic agent states`).
+
+### Validation utilisateur définitive — Bloc A.5 (2026-09-17)
+
+Run analysé sur Excel final, CSV brut/agrégé, CSV KPI, ABox TTL finale, observation
+runtime.
+
+- **Build AnyLogic** : OK.
+- **Coordinateur ESCALADE réel observé et justifié** : un Coordinateur est
+  réellement passé au ROUGE pendant le run, corrélé à un vrai goulot Make
+  (`ACT_4|M1.2` avgWaitTime≈509,4s ; `ACT_4|M1.3` avgWaitTime≈33,5s ; audit AER
+  ~t=1095-1097 : `sM1.2.1` GOULOT WT≈1027s file=179, `sM1.3.1` GOULOT WT≈247s
+  file=4). Chaîne AER observée : OperationalExecution → AOp-sM1.1 → CA-sM1 →
+  AT-sP3 → CA-sM1 → AOp-sM1.1 → OperationalExecution. **La branche
+  ESCALADE/rouge a donc été réellement exercée**, et comme
+  `couleurSupervisorMacro()`/`popupSupervisor()` dérivent désormais tous deux de
+  `etatCoordinateurMacro()`, le problème historique "pavé rouge / popup IDLE" est
+  **considéré corrigé**. Goulot correctement circonscrit à Make/CA-sM1, aucune
+  contamination inter-macro anormale constatée (confirme H-3/H-5).
+- **Non-régression A.4** : Tfinal=1117,9s ; ABox `reason=RUN_FINALIZED`,
+  `simulationTimeSeconds=1117,9`, `RawEvent=539` == 539 événements Excel
+  "Execution Brute" ; Historique Dashboard 39 snapshots/39 timestamps uniques,
+  dernier=1117,9, PI final≈8,15 (CSV KPI `PI_GLOBAL=8,1499`, cohérent) ; 0 erreur
+  Excel, 0 exception runtime.
+- **Non-régression du retrait de la garde de rôle (`analyserEtat()`)** : un flux
+  Plan réel observé (`P3.4 / PLANIFICATION_PRODUCTION_COMMANDE`) — confirme que
+  les groupes Plan reflètent maintenant une activité réelle sans effet de bord
+  négatif observé sur ce run.
+
+**BLOC A.5 : VALIDÉ.**
+
+## BLOC A — STATUT GLOBAL : TERMINÉ / FIGÉ (2026-09-17)
+
+A.1 (matching strict), A.2 (diagnostic commandes bloquées), A.3 (stock matière
+détaillé), A.4 (historique Dashboard/Excel/ABox/finalisation moteur) et A.5
+(cohérence des états holoniques) sont tous portés et validés par l'utilisateur sur
+runs réels. **A.1–A.5 ne seront plus modifiés sauf bug démontré par un nouveau run.**
+Poursuite exclusive avec le Bloc M (fondation multi-produit Generic).
 
 ## Bloc M — Fondation multi-produit Generic (2026-09-16, PLANIFIÉ — NON COMMENCÉ)
 

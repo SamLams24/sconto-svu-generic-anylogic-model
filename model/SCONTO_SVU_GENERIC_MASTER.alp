@@ -6758,6 +6758,12 @@ public java.util.LinkedHashMap<String, ScenarioFlux> catalogueProduits =
     new java.util.LinkedHashMap<String, ScenarioFlux>();
 public java.util.LinkedHashMap<String, Double> stockFiniParProduit =
     new java.util.LinkedHashMap<String, Double>();
+// Bloc M.1 -- configuration optionnelle chargee du JSON. En mode multi-produit,
+// les valeurs sont des stocks initiaux PAR PRODUIT. Si la map est vide, le stock
+// global (champStockInitialProduitFini) est reparti equitablement entre les
+// references afin de ne jamais le multiplier (voir stockInitialConfigurePourProduit()).
+public java.util.LinkedHashMap<String, Double> stockInitialParProduit =
+    new java.util.LinkedHashMap<String, Double>();
 public java.util.LinkedHashMap<String, java.util.ArrayList<LigneCommandeProduit>> lignesProduitParCommande =
     new java.util.LinkedHashMap<String, java.util.ArrayList<LigneCommandeProduit>>();
 
@@ -6813,13 +6819,77 @@ ScenarioFlux scenarioProduitParDefaut() {
     return listeProduits.isEmpty() ? null : listeProduits.get(0);
 }
 
+// Bloc M.1 -- somme des stocks par produit : c'est la SEULE base legitime pour
+// reconstruire un agregat en mode multi-produit (jamais une duplication du
+// stock global). Portage generique de la reference technique DataCo
+// (reference/dataco-multiproduct), mecanisme sans aucun lien avec les
+// donnees/produits DataCo eux-memes.
+double sommeStockFiniParProduit() {
+    double total = 0.0;
+    if (stockFiniParProduit != null) {
+        for (Double v : stockFiniParProduit.values()) {
+            if (v != null && !Double.isNaN(v) && !Double.isInfinite(v)) total += Math.max(0.0, v);
+        }
+    }
+    return total;
+}
+
+// Bloc M.1 -- synchronise niveauStock (agregat d'affichage/KPI compatibilite)
+// a partir de stockFiniParProduit (source de verite en mode multi-produit).
+// No-op tant que modeMultiProduitActif=false : le mono-produit garde niveauStock
+// comme unique source de verite, exactement comme avant ce bloc.
+void synchroniserStockFiniAgrege(PosteGenericAgent fallback) {
+    if (!modeMultiProduitActif) return;
+    double total = sommeStockFiniParProduit();
+    boolean applique = false;
+    if (postes != null) {
+        for (PosteGenericAgent p : postes) {
+            if (p == null || !estPosteStockFini(p)) continue;
+            p.niveauStock = total;
+            applique = true;
+        }
+    }
+    if (!applique && fallback != null) fallback.niveauStock = total;
+}
+
+// Bloc M.1 -- stock initial d'UN produit : valeur explicite du JSON
+// (stockInitialParProduit) si configuree, sinon repartition EQUITABLE du stock
+// global (champStockInitialProduitFini représente le TOTAL disponible pour
+// toutes les references, jamais une valeur a dupliquer). C'est cette fonction,
+// et elle seule, qui empeche le bug de duplication (stock global x N produits).
+double stockInitialConfigurePourProduit(ScenarioFlux sc, int nbProduits) {
+    String cle = cleProduit(sc != null ? sc.typeProduit : "");
+    Double configure = stockInitialParProduit != null ? stockInitialParProduit.get(cle) : null;
+    if (configure != null && !Double.isNaN(configure) && !Double.isInfinite(configure)) {
+        return Math.max(0.0, configure);
+    }
+    return nbProduits > 0 ? Math.max(0.0, champStockInitialProduitFini) / (double) nbProduits : 0.0;
+}
+
+// Bloc M.1 -- CORRECTIF DE FOND. Version precedente : chaque produit recevait
+// Math.max(0.0, champStockInitialProduitFini) SANS DIVISION -- un stock global de
+// 18000 avec 3 produits donnait 18000+18000+18000=54000, une duplication pure et
+// simple deja identifiee et documentee comme defaut connu (voir le commentaire
+// C14.10/C14.12 historique de consommerStockFiniProduit() juste en dessous).
+// Desormais : en mode multi-produit, chaque produit recoit
+// stockInitialConfigurePourProduit() (valeur explicite ou repartition equitable) ;
+// en mono-produit, le comportement historique est conserve a l'identique (la map
+// reste peuplee de champStockInitialProduitFini par entree, mais elle n'est lue
+// nulle part tant que modeMultiProduitActif=false -- consommerStockFiniProduit()
+// et stockFiniDisponiblePourScenario() empruntent alors la branche mono-produit,
+// qui ne touche que PosteGenericAgent.niveauStock, seule source de verite mono).
 void initialiserStocksProduits() {
     synchroniserListeProduits();
     stockFiniParProduit.clear();
+    int n = listeProduits.size();
     for (ScenarioFlux sc : listeProduits) {
-        stockFiniParProduit.put(cleProduit(sc.typeProduit), Math.max(0.0, champStockInitialProduitFini));
+        double stockInitial = modeMultiProduitActif
+            ? stockInitialConfigurePourProduit(sc, n)
+            : Math.max(0.0, champStockInitialProduitFini);
+        stockFiniParProduit.put(cleProduit(sc.typeProduit), stockInitial);
     }
     lignesProduitParCommande.clear();
+    synchroniserStockFiniAgrege(null);
 }
 
 ScenarioFlux choisirScenarioProduit(long numeroCommande) {
@@ -6855,12 +6925,20 @@ String codeProduitCommande(CommandeAgent cmd) {
     return cmd.idScenario != null ? cmd.idScenario : nomProduitParDefaut;
 }
 
+// Bloc M.1 -- CORRECTIF D'ISOLATION. Version precedente : si la cle produit
+// etait absente de stockFiniParProduit en mode multi-produit, la fonction
+// retombait sur fallback.niveauStock -- le stock AGREGE de toutes les
+// references confondues, permettant a un produit d'utiliser le stock d'un
+// autre (violation directe de l'invariant "une reference ne consomme jamais le
+// stock d'une autre"). Desormais : en multi-produit, une cle absente renvoie 0
+// (rien de disponible pour cette reference), jamais l'agregat.
 double stockFiniDisponiblePourScenario(ScenarioFlux sc, PosteGenericAgent fallback) {
     if (!modeMultiProduitActif) return fallback != null ? fallback.niveauStock : 0.0;
     synchroniserListeProduits();
     String cle = cleProduit(sc != null ? sc.typeProduit : nomProduitParDefaut);
+    if (cle.isEmpty()) return 0.0;
     Double v = stockFiniParProduit.get(cle);
-    return v != null ? v.doubleValue() : (fallback != null ? fallback.niveauStock : 0.0);
+    return v != null ? Math.max(0.0, v.doubleValue()) : 0.0;
 }
 
 void consommerStockFiniProduit(ScenarioFlux sc, int qte, PosteGenericAgent fallback) {
@@ -6873,11 +6951,13 @@ void consommerStockFiniProduit(ScenarioFlux sc, int qte, PosteGenericAgent fallb
     double avant = stockFiniParProduit.containsKey(cle) ? stockFiniParProduit.get(cle) : 0.0;
     stockFiniParProduit.put(cle, Math.max(0.0, avant - Math.max(1, qte)));
 
-    // C14.10/C14.12 -- si le mode multi-produit est un jour reactive, il faudra
-    // ici synchroniser niveauStock du poste avec stockFiniParProduit, ET aligner
-    // leurs bases initiales (initialiserStocksProduits() attribue le stock
-    // initial complet a CHAQUE produit, alors que le poste n'en detient qu'un
-    // seul exemplaire) : sans cela les deux compteurs divergent.
+    // Bloc M.1 -- mise a jour (2026-09-17) : la base d'initialisation N'EST PLUS
+    // dupliquee (voir initialiserStocksProduits()/stockInitialConfigurePourProduit(),
+    // corrige au Bloc M.1) et synchroniserStockFiniAgrege() existe desormais pour
+    // resynchroniser niveauStock depuis stockFiniParProduit. Elle n'est PAS encore
+    // appelee ICI : le reste de la logique de consommation/credit par produit
+    // (incluant cet appel) est traite dans le sous-bloc M suivant, pas au M.1
+    // (perimetre volontairement limite a la source de verite + l'initialisation).
 }
 
 int nombreProduitsRuntimeUniques() {
@@ -14747,6 +14827,14 @@ kpi_AG_score = 0; kpi_CO_score = 0; kpi_AM_score = 0;]]></Body>
     params.put("champPoidsAM", champPoidsAM);
     params.put("champStockInitialProduitFini", champStockInitialProduitFini);
     params.put("champStockInitialMatiereGlobal", champStockInitialMatiereGlobal);
+    // Bloc M.1 -- champs multi-produit optionnels : absents d'un ancien JSON, ils
+    // se rechargent a leurs valeurs par defaut (false / map vide), comportement
+    // historique inchange (voir chargement plus bas).
+    params.put("modeMultiProduitActif", modeMultiProduitActif);
+    params.put("rotationProduitsActive", rotationProduitsActive);
+    params.put("stockInitialParProduit", stockInitialParProduit != null
+        ? new java.util.LinkedHashMap<String,Double>(stockInitialParProduit)
+        : new java.util.LinkedHashMap<String,Double>());
     params.put("seqFlux", seqFlux);
     params.put("seqResponsabilite", seqResponsabilite);
     params.put("seqMachineSim", seqMachineSim);
@@ -14948,6 +15036,26 @@ root.put("fichesMatiere", lstFiches);
         champPoidsAM                   = jsonDouble(pg, "champPoidsAM", champPoidsAM);
         champStockInitialProduitFini   = jsonDouble(pg, "champStockInitialProduitFini", champStockInitialProduitFini);
         champStockInitialMatiereGlobal = jsonDouble(pg, "champStockInitialMatiereGlobal", champStockInitialMatiereGlobal);
+        // Bloc M.1 -- champs multi-produit optionnels. Absents d'un JSON existant
+        // (cas ZENER actuel notamment) : modeMultiProduitActif/rotationProduitsActive
+        // retombent sur leur defaut false, stockInitialParProduit reste une map
+        // vide -- comportement mono-produit historique strictement inchange.
+        modeMultiProduitActif  = jsonBool(pg, "modeMultiProduitActif", false);
+        rotationProduitsActive = jsonBool(pg, "rotationProduitsActive", false);
+        stockInitialParProduit.clear();
+        Object sipObj = pg.get("stockInitialParProduit");
+        if (sipObj instanceof java.util.Map) {
+            java.util.Map sip = (java.util.Map) sipObj;
+            for (Object kObj : sip.keySet()) {
+                if (kObj == null) continue;
+                String cle = cleProduit(kObj.toString());
+                Object vObj = sip.get(kObj);
+                double val = 0.0;
+                if (vObj instanceof Number) val = ((Number) vObj).doubleValue();
+                else if (vObj != null) { try { val = Double.parseDouble(vObj.toString()); } catch (Exception ignored) {} }
+                if (!cle.isEmpty()) stockInitialParProduit.put(cle, Math.max(0.0, val));
+            }
+        }
         // Restauration des compteurs
         seqFlux           = jsonInt(pg, "seqFlux", 0);
         seqResponsabilite = jsonInt(pg, "seqResponsabilite", 0);

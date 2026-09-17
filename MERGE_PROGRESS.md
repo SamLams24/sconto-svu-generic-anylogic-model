@@ -1259,7 +1259,7 @@ détaillé), A.4 (historique Dashboard/Excel/ABox/finalisation moteur) et A.5
 runs réels. **A.1–A.5 ne seront plus modifiés sauf bug démontré par un nouveau run.**
 Poursuite exclusive avec le Bloc M (fondation multi-produit Generic).
 
-## Bloc M — Fondation multi-produit Generic (2026-09-16, PLANIFIÉ — NON COMMENCÉ)
+## Bloc M — Fondation multi-produit Generic (2026-09-16, M.1 EN COURS depuis 2026-09-17)
 
 **Ordonnancement décidé** : après les blocs SAFE A.3/A.4/A.5, avant la refonte PI/SCOR
 du Bloc B (le multi-produit influence stocks, demande, réappro, Make, stratégique et
@@ -1325,8 +1325,127 @@ DataCo, ou tout nom/acteur spécifique DataCo.
 - [ ] M-9 — politique autonome : rupture A ne déclenche pas artificiellement une production B
 - [ ] M-10 — concurrence : aucune ConcurrentModificationException lors du parcours produit
 
-**Statut** : PLANIFIÉ. Aucune implémentation commencée. Audit détaillé de la fondation
-existante et de la référence donneuse à réaliser en ouverture du bloc.
+**Statut** : **M.1 EN COURS** (audit + source de vérité + initialisation portés,
+2026-09-17). M.2 (consommation/crédit complets), réapprovisionnement, UI restent à
+faire.
+
+### Bloc M.1 — audit, source de vérité, initialisation (2026-09-17)
+
+**Rappel de séparation** : mission strictement Generic. `reference/dataco-multiproduct/`
+n'est utilisée QUE comme référence technique pour des mécanismes multi-produit
+génériques déjà éprouvés — aucune donnée/logique métier DataCo (Prophet,
+Recalibrator, AutoCommande, catalogue SPORTS/CLOTHING/ELECTRONICS, calendrier 2017)
+n'est importée. Contrôlé par grep DataCo après modification : 0 occurrence.
+
+#### Tableau d'audit (avant modification)
+
+| Mécanisme | Master Generic actuel | DataCo référence | Risque | Décision | Adaptation générique |
+|---|---|---|---|---|---|
+| `modeMultiProduitActif` | `false` par défaut, **jamais chargé depuis le JSON** (aucun `jsonBool(...)` correspondant) | Idem défaut, chargé via `jsonBool(pg,"modeMultiProduitActif",false)` | Faible | **PORTER** le chargement JSON (absent = comportement historique inchangé) | Identique |
+| `rotationProduitsActive` | `false` par défaut, **jamais chargé depuis le JSON** | Idem, chargé via JSON | Faible | **PORTER** le chargement JSON | Identique |
+| `stockInitialParProduit` | **Absent du master** | Présent : `LinkedHashMap<String,Double>` optionnelle, JSON `"stockInitialParProduit"` | Faible — nouveau champ additif, aucun ancien JSON ne le contient (comportement inchangé si absent) | **PORTER** tel quel (champ + chargement + sauvegarde) | Identique |
+| `LigneCommandeProduit`, `listeProduits`, `catalogueProduits`, `lignesProduitParCommande` | Présents, **byte-identiques** au DataCo (mêmes champs, mêmes types) | Identiques | Aucun | Inchangés | — |
+| `stockFiniParProduit` | Présent, structure identique | Identique | Aucun | Inchangé (seul son *contenu initial* était buggé, voir `initialiserStocksProduits()`) | — |
+| `synchroniserListeProduits()` | Byte-identique au DataCo | Identique | Aucun | Inchangée | — |
+| `choisirScenarioProduit()` | Byte-identique au DataCo | Identique | Aucun | Inchangée (réapprovisionnement/sélection produit = hors scope M.1) | — |
+| `enregistrerLigneProduitCommande()` | Byte-identique au DataCo | Identique | Aucun | Inchangée | — |
+| **`initialiserStocksProduits()`** | **BUG CONFIRMÉ** : `stockFiniParProduit.put(cle, Math.max(0.0, champStockInitialProduitFini))` pour **chaque** produit — un stock global de 18000 avec 3 produits donne 18000+18000+18000=54000. Déjà auto-documenté comme défaut connu par le commentaire C14.10/C14.12 du master lui-même (« si le mode multi-produit est un jour réactivé, il faudra ici synchroniser... aligner leurs bases initiales ») | **Déjà corrigée** : `modeMultiProduitActif ? stockInitialConfigurePourProduit(sc,n) : champStockInitialProduitFini`, puis `synchroniserStockFiniAgrege(null)` | **Élevé si activé tel quel** — c'est exactement le bug de duplication interdit par la mission | **PORTER** la version corrigée intégralement | Identique — c'est le cœur du correctif M.1 |
+| **`stockFiniDisponiblePourScenario()`** | **Fuite d'isolation confirmée** : si la clé produit est absente de `stockFiniParProduit` en mode multi-produit, retombe sur `fallback.niveauStock` (le stock **agrégé** de toutes les références) — un produit pourrait alors utiliser le stock d'un autre | **Déjà corrigée** : retourne `0.0` (rien de disponible) au lieu de l'agrégat | Moyen — viole directement l'invariant « une référence ne consomme jamais le stock d'une autre » | **PORTER** le correctif (repli sur 0, jamais l'agrégat) | Identique |
+| `consommerStockFiniProduit()` | Structure saine (branches mono/multi déjà correctement séparées), mais **n'appelle pas** de resynchronisation de l'agrégat après consommation (gap déjà auto-documenté par le master) | Identique + appel final à `synchroniserStockFiniAgrege(fallback)` | Faible, mais fait partie de la « logique complète de consommation » | **REPORTER au sous-bloc M suivant** (hors périmètre M.1, qui se limite à source de vérité + initialisation) ; commentaire du master mis à jour pour refléter l'état actuel (fonction disponible mais pas encore appelée ici) | — |
+| **`crediterStockFiniProduit()`** | **Absent du master** — aucune fonction générique de crédit de stock par produit (la production crédite directement `niveauStock`, sans awareness multi-produit) | Présent : branche mono (crédite `fallback.niveauStock`) / multi (crédite `stockFiniParProduit` + `synchroniserStockFiniAgrege()`), log `[MULTI-PRODUIT][WARN]` si produit inconnu | Moyen — fonction de crédit, cœur de la « logique complète de consommation/crédit » | **REPORTER au sous-bloc M suivant** (hors périmètre M.1) | — |
+| `verifierPolitiqueStockProduit()` | **Mono-scénario uniquement** — ne boucle sur aucun produit, ne référence même pas `modeMultiProduitActif` ; gère la politique (s,Q) d'un seul `scRef` (scénario nominal/premier) | Fonction équivalente non auditée en détail (hors périmètre M.1) | Élevé si étendu sans précaution — c'est le réapprovisionnement, explicitement exclu de M.1 | **REPORTER au sous-bloc M suivant** (« logique complète de consommation/crédit ; réapprovisionnement » explicitement exclus de M.1) | — |
+| `new ArrayList<ScenarioFlux>(listeProduits)` (snapshot stable) | Pattern déjà utilisé ailleurs dans le master pour d'autres listes (ex. `listeProduits` snapshot antérieur au Bloc M, cf. commentaire C14.68 sur `listeProduits`) ; aucune boucle multi-produit encore assez développée pour risquer une `ConcurrentModificationException` à ce stade (M.1 n'ajoute que des fonctions de lecture/agrégat, aucune boucle réentrante) | `ConcurrentModificationException` déjà rencontrée et corrigée côté DataCo | Aucun risque introduit par M.1 (pas de nouvelle boucle réentrante) | **REPORTER** l'audit complet des boucles à risque au sous-bloc M suivant, quand la logique de consommation/réappro par produit sera portée | — |
+| **ScenarioFlux ≠ Produit** | `estProduitEnregistrable(sc)` traite **tout** `ScenarioFlux` non marqué « cas de test » (`estScenarioCasTest()`) comme un produit catalogable. Il n'existe **aucune notion de SKU/Produit distincte** de `ScenarioFlux` dans ce mécanisme (le type `Produit`/`produitRegistry` vu dans `nombreProduitsRuntimeUniques()` est un concept **différent** : instances physiques runtime traversant la chaîne, pas le catalogue produit) | Convention identique côté DataCo | Conceptuel — ne pas transformer silencieusement chaque scénario de simulation en SKU commercial | **Documenté explicitement ici, aucun changement de convention en M.1** — un scénario de test (nomenclature de validation, ex. `SCENARIO DISTRIBUTION`, `ZENER CAS 1/2/3`) est déjà exclu via `estScenarioCasTest()` ; tout scénario NON marqué comme cas de test EST actuellement considéré comme un produit catalogable, y compris sur ZENER (un seul scénario nominal ⇒ un seul « produit » dans le catalogue, sans effet tant que `modeMultiProduitActif=false`) | — |
+
+#### Ce qui a été porté (M.1)
+
+**Fichier modifié** : `model/SCONTO_SVU_GENERIC_MASTER.alp`.
+
+1. **`stockInitialParProduit`** : nouveau champ `LinkedHashMap<String,Double>` (Main),
+   configuration JSON optionnelle des stocks initiaux par produit.
+2. **`sommeStockFiniParProduit()`** : somme des valeurs de `stockFiniParProduit`
+   (clamp négatif/NaN/Infini).
+3. **`synchroniserStockFiniAgrege(PosteGenericAgent fallback)`** : synchronise
+   `niveauStock` (tous les postes stock fini, ou le fallback) depuis la somme
+   ci-dessus — **no-op tant que `modeMultiProduitActif=false`**, implémentant
+   l'invariant demandé (mono-produit : `niveauStock` reste l'unique source de
+   vérité ; multi-produit : `stockFiniParProduit` devient la source, `niveauStock`
+   n'est plus qu'un agrégat de compatibilité, synchronisé **dans ce sens
+   uniquement**, jamais l'inverse).
+4. **`stockInitialConfigurePourProduit(ScenarioFlux sc, int nbProduits)`** : valeur
+   explicite du JSON si configurée pour ce produit, sinon
+   `champStockInitialProduitFini / nbProduits` (répartition équitable) — **jamais**
+   une duplication du stock global.
+5. **`initialiserStocksProduits()` corrigée** : chaque produit reçoit
+   `stockInitialConfigurePourProduit()` en mode multi-produit (au lieu du stock
+   global dupliqué N fois), ou le comportement historique inchangé en mono-produit ;
+   appelle `synchroniserStockFiniAgrege(null)` en fin de fonction.
+6. **`stockFiniDisponiblePourScenario()` corrigée** : une clé produit absente
+   retourne `0.0` en mode multi-produit, plus jamais l'agrégat `fallback.niveauStock`
+   (empêche qu'une référence "emprunte" le stock d'une autre).
+7. **JSON générique** : `modeMultiProduitActif`, `rotationProduitsActive` et
+   `stockInitialParProduit` sont désormais chargés (`jsonBool`/map optionnelle,
+   valeurs par défaut = comportement historique) et sauvegardés
+   (`parametresGlobaux`), symétriquement au chargement DataCo audité — **sans
+   toucher à aucun autre champ JSON existant**.
+
+#### Ce qui a été adapté
+
+Aucune adaptation de logique n'a été nécessaire : les fonctions portées sont
+**byte-identiques** à la référence DataCo (mécanismes génériques purs, aucune
+dépendance à `stockFiniParProduit`/Prophet/Recalibrator/catalogue DataCo). Seul le
+commentaire de `consommerStockFiniProduit()` a été réécrit pour refléter l'état
+actuel (le gap qu'il documentait est partiellement outillé par M.1, mais pas encore
+comblé — reporté explicitement).
+
+#### Ce qui n'a pas été porté (et pourquoi) — reporté au sous-bloc M suivant
+
+- **`crediterStockFiniProduit()`** : fonction de crédit générique par produit,
+  absente du master — c'est la « logique complète de consommation/crédit »
+  explicitement exclue de M.1.
+- **Appel de `synchroniserStockFiniAgrege()` dans `consommerStockFiniProduit()`** :
+  même raison — fait partie de la logique de consommation, pas de l'initialisation.
+- **`verifierPolitiqueStockProduit()` par produit** : actuellement mono-scénario
+  uniquement (ne boucle sur aucun produit) ; l'étendre est du réapprovisionnement,
+  explicitement exclu de M.1.
+- **Snapshot stable (`new ArrayList<>(listeProduits)`) avant boucles à risque** :
+  aucune boucle multi-produit assez développée à ce stade pour introduire un risque
+  de `ConcurrentModificationException` ; à auditer précisément quand la
+  consommation/crédit/réappro par produit sera portée.
+- **Distinction ScenarioFlux/Produit** : documentée dans le tableau ci-dessus, aucun
+  changement de convention (portée hors scope d'une étape "source de vérité").
+
+#### Validations statiques
+
+- XML bien formé : OK.
+- IDs AnyLogic : 1655/1655 uniques, inchangé (uniquement du code Java libre modifié/
+  ajouté dans `AdditionalClassCode`, aucun élément `<Function>`/`<Variable>` AnyLogic
+  ajouté).
+- `git diff --check` : aucune erreur d'espace blanc.
+- Grep DataCo (`DATACO_*|Prophet|Recalibrator|AutoCommande|dataco_calibration|2017-01-01`)
+  sur `model/SCONTO_SVU_GENERIC_MASTER.alp` : 0 occurrence.
+- Diff confiné à 2 zones : le scaffold multi-produit (~L6760-6960) et le
+  chargement/sauvegarde JSON des paramètres globaux (~L14749/L14950) — **aucun
+  changement** à `calculerPIGlobal()`, aux snapshots C14 de clôture de commande,
+  aux états holoniques (Bloc A.5), à l'ordonnancement MTO, aux exports.
+- **Compatibilité legacy vérifiée par lecture de code** : `modeMultiProduitActif`
+  reste `false` par défaut et par absence dans le JSON ; tant qu'il est `false`,
+  `synchroniserStockFiniAgrege()` est un no-op, `initialiserStocksProduits()`
+  retombe sur `champStockInitialProduitFini` intégral (comportement identique
+  à avant M.1), et `stockFiniDisponiblePourScenario()`/`consommerStockFiniProduit()`
+  empruntent toujours la branche mono-produit inchangée (`fallback.niveauStock`
+  uniquement) — le scénario ZENER mono-produit actuel n'est donc affecté par aucun
+  des changements de ce bloc.
+- **Build AnyLogic** : EN ATTENTE (utilisateur).
+- **Run** : EN ATTENTE (utilisateur). Protocole suggéré : run ZENER standard
+  (`modeMultiProduitActif` absent/false du JSON) — doit être **strictement
+  identique** au comportement déjà validé en A.5 (test M-1 : legacy mono-produit).
+  Aucun test multi-produit actif n'est encore pertinent tant que M.2 (consommation/
+  crédit) n'est pas porté.
+- **Commit** : voir SHA ci-dessous (message
+  `feat(generic): establish multi-product stock source of truth`).
+
+**PR reste DRAFT. Aucun merge vers `main`.**
 
 ## Bloc B — PI / SCOR
 - [ ] Warm-up / amorçage

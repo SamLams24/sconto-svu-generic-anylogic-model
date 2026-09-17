@@ -7187,21 +7187,29 @@ String detailStockMatiereParMatiere() {
 // ("idProduit=valeur|idProduit=valeur|..."), pour que la feuille "Historique
 // Dashboard" cesse d'exposer uniquement l'agregat stockProduitFiniDisponibleTotal()
 // en mode multi-produit (cf. bug M.2-TEST-FIX : un agregat correct pouvait
-// masquer une repartition par produit incorrecte, ou inversement). Lecture
-// seule de stockFiniParProduit (source de verite, jamais modifiee ici) ;
-// chaine vide en mono-produit, ou tant que modeMultiProduitActif=false, car
-// stockFiniParProduit n'est alors pas la source de verite (voir
-// initialiserStocksProduits()).
+// masquer une repartition par produit incorrecte, ou inversement).
+// Bloc M.2-TEST-FIX-2 -- STRICTEMENT READ-ONLY. La version precedente appelait
+// synchroniserListeProduits(), qui RECONSTRUIT listeProduits/catalogueProduits
+// -- donc pas une simple lecture, alors que cette fonction est appelee depuis
+// une vue (carte live + export), potentiellement a chaque rafraichissement
+// graphique. Desormais : lecture directe de stockFiniParProduit.keySet()
+// (deja peuplee par initialiserStocksProduits()/consommerStockFiniProduit()/
+// crediterStockFiniProduit() -- jamais ici), triee pour un ordre deterministe.
+// Aucune ecriture, aucune reconstruction de structure runtime. Cle affichee =
+// forme normalisee du catalogue (cleProduit(), deja la cle de la map -- voir
+// son commentaire : trim + majuscules), identique au nom pour les identites
+// deja en majuscules (ex. "PRODUIT_A"). Chaine vide en mono-produit, ou tant
+// que modeMultiProduitActif=false, car stockFiniParProduit n'est alors pas la
+// source de verite (voir initialiserStocksProduits()).
 String detailStockFiniParProduit() {
     if (!modeMultiProduitActif || stockFiniParProduit == null || stockFiniParProduit.isEmpty()) return "";
-    synchroniserListeProduits();
+    java.util.List<String> cles = new java.util.ArrayList<String>(stockFiniParProduit.keySet());
+    java.util.Collections.sort(cles);
     StringBuilder sb = new StringBuilder();
-    for (ScenarioFlux sc : listeProduits) {
-        if (sc == null || sc.typeProduit == null) continue;
-        String cle = cleProduit(sc.typeProduit);
+    for (String cle : cles) {
         Double v = stockFiniParProduit.get(cle);
         if (sb.length() > 0) sb.append("|");
-        sb.append(sc.typeProduit).append("=").append(String.format(java.util.Locale.US, "%.2f", v != null ? v.doubleValue() : 0.0));
+        sb.append(cle).append("=").append(String.format(java.util.Locale.US, "%.2f", v != null ? v.doubleValue() : 0.0));
     }
     return sb.toString();
 }
@@ -7213,23 +7221,26 @@ String detailStockFiniParProduit() {
 // ce bloc). En multi-produit, ajoute la repartition par produit entre
 // parentheses pour que la carte ne montre plus un agregat correct pouvant
 // masquer une repartition par produit incorrecte (cf. bug M.2-TEST-FIX).
-// Lecture seule de stockProduitFiniDisponibleTotal()/stockFiniParProduit ;
-// aucun impact sur le calcul du stock lui-meme.
+// Bloc M.2-TEST-FIX-2 -- lit directement stockFiniParProduit (meme cles
+// triees que detailStockFiniParProduit()) plutot que de reformater sa sortie
+// "cle=valeur|cle=valeur" puis de la re-splitter/re-parser : aucun aller-retour
+// String inutile, aucun appel a synchroniserListeProduits() ni a aucune autre
+// fonction d'ecriture. Strictement read-only.
 String stockFiniAffichageText() {
     int total = (int) stockProduitFiniDisponibleTotal();
-    if (!modeMultiProduitActif) return String.valueOf(total);
-    String detail = detailStockFiniParProduit();
-    if (detail.isEmpty()) return String.valueOf(total);
+    if (!modeMultiProduitActif || stockFiniParProduit == null || stockFiniParProduit.isEmpty()) {
+        return String.valueOf(total);
+    }
+    java.util.List<String> cles = new java.util.ArrayList<String>(stockFiniParProduit.keySet());
+    java.util.Collections.sort(cles);
     StringBuilder sb = new StringBuilder();
     sb.append(total).append(" (");
-    String[] paires = detail.split("\\|");
-    for (int i = 0; i < paires.length; i++) {
-        String[] kv = paires[i].split("=");
-        if (kv.length != 2) continue;
-        double v;
-        try { v = Double.parseDouble(kv[1]); } catch (NumberFormatException ex) { v = 0.0; }
-        if (i > 0) sb.append(", ");
-        sb.append(kv[0]).append("=").append((int) v);
+    boolean first = true;
+    for (String cle : cles) {
+        Double v = stockFiniParProduit.get(cle);
+        if (!first) sb.append(", ");
+        sb.append(cle).append("=").append((int) Math.round(v != null ? v.doubleValue() : 0.0));
+        first = false;
     }
     sb.append(")");
     return sb.toString();

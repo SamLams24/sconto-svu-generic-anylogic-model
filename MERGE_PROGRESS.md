@@ -2122,6 +2122,74 @@ mode multi-produit (lecture seule, aucun impact sur le calcul du stock) :
 
 **PR reste DRAFT. Aucun merge vers `main`. M.3 et Bloc B non commencés.**
 
+## Bloc M.2-TEST-FIX-2 — vues multi-produit strictement read-only (2026-09-17)
+
+**Déclencheur** : revue statique du commit `e41c4b5` par l'utilisateur.
+`detailStockFiniParProduit()` était documentée "lecture seule" mais appelait
+`synchroniserListeProduits()`, qui **reconstruit** `listeProduits` et
+`catalogueProduits` — donc pas une lecture pure. La carte live appelant
+`stockFiniAffichageText() → detailStockFiniParProduit() → synchroniserListeProduits()`
+à chaque rafraîchissement graphique, un simple affichage pouvait ainsi
+reconstruire des structures runtime, contraire à l'objectif d'une vue
+d'observabilité.
+
+### Correctif
+
+Les deux fonctions lisent désormais **directement**
+`stockFiniParProduit.keySet()` (copie triée pour un ordre déterministe),
+sans plus jamais appeler `synchroniserListeProduits()` ni aucune autre
+fonction d'écriture. `stockFiniAffichageText()` ne passe plus par
+`detailStockFiniParProduit()` (suppression de l'aller-retour
+sérialisation → split → re-parsing de doubles, cf. « option
+simplification » demandée) : elle lit la map une seule fois, directement.
+
+Vérifié par grep sur le corps des deux fonctions : 0 occurrence de
+`synchroniserListeProduits` dans l'une ou l'autre.
+
+Note sur le libellé affiché : la clé de `stockFiniParProduit` est déjà la
+forme normalisée `cleProduit()` (trim + majuscules) — identique au nom
+brut pour des identités déjà en majuscules comme `PRODUIT_A`/`PRODUIT_B`.
+Aucun changement de rendu pour la fixture A/B actuelle.
+
+`initialiserStocksProduits()`, `appliquerStocksInitiauxConfig()`,
+`consommerStockFiniProduit()`, `crediterStockFiniProduit()`,
+`stockProduitFiniDisponibleTotal()`, la fixture A/B, ZENER, le
+réapprovisionnement et le PI/SCOR n'ont pas été touchés.
+
+### Audit des deux modifications incidentes signalées dans `e41c4b5`
+
+| Modification | Pourquoi elle apparaît | Origine | Nécessaire au fonctionnement | Existait dans une version précédente |
+|---|---|---|---|---|
+| `<Name>` : `SCONTO_SVU_FINAL_VALIDATED` → `SCONTO_SVU_GENERIC_MASTER` | Champ interne AnyLogic (identité du modèle dans l'IDE), déjà documenté comme oscillant entre ces deux valeurs à chaque session AnyLogic de l'utilisateur (cf. Bloc A, commit de dépôt du `ModelResources`) | Sauvegarde automatique AnyLogic — confirmé : `git show df8074d:...` (état juste avant cette session) avait encore `SCONTO_SVU_FINAL_VALIDATED`, changé en `GENERIC_MASTER` dans l'arbre de travail avant que je ne commence à éditer ce tour-ci (non détecté par mon `git diff --check`/grep DataCo, qui ne couvrent pas ce champ) | Non — purement cosmétique, aucun impact sur la compilation/exécution | Oui, `SCONTO_SVU_FINAL_VALIDATED` était la valeur committée à `df8074d` |
+| **Décision explicite** : conservé à `SCONTO_SVU_GENERIC_MASTER`. Ce nom correspond au nom de fichier (`SCONTO_SVU_GENERIC_MASTER.alp`) et au rôle du fichier dans ce dépôt (master receiver de la lignée Generic, cf. CLAUDE.md) — le conserver élimine une incohérence nom-interne/nom-de-fichier plutôt que de la perpétuer. Ce n'est pas un maintien accidentel : c'est un choix motivé, documenté ici comme demandé. | | | | |
+| Réapparition de `<ModelResources>` (25 `<Resource>`, `Location=FILE_SYSTEM`) | Manifeste des icônes de présentation du modèle | Sauvegarde automatique AnyLogic — même constat : absent à `df8074d` (0 occurrence), présent dans l'arbre de travail avant que je ne commence à éditer ce tour-ci | Probablement oui pour l'IDE AnyLogic (résolution des icônes `.png` par les formes de présentation), bien que l'audit précédent (commit `e32fbed`, avant cette session) ait vérifié que les références directes `<ClassName>`/`<Path>` par forme restent fonctionnelles même sans ce manifeste | Non — `e32fbed` l'avait explicitement supprimé après vérification, avant de réapparaître ici |
+| **Décision explicite** : conservé cette fois (contrairement à `e32fbed`). Les 25 chemins référencés (`aiguillage.png`, `back-office.png`, `container.png`, etc. — vérifiés par lecture directe) correspondent exactement aux fichiers `.png` du dossier `model/` de ce dépôt (icônes de présentation légitimes, cf. inventaire CLAUDE.md), aucune trace DataCo. Le fait qu'AnyLogic régénère systématiquement ce manifeste à chaque sauvegarde IDE (constaté ici pour la 2e fois) indique qu'il s'agit d'un comportement de sérialisation propre à l'outil, pas d'un artefact fortuit isolé : le supprimer à nouveau ne ferait que recréer le même diff au prochain Build/Run de l'utilisateur. Décision : ne plus le supprimer par défaut à l'avenir, sauf demande explicite. | | | | |
+
+Les deux artefacts proviennent donc de sessions AnyLogic de l'utilisateur
+antérieures à ce tour (probablement lors du Build/Run ayant produit le
+run réel du M.2-TEST-FIX), déjà présents dans l'arbre de travail avant que
+je ne lise le fichier pour appliquer M.2-TEST-FIX — je ne les avais pas
+détectés avant de committer `e41c4b5` faute d'avoir inspecté le diff complet
+au-delà de `git diff --check`/grep DataCo/comptage d'IDs. Aucun des deux
+n'affecte le correctif métier 60/40, qui reste exactement tel quel.
+
+### Validations statiques
+
+- XML bien formé : OK
+- IDs AnyLogic uniques : 1680/1680 (inchangé — aucune structure `<Function>`
+  XML ajoutée/retirée, seul du texte `AdditionalClassCode` modifié)
+- `git diff --check` : aucune erreur
+- 0 occurrence de `synchroniserListeProduits` (ni d'aucune autre fonction
+  d'écriture) dans `detailStockFiniParProduit()`/`stockFiniAffichageText()`
+- Grep DataCo : 5 occurrences, toutes des commentaires pré-existants
+  documentant `reference/dataco-multiproduct/` (inchangées depuis `e41c4b5`)
+- `scenario_M2_multiproduit_AB.json` et `scenario_ZENER_SA_Togo_v39.json`
+  inchangés
+
+**Commit** : `fix(generic): keep multi-product stock views read-only`
+
+**PR reste DRAFT. Aucun merge vers `main`. M.3 non commencé.**
+
 ## Bloc B — PI / SCOR
 - [ ] Warm-up / amorçage
 - [ ] Poids effectifs et données disponibles

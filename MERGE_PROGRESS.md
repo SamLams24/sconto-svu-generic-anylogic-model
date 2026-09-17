@@ -110,7 +110,7 @@ diagnostic commandes bloquées) ; absent du master — Bloc A/C.
 - [x] Diagnostic commandes bloquées — **PORTÉ ET VALIDÉ FONCTIONNELLEMENT** (2026-09-16/17, commit `0363b6b`, `[DIAG-BLOQUEE]` observé réellement sur `REAPPRO_1`)
 - [x] Stock matière détaillé — **PORTÉ ET VALIDÉ** (2026-09-16, commit `d52d431`, consommé et validé via le Bloc A.4)
 - [x] Historique Dashboard / Excel — **TERMINÉ / FIGÉ** (2026-09-16/17, commits `69c78d6`…`0da7d92`, `e32fbed` ; voir "Validation utilisateur définitive — Bloc A.4" ci-dessous)
-- [ ] États holoniques cohérents
+- [x] États holoniques cohérents — **PORTÉ** (2026-09-17, voir Journal A.5 ci-dessous, Build/run utilisateur EN ATTENTE)
 - [ ] Build AnyLogic utilisateur
 - [ ] Run court générique utilisateur
 
@@ -1093,6 +1093,134 @@ Run analysé sur console complète, Excel final, ABox TTL finale et CSV.
   données exportées.
 
 **BLOC A.4 : STATUT FINAL = TERMINÉ / FIGÉ.**
+
+## Bloc A.5 — cohérence des états holoniques (2026-09-17)
+
+**Objectif** : uniformiser la détermination et la représentation des états des agents
+holoniques (Coordinateur, Supervisor/OperationalPilot, OperationalExecution), sans
+modifier le comportement métier.
+
+### Audit master vs collègue (avant modification)
+
+| Fonction | Master (avant) | Collègue | Différence | Dépendances | Risque | Décision |
+|---|---|---|---|---|---|---|
+| `etatCoordinateurMacro()` | **Absente** | Présente (`Main`, C14.55) — calcule l'état ESCALADE/AJUSTEMENT/SURVEILLANCE d'un Coordinateur et le mémorise dans `sv.etatAgent`/`sv.tEntreeEtat` | Fonction manquante côté master | Lit `supervisorsMacro`, `opAgents`, `tacticals` (déjà tous présents et identiques) | Faible — logique de détection strictement identique à celle déjà dans `couleurSupervisorMacro()` du master | **PORTER** telle quelle, aucune adaptation nécessaire |
+| `couleurSupervisorMacro()` | Calcule la couleur en DIRECT, dupliquant intégralement (mêmes variables, mêmes commentaires C14.27/C14.51) la logique de détection goulot/escalade | Délègue à `etatCoordinateurMacro()` puis mappe le résultat en couleur | Master duplique la logique ; collègue l'a factorisée après avoir ajouté la fonction source unique | `etatCoordinateurMacro()` (à porter) | Faible — pur refactor de délégation, résultat identique | **ADAPTER** : refactoriser pour déléguer, comme le collègue |
+| `popupSupervisor()` | Affiche `sv.etatAgent` (texte d'état) et `sv.nbAlertesTraitees`/`sv.nbReequilibrages`/`sv.dernierGoulot` | Affiche `etatCoordinateurMacro(macro)` (avec repli sur `sv.etatAgent`) et `sv.nbMessagesHierarchiquesRecus`/`sv.dernierMessageHierarchique` | **Bug confirmé dans le master** : `sv.etatAgent` n'est écrit QUE par `traiterAlertesTactiques()`, qui retourne à sa 1ère ligne réelle dès que `realignementFluxHierarchiqueActif=true` (routage "génération 2", **actif par défaut**, confirmé `= true`) — `sv.etatAgent` reste donc figé à sa valeur d'initialisation `"IDLE"` **à vie**. Un Coordinateur affiché en ROUGE peut donc montrer un popup "Inactif / en attente". Même cause racine pour `nbAlertesTraitees`/`nbReequilibrages`/`dernierGoulot`, alimentés uniquement par le même circuit mort (`recevoirAlerteGoulot()`/`prendreDecisionAHP()`, tous deux inatteignables sous génération 2) | `etatCoordinateurMacro()` (à porter) ; `sv.nbMessagesHierarchiquesRecus`/`sv.dernierMessageHierarchique` — **déjà présents et alimentés dans le master**, byte-identiques au collègue (bloc "BOITE HIERARCHIQUE GENERATION 2", `recevoirMessageHierarchique()`, vérifié sur les 4 classes StrategicAgent/TacticalAgent/CoordinatorAgent/OperationalAgent) | Faible — tous les compteurs de remplacement existent déjà et sont déjà alimentés ; aucune nouvelle donnée à faire vivre | **PORTER** : texte d'état via la source unique + remplacement des 3 compteurs morts par les compteurs déjà vivants |
+| `popupOperationalAgent()` | Utilise `p.goulot`, un **flag de groupe** écrit identiquement sur tous les postes du groupe par `analyserEtat()` dès qu'un seul déclenche GOULOT | Recalcule un état **propre à chaque poste individuel** (mêmes seuils `op.seuilAlertFile`/`seuilGoulotWT`, entités métier réelles uniquement) | **Bug confirmé** (C14.53) : des micro-activités s'affichent "GOULOT" alors qu'elles n'ont encore traité aucune unité, simplement parce qu'un AUTRE poste du même groupe est en goulot | `estFluxVisuelSeulement()`, `op.seuilAlertFile`, `op.seuilGoulotWT` — tous **déjà présents** dans le master | Faible — pure représentation, mêmes seuils que la détection de groupe déjà en place, aucune nouvelle définition de goulot | **PORTER** telle quelle |
+| `ajusterDebits()` (`StrategicAgent`) | Ajuste `sc.debitParHeure` (débit de production MTS) à partir de `piGlobalCourant`, prévision de demande, écart de stock cible | Diffère uniquement sur des points **PI/production** : `pi = performanceDisponible ? piGlobalCourant : ciblePIGlobal` (amorçage PI), plafond `plafondMultipleDebitBase` (garde-fou débit) — **aucune ligne relative à IDLE/WORKING/GOULOT/PANNE/popup/couleur** | 100% logique de production/PI, sans rapport avec la représentation d'état holonique | `ciblePIGlobal`, `plafondMultipleDebitBase` — champs du Bloc B, absents du master | **Hors périmètre A.5** | **REPORTER au Bloc B intégralement** — rien porté ici |
+| `analyserEtat()` (`OperationalAgent`) | (a) Garde `if (!ROLE_SUPERVISEUR && !ROLE_EXECUTION) return;` qui gèle les groupes Plan (rôle TACTIQUE) à `"IDLE"` à vie ; (b) un jeton visuel seul (ex. animation MTS) ne compte nulle part → poste affiché IDLE même quand une commande réelle le traverse | (a) Garde supprimée (C14.54) ; (b) `boolean visuelEnCours` détecte la présence d'un jeton visuel et bascule l'état sur `WORKING` transitoire au lieu de `IDLE`, **sans jamais** compter dans `fileReelle`/`wtMoyen`/GOULOT | Deux bugs de représentation confirmés (Plan figé, activité MTS invisible) ; **aucun changement des seuils/critères GOULOT/PANNE**, qui restent `tailleFile > seuilAlertFile \|\| wtMoyen > seuilGoulotWT`, identiques avant/après | Aucune — modifications autonomes, mêmes champs déjà présents | Faible — vérifié : la détection GOULOT/PANNE elle-même est bit-à-bit inchangée ; seule la branche IDLE/WORKING est affinée | **PORTER** les 2 correctifs (C14.52 + C14.54) ; **NE PAS toucher** au reste (détection goulot, émission AER, `p.goulot`, inchangés) |
+
+**Confirmation empirique de la cause racine (avant tout portage)** :
+- `realignementFluxHierarchiqueActif = true` (défaut codé en dur, master ligne ~7564) → routage génération 2 actif par défaut.
+- `CoordinatorAgent.etatAgent` valeur d'initialisation = `"IDLE"` (vérifié dans la déclaration `<Variable>`).
+- `traiterAlertesTactiques()` (master) : `if (main.realignementFluxHierarchiqueActif) return;` en toute première ligne utile → `etatAgent`/`nbAlertesTraitees`/`recevoirAlerteGoulot()` jamais atteints sous g2.
+- `prendreDecisionAHP()` : `if (alertesGoulot.isEmpty()) return;` — `alertesGoulot` n'est peuplée que par `recevoirAlerteGoulot()`, lui-même mort sous g2 → `nbReequilibrages` également mort, par transitivité.
+- `recevoirMessageHierarchique()`/`nbMessagesHierarchiquesRecus`/`dernierMessageHierarchique` : présents et **byte-identiques** au collègue sur les 4 classes concernées — confirmés vivants (mécanisme "génération 2" indépendant du circuit mort ci-dessus).
+
+### Portage réalisé
+
+**Fichier modifié** : `model/SCONTO_SVU_GENERIC_MASTER.alp`.
+
+1. **Ajout `String etatCoordinateurMacro(String macro)`** (nouvelle `<Function>` sur `Main`,
+   juste avant `couleurSupervisorMacro()`) : portage à l'identique de la fonction
+   collègue — calcule l'état ESCALADE/AJUSTEMENT/SURVEILLANCE (même logique
+   goulot/wtDepasse/reeqRecent que `couleurSupervisorMacro()` d'origine), et
+   synchronise `sv.etatAgent`/`sv.tEntreeEtat` à chaque appel (au lieu de ne
+   jamais les écrire sous génération 2).
+2. **`couleurSupervisorMacro()` refactorisée** : délègue désormais à
+   `etatCoordinateurMacro(macro)` puis mappe le résultat en couleur — résultat
+   strictement identique à l'ancienne version (mêmes 4 couleurs, mêmes conditions),
+   élimine la duplication de logique.
+3. **`popupSupervisor()`** :
+   - "État courant" utilise `etatCoordinateurMacro(macro)` (repli sur `sv.etatAgent`
+     si `null`, ex. coordinateur sans OP rattaché) — ne peut plus jamais contredire
+     la couleur du pavé ;
+   - "Alertes traitées"/"Rééquilibrages"/"Dernier goulot" (toujours 0/0/"—")
+     remplacés par "Messages hiérarchiques reçus"/"Dernier message" (déjà vivants).
+4. **`popupOperationalAgent()`** : la boucle sur `op.postesLies` recalcule un état
+   propre à chaque poste (`fileReellePoste`/`wtPoste`, mêmes seuils que
+   `analyserEtat()`), au lieu de lire `p.goulot` (flag de groupe). Le préfixe
+   `[idPoste]` est ajouté à chaque ligne (comme chez le collègue) pour identifier
+   sans ambiguïté le poste concerné.
+5. **`analyserEtat()`** : suppression de la garde de rôle (les groupes Plan
+   reflètent désormais leur occupation réelle comme Source/Make/Deliver/Return) ;
+   ajout de `visuelEnCours` (bascule IDLE→WORKING transitoire sur simple passage
+   d'un jeton visuel, sans jamais alimenter GOULOT/PANNE).
+
+### Ce qui n'a pas été porté (et pourquoi)
+
+- **`ajusterDebits()` intégralement** : aucune ligne ne concerne la représentation
+  d'état holonique ; toutes les différences (amorçage PI, plafond de débit) relèvent
+  du Bloc B (PI/SCOR) et de la production — reporté sans exception.
+- **Détection GOULOT/PANNE elle-même** (`tailleFile > seuilAlertFile || wtMoyen >
+  seuilGoulotWT`, `p.enPanne`) : **strictement inchangée** dans `analyserEtat()`,
+  `couleurSupervisorMacro()`/`etatCoordinateurMacro()` — aucune nouvelle définition
+  scientifique du goulot introduite, conformément à la consigne.
+- **`p.goulot`** (flag de groupe écrit par `analyserEtat()`) : toujours calculé et
+  écrit à l'identique ; seul son usage en LECTURE dans le popup individuel a été
+  remplacé par un recalcul par poste — le flag de groupe lui-même reste utilisé
+  ailleurs (ex. `couleurSupervisorMacro`/`etatCoordinateurMacro` via `op.etatHolon`).
+
+### Vérification des principes A.5
+
+- **Source unique par holon** : Coordinateur → `etatCoordinateurMacro()` utilisé par
+  couleur ET popup ; OperationalAgent → `etatHolon` (déjà unique, `analyserEtat()`)
+  utilisé par couleur/popup de groupe, complété par un recalcul par poste
+  strictement représentatif dans le popup individuel — pas une seconde source de
+  vérité, un raffinement d'affichage à grain plus fin.
+- **Pas de confusion Coordinateur / Supervisor-Pilot / OperationalExecution** :
+  chaque fonction modifiée reste strictement dans le périmètre de sa propre classe
+  (`CoordinatorAgent` pour `etatCoordinateurMacro`, `OperationalAgent` pour
+  `analyserEtat`/`popupOperationalAgent`) ; aucun champ d'une classe lu par une
+  fonction d'une autre classe au-delà de ce qui existait déjà.
+- **Aucune contamination inter-macro-processus** : `etatCoordinateurMacro(macro)`
+  filtre strictement les `OperationalAgent` de CE `macro` (`macroPrefixe(n3).equals(macro)`,
+  inchangé) — un Coordinateur Deliver ne peut pas hériter d'un état Make.
+- **Aucun hardcode ZENER/DataCo** : aucune chaîne de ce type introduite ; grep DataCo
+  confirmé à 0.
+
+### Tests à prévoir (non automatisables sans AnyLogic — protocole manuel suggéré)
+
+- **H-1** (IDLE cohérent) : poste sans aucune activité → `analyserEtat()` retourne
+  `IDLE` (visuelEnCours=false, positionOccupee=false) ; popup individuel affiche
+  "en attente (aucune unité traitée)".
+- **H-2** (WORKING cohérent) : poste avec entité métier réelle en file/traitement →
+  `WORKING` partout (groupe et popup individuel).
+- **H-3** (GOULOT réel) : `fileReellePoste > seuilAlertFile` ou `wtPoste > seuilGoulotWT`
+  sur au moins un poste → ce poste affiche "⚠️ GOULOT (file=…, attente=…s)" dans le
+  popup individuel ; les autres postes du même groupe, non en goulot, ne l'affichent
+  plus (contrairement à l'ancien comportement `p.goulot` de groupe).
+- **H-4** (PANNE réelle) : `p.enPanne=true` sur un poste → priorité absolue,
+  "🟣 EN PANNE" affiché pour CE poste uniquement dans le popup individuel.
+- **H-5** (pas de contamination inter-macro) : un Coordinateur Deliver en
+  SURVEILLANCE ne doit jamais afficher ESCALADE simplement parce que Make est en
+  ESCALADE — vérifié par le filtre `macroPrefixe(n3).equals(macro)` dans
+  `etatCoordinateurMacro()`, inchangé du master.
+- **H-6** (popup/couleur/texte cohérents) : cliquer sur un Coordinateur affiché en
+  ROUGE (escalade) → le popup doit désormais afficher "État courant : Escalade"
+  (au lieu de "Inactif / en attente" avant ce bloc).
+
+### Validations statiques
+
+- XML bien formé : OK.
+- IDs AnyLogic : 1655/1655 uniques (+1 pour le nouvel élément `<Function>`
+  `etatCoordinateurMacro`), aucun doublon.
+- `git diff --check` : aucune erreur d'espace blanc.
+- Grep DataCo : 0 occurrence.
+- Diff confiné à 3 zones (`etatCoordinateurMacro`/`couleurSupervisorMacro` ~L21879-
+  21990 ; `popupOperationalAgent`/`popupSupervisor` ~L22075-22260 ;
+  `analyserEtat` ~L50554-50762) — **aucun changement** à `ajusterDebits()`,
+  `calculerPIGlobal()`, aux fonctions multi-produit
+  (`stockFiniParProduit`/`synchroniserListeProduits`), aux stocks, commandes,
+  routage, génération de commandes, ordonnancement MTO, ou exports.
+- **Build AnyLogic** : EN ATTENTE (utilisateur).
+- **Run** : EN ATTENTE (utilisateur). Protocole suggéré : run court générique
+  (ZENER ou autre), observer au moins un Coordinateur passer en rouge (escalade)
+  et vérifier que son popup dit "Escalade" (pas "Inactif / en attente") ; ouvrir le
+  popup d'un `OperationalAgent` en goulot de groupe et vérifier que seuls les
+  postes individuellement en goulot l'affichent.
+- **Commit** : voir SHA ci-dessous (message `feat(generic): unify holonic agent states`).
 
 ## Bloc M — Fondation multi-produit Generic (2026-09-16, PLANIFIÉ — NON COMMENCÉ)
 

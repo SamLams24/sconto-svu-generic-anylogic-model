@@ -21876,10 +21876,10 @@ return new java.awt.Color(0xC0392B);]]></Body>
 				</Function>
 				<Function AccessType="default" StaticFunction="false">
 					<ReturnModificator>RETURNS_VALUE</ReturnModificator>
-					<ReturnType><![CDATA[java.awt.Color]]></ReturnType>
-					<Id>1791000002201</Id>
-					<Name><![CDATA[couleurSupervisorMacro]]></Name>
-					<X>-571</X><Y>540</Y>
+					<ReturnType><![CDATA[String]]></ReturnType>
+					<Id>1791000002198</Id>
+					<Name><![CDATA[etatCoordinateurMacro]]></Name>
+					<X>-571</X><Y>510</Y>
 					<Label><X>10</X><Y>0</Y></Label>
 					<PublicFlag>false</PublicFlag>
 					<PresentationFlag>true</PresentationFlag>
@@ -21888,14 +21888,28 @@ return new java.awt.Color(0xC0392B);]]></Body>
 						<Name><![CDATA[macro]]></Name>
 						<Type><![CDATA[String]]></Type>
 					</Parameter>
-					<Body><![CDATA[// Couleur du COORDINATEUR d'un macro-processus. Calcul DIRECT (source de verite
-// unique) : on regarde en temps reel les OperationalAgent en GOULOT de CE
-// macro-processus, sans dependre du timing de traiterAlertesTactiques().
+					<Body><![CDATA[// Bloc A.5 -- SOURCE UNIQUE DE VERITE pour l'etat d'un CoordinatorAgent,
+// partagee par la couleur du pave (couleurSupervisorMacro) ET le popup
+// (popupSupervisor). Avant ce correctif, la couleur du pave etait deja
+// calculee ici EN DIRECT (temps reel), mais le popup lisait un champ separe,
+// sv.etatAgent, qui n'etait ecrit QUE par traiterAlertesTactiques() -- une
+// fonction qui retourne immediatement des sa 1ere ligne des lors que
+// realignementFluxHierarchiqueActif=true (le routage "generation 2", actif
+// par defaut dans ce master). sv.etatAgent restait donc fige a vie sur sa
+// valeur d'initialisation ("IDLE" -> "Inactif / en attente"), quel que soit
+// l'etat reel affiche par la couleur du pave : un Coordinateur visible en
+// ROUGE pouvait donc afficher un popup "Inactif / en attente". Desormais
+// popupSupervisor() appelle cette meme fonction, garantissant que le texte
+// affiche correspond TOUJOURS a la couleur du pave. Portage generique du
+// correctif collegue (reference/colleague, etatCoordinateurMacro, C14.55) --
+// logique de detection GOULOT/ESCALADE strictement identique a celle deja
+// utilisee par couleurSupervisorMacro() du master (aucune nouvelle
+// definition de goulot introduite).
 CoordinatorAgent sv = null;
 for (CoordinatorAgent s : supervisorsMacro) {
     if (macro.equals(s.idMacroProcessus)) { sv = s; break; }
 }
-if (sv == null) return new java.awt.Color(0x95A5A6);
+if (sv == null) return null;
 
 int goulots = 0;
 int actifs = 0;
@@ -21928,22 +21942,53 @@ for (OperationalAgent op : opAgents) {
     }
 }
 
-if (actifs == 0) return new java.awt.Color(0x95A5A6);              // gris : aucun OP dans ce macro
-
-// Cohérence avec le TacticalAgent du meme macro : rouge si un OP est en GOULOT
-// OU si le temps d'attente actuel du macro depasse le seuil d'escalade tactique.
-boolean wtDepasse = false;
-{
+String etat;
+if (actifs == 0) {
+    etat = null; // aucun OP dans ce macro : pas d'etat pertinent (gris)
+} else {
+    // Cohérence avec le TacticalAgent du meme macro : escalade si un OP est en
+    // GOULOT OU si le temps d'attente actuel du macro depasse le seuil
+    // d'escalade tactique.
+    boolean wtDepasse = false;
     double seuil = 10.0;
     for (TacticalAgent t : tacticals) {
         if (macro.equals(t.idMacroProcessus)) { seuil = t.seuilEscalade; break; }
     }
     wtDepasse = (wtMacro > seuil);
+
+    if (goulots > 0 || wtDepasse) {
+        etat = "ESCALADE";
+    } else if (sv.dernierReeq > 0 && time() - sv.dernierReeq < 120) {
+        etat = "AJUSTEMENT";
+    } else {
+        etat = "SURVEILLANCE";
+    }
 }
-if (goulots > 0 || wtDepasse) return new java.awt.Color(0xC0392B); // rouge : escalade
-boolean reeqRecent = (sv.dernierReeq > 0 && time() - sv.dernierReeq < 120);
-if (reeqRecent)  return new java.awt.Color(0xE67E22);            // orange : ajustement recent
-return new java.awt.Color(0x27AE60);                              // vert : nominal]]></Body>
+
+if (etat != null && !etat.equals(sv.etatAgent)) { sv.etatAgent = etat; sv.tEntreeEtat = time(); }
+return etat;]]></Body>
+				</Function>
+				<Function AccessType="default" StaticFunction="false">
+					<ReturnModificator>RETURNS_VALUE</ReturnModificator>
+					<ReturnType><![CDATA[java.awt.Color]]></ReturnType>
+					<Id>1791000002201</Id>
+					<Name><![CDATA[couleurSupervisorMacro]]></Name>
+					<X>-571</X><Y>540</Y>
+					<Label><X>10</X><Y>0</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>true</ShowLabel>
+					<Parameter>
+						<Name><![CDATA[macro]]></Name>
+						<Type><![CDATA[String]]></Type>
+					</Parameter>
+					<Body><![CDATA[// Bloc A.5 -- couleur derivee de etatCoordinateurMacro() (source de verite
+// unique, partagee avec popupSupervisor() -- voir C14.55 / etatCoordinateurMacro).
+String etat = etatCoordinateurMacro(macro);
+if (etat == null) return new java.awt.Color(0x95A5A6);              // gris : coordinateur absent ou aucun OP dans ce macro
+if ("ESCALADE".equals(etat))   return new java.awt.Color(0xC0392B); // rouge
+if ("AJUSTEMENT".equals(etat)) return new java.awt.Color(0xE67E22); // orange
+return new java.awt.Color(0x27AE60);                                // vert : nominal]]></Body>
 				</Function>
 				<Function AccessType="default" StaticFunction="false">
 					<ReturnModificator>RETURNS_VALUE</ReturnModificator>
@@ -22072,19 +22117,48 @@ if (op.postesLies == null || op.postesLies.isEmpty()) {
     sb.append("  (aucune)\n");
 } else {
     for (PosteGenericAgent p : op.postesLies) {
-        int wip = 0;
-        try { wip = p.queue.size() + p.delay.size(); } catch (Exception ex) {}
+        // Bloc A.5 -- p.goulot est un flag DE GROUPE, ecrit par analyserEtat()
+        // identiquement sur TOUS les postes du groupe des que l'un d'eux
+        // (ou leur somme) declenche GOULOT : il ne reflete jamais l'etat reel
+        // du poste INDIVIDUEL affiche ici, d'ou des micro-activites marquees
+        // "GOULOT" alors qu'elles n'ont encore traite aucune unite. On
+        // recalcule ici un etat PROPRE A CE POSTE, sur les memes bases que
+        // analyserEtat() (entites metier reelles uniquement, jetons visuels
+        // exclus) mais sans agreger avec les autres postes du groupe. Portage
+        // generique du correctif collegue (reference/colleague, C14.53) --
+        // aucune nouvelle definition de goulot introduite : memes seuils
+        // (op.seuilAlertFile/seuilGoulotWT) que analyserEtat().
+        int fileReellePoste = 0;
+        int traitementReelPoste = 0;
+        double wtPoste = 0;
+        try {
+            int nqp = p.queue.size();
+            for (int qi = 0; qi < nqp; qi++) {
+                FluxEntity e = p.queue.get(qi);
+                if (e != null && !estFluxVisuelSeulement(e)) {
+                    fileReellePoste++;
+                    wtPoste = Math.max(wtPoste, time() - e.tDebutAttente);
+                }
+            }
+            int ndp = p.delay.size();
+            for (int di = 0; di < ndp; di++) {
+                FluxEntity e = p.delay.get(di);
+                if (e != null && !estFluxVisuelSeulement(e)) traitementReelPoste++;
+            }
+        } catch (Throwable ignored) {}
+
         String etatPoste;
         if (p.enPanne) {
             etatPoste = String.format("🟣 EN PANNE (reprise dans %.0f min)", Math.max(0, (p.tFinPanne - time()) / 60.0));
-        } else if (p.goulot) {
-            etatPoste = "⚠️ GOULOT";
-        } else if (wip > 0) {
-            etatPoste = "actif (" + wip + " en cours)";
+        } else if (fileReellePoste > op.seuilAlertFile || wtPoste > op.seuilGoulotWT) {
+            etatPoste = String.format("⚠️ GOULOT (file=%d, attente=%.0fs)", fileReellePoste, wtPoste);
+        } else if (fileReellePoste + traitementReelPoste > 0) {
+            etatPoste = "actif (" + (fileReellePoste + traitementReelPoste) + " en cours)";
         } else {
-            etatPoste = "en attente";
+            etatPoste = "en attente (aucune unité traitée)";
         }
-        sb.append(String.format("  • %-32s %-8s  %s\n",
+        sb.append(String.format("  • [%s] %-32s %-8s  %s\n",
+            p.idPoste,
             (p.nom != null ? (p.nom.length() > 32 ? p.nom.substring(0,32) : p.nom) : p.idPoste),
             p.codeSCOR,
             etatPoste));
@@ -22152,7 +22226,10 @@ sb.append("═══════════════════════
 sb.append("  COORDINATEUR : ").append(macro).append(macro.equals("sR") ? "" : "1").append("  (").append(libelleMacroProcessusSCOR(macro)).append(")\n");
 sb.append("════════════════════════════════════\n\n");
 if (sv == null) { sb.append("(non initialisé)\n"); getExperimentHost().showMessageDialog(sb.toString()); return; }
-sb.append("▸ État courant       : ").append(etatLisible(sv.etatAgent)).append("\n");
+// Bloc A.5 -- meme fonction que la couleur du pave (etatCoordinateurMacro),
+// pour garantir que ce texte ne contredit jamais la couleur affichee.
+String etatLive = etatCoordinateurMacro(macro);
+sb.append("▸ État courant       : ").append(etatLisible(etatLive != null ? etatLive : sv.etatAgent)).append("\n");
 sb.append("▸ Depuis             : ").append(String.format("%.0f s", time() - sv.tEntreeEtat)).append("\n\n");
 KPIBundle k = board.kpiParMacro.get(macro);
 sb.append("── Performance du macro-processus ──\n");
@@ -22164,10 +22241,22 @@ if (k != null) {
 } else {
     sb.append("  (aucune donnée pour l'instant)\n");
 }
+// Bloc A.5 -- "Alertes traitées"/"Rééquilibrages"/"Dernier goulot" venaient d'un
+// circuit de décision AHP (recevoirAlerteGoulot/prendreDecisionAHP) qui n'est
+// alimenté QUE par traiterAlertesTactiques() -- fonction elle-même désactivée
+// dès sa 1ère ligne quand realignementFluxHierarchiqueActif=true (le routage
+// "génération 2", actif par défaut sur ce modèle). Ces 3 compteurs restaient
+// donc figés à 0/0/"—" en permanence, quelle que soit l'activité réelle : un
+// autre symptôme d'incohérence, indépendant de "État courant" mais de même
+// cause racine. Remplacés par les compteurs réellement alimentés en
+// génération 2 (recevoirMessageHierarchique(), déjà présent dans ce master,
+// appelé à chaque message hiérarchique réellement distribué à ce coordinateur).
 sb.append("\n── Activité de supervision ─────────\n");
-sb.append(String.format("  Alertes traitées   : %d\n", sv.nbAlertesTraitees));
-sb.append(String.format("  Rééquilibrages     : %d\n", sv.nbReequilibrages));
-sb.append(String.format("  Dernier goulot     : %s\n", (sv.dernierGoulot != null && !sv.dernierGoulot.isEmpty()) ? sv.dernierGoulot : "—"));
+sb.append(String.format("  Messages hiérarchiques reçus : %d\n", sv.nbMessagesHierarchiquesRecus));
+sb.append("  Dernier message      : ").append(
+    (sv.dernierMessageHierarchique != null && !sv.dernierMessageHierarchique.isEmpty())
+        ? (sv.dernierMessageHierarchique.length() > 80 ? sv.dernierMessageHierarchique.substring(0, 80) + "…" : sv.dernierMessageHierarchique)
+        : "—").append("\n");
 if ("sM".equals(macro)) {
     sb.append("\n── Ordonnancement de la production ─\n");
     sb.append(String.format("  Commandes en carnet : %d\n", sv.carnetCommandesMTO.size()));
@@ -50551,7 +50640,21 @@ board.publierAlerte(msg);]]></Body>
 					<PresentationFlag>true</PresentationFlag>
 					<ShowLabel>true</ShowLabel>
 					<Body><![CDATA[if (postesLies == null || postesLies.isEmpty()) return;
-if (!Main.ROLE_SUPERVISEUR.equals(roleHolonique) && !Main.ROLE_EXECUTION.equals(roleHolonique)) return;
+// Bloc A.5 -- C14.54 : recalculerTousLesGroupesOperationnels() cree 1
+// OperationalAgent par (acteur, code SCOR N3) SUR TOUS LES POSTES DU MODELE,
+// Plan (codes Px.y, roleHolonique=TACTIQUE) compris. Cette porte restreignait
+// encore la mise a jour d'etatHolon aux roles SUPERVISEUR/EXECUTION : les
+// groupes Plan (ex. sP2.4.1, sP3.4.1, sP4.4.x, tous traverses par des jetons
+// visuels de commande reels) recevaient bien une pastille dans la grille
+// OperationalAgents, mais elle restait figee a "IDLE" (valeur d'initialisation)
+// A VIE, quel que soit le flux reel les traversant -- contrairement a
+// Source/Make/Deliver/Return. Le garde n'a plus lieu d'etre : le filtre
+// precedent (postesLies vide) suffit deja a exclure les groupes purement
+// Strategique/Tactique sans poste physique rattache ; ceux qui EN ONT un
+// (comme les groupes Plan) doivent refleter leur occupation reelle au meme
+// titre que Source/Make/Deliver/Return. Portage generique du correctif
+// collegue (reference/colleague, C14.54) -- aucun changement de routage/
+// production, uniquement de la representation d'etat.
 
 Main main = (Main) getOwner();
 BlackboardAgent board = main.board;
@@ -50561,6 +50664,12 @@ int tailleFile = 0;
 int enTraitement = 0;
 double wtMoyen = 0;
 double ctMoyen = 0;
+// Bloc A.5 -- C14.52 : un jeton VISUEL SEUL (ex. animation MTS servie depuis
+// le stock) trace toujours une commande REELLE, mais ne doit jamais compter
+// dans fileReelle/wtMoyen (aucun risque de faux GOULOT) -- sa PRESENCE
+// COURANTE sert seulement a distinguer WORKING de IDLE ci-dessous. Portage
+// generique du correctif collegue (reference/colleague, C14.52).
+boolean visuelEnCours = false;
 // C14.27 -- ETAT REEL INSTANTANE au lieu d'une moyenne cumulee. wtMoyen lisait
 // auparavant kpi.avgWaitTime(), une moyenne cumulee depuis le debut du run qui
 // ne redescend quasiment jamais (voir C14.21/C14.24). Une fois le seuil franchi
@@ -50599,6 +50708,7 @@ for (PosteGenericAgent p : postesLies) {
         try {
             FluxEntity e = p.queue.get(qi);
             if (e != null && !main.estFluxVisuelSeulement(e)) fileReelle++;
+            if (e != null && main.estFluxVisuelSeulement(e)) visuelEnCours = true;
         } catch (Throwable ignored) {}
     }
     int nd = p.delay.size();
@@ -50606,6 +50716,7 @@ for (PosteGenericAgent p : postesLies) {
         try {
             FluxEntity e = p.delay.get(di);
             if (e != null && !main.estFluxVisuelSeulement(e)) traitementReel++;
+            if (e != null && main.estFluxVisuelSeulement(e)) visuelEnCours = true;
         } catch (Throwable ignored) {}
     }
 
@@ -50648,7 +50759,10 @@ if (panneActive) {
     // micro-activites.
     nouvelEtat = "GOULOT";
 } else if (!positionOccupee) {
-    nouvelEtat = "IDLE";
+    // C14.52 -- un jeton visuel present (sans entite metier physique) signale
+    // qu'une commande reelle traverse ce poste (ex. animation MTS) : WORKING
+    // transitoire, jamais GOULOT/PANNE (voir boucle ci-dessus).
+    nouvelEtat = visuelEnCours ? "WORKING" : "IDLE";
 } else {
     nouvelEtat = "WORKING";
 }

@@ -1259,7 +1259,7 @@ détaillé), A.4 (historique Dashboard/Excel/ABox/finalisation moteur) et A.5
 runs réels. **A.1–A.5 ne seront plus modifiés sauf bug démontré par un nouveau run.**
 Poursuite exclusive avec le Bloc M (fondation multi-produit Generic).
 
-## Bloc M — Fondation multi-produit Generic (2026-09-16, M.1 EN COURS depuis 2026-09-17)
+## Bloc M — Fondation multi-produit Generic (2026-09-16 ; M.1 TERMINÉ/FIGÉ 2026-09-17 ; M.2 EN COURS)
 
 **Ordonnancement décidé** : après les blocs SAFE A.3/A.4/A.5, avant la refonte PI/SCOR
 du Bloc B (le multi-produit influence stocks, demande, réappro, Make, stratégique et
@@ -1325,9 +1325,10 @@ DataCo, ou tout nom/acteur spécifique DataCo.
 - [ ] M-9 — politique autonome : rupture A ne déclenche pas artificiellement une production B
 - [ ] M-10 — concurrence : aucune ConcurrentModificationException lors du parcours produit
 
-**Statut** : **M.1 EN COURS** (audit + source de vérité + initialisation portés,
-2026-09-17). M.2 (consommation/crédit complets), réapprovisionnement, UI restent à
-faire.
+**Statut** : **M.1 TERMINÉ/FIGÉ** (audit + source de vérité + initialisation portés
+et validés par l'utilisateur, 2026-09-17). **M.2 EN COURS** (consommation/crédit par
+produit). Réapprovisionnement, politique autonome multi-produit, UI restent à faire
+en M.3+.
 
 ### Bloc M.1 — audit, source de vérité, initialisation (2026-09-17)
 
@@ -1546,11 +1547,39 @@ part du total par poste plutôt que le total complet sur chacun).
   non modifié), à `consommerStockFiniProduit()`, `crediterStockFiniProduit`
   (toujours absente), réapprovisionnement, politique autonome, PI/SCOR, exports,
   états holoniques, ordonnancement.
-- **Build AnyLogic** : EN ATTENTE (utilisateur).
-- **Run** : EN ATTENTE (utilisateur) — même protocole que M.1 (run ZENER standard,
-  `modeMultiProduitActif` absent/false, comportement strictement inchangé).
-- **Commit** : voir SHA ci-dessous (message
-  `fix(generic): preserve total stock with partial product config`).
+- **Build AnyLogic** : OK.
+- **Run** : OK (run ZENER legacy, JSON sans `exportOnStop`).
+- **Commit** : `3fed760` (message `fix(generic): preserve total stock with partial product config`).
+
+### Validation utilisateur définitive — M.1 / M.1-FIX (2026-09-17)
+
+Run analysé sur Excel final, CSV traces complet, CSV KPI, ABox TTL.
+
+- **Non-régression mono-produit confirmée** : Tfinal Excel=1493,3s ; Historique
+  Dashboard 51 snapshots/51 timestamps uniques, dernier=1493,3, PI final=8,03,
+  Finished Stock final=8 ; Execution Brute 710 événements ; CSV complet cohérent
+  (710 BRUT/204 AGG_MICRO/204 AGG_SCOR/63 AGG_MACRO/4 AGG_GLOBAL, dernier BRUT
+  t=1484,907) ; CSV KPI `PI_GLOBAL=8,0297`. Source/Plan/Make/Deliver actifs, un
+  vrai goulot Make observé (`M1.2` avgWaitTime≈732s, cohérent avec A.5). 0 erreur
+  Excel.
+- **TTL non final expliqué, pas une régression A.4** : `exportReason=ORDER_CLOSED_CMD_4`,
+  `simulationTime=918`, `RawEvent=412` == 412 événements BRUT du CSV à t≤918 — le
+  run a simplement continué après cette dernière clôture de commande, et le JSON
+  utilisé pour ce test est le JSON legacy où `exportOnStop` est absent/false (cf.
+  A.4-FIX-5A). **Aucun mécanisme ABox modifié pour cela.**
+- **Note préexistante documentée (pas une régression M.1)** : en mono-produit, les
+  feuilles "Multi-produit ZENER"/"Performance par produit" affichent encore le
+  scaffold dormant (`SCENARIO DISTRIBUTION`, `SCENARIO DELIVER RETURN CLIENT`,
+  stock=100 par référence) alors que le Finished Stock runtime réel vaut 8 — déjà
+  présent avant M.1 (confirmé sur le run A.5). Présentation potentiellement
+  trompeuse, mais pas un bug moteur (`modeMultiProduitActif=false`). **À documenter
+  pour un futur sous-bloc UI/export multi-produit ; ne pas corriger en M.2 sauf si
+  une modification M.2 le rend indispensable.**
+
+**BLOC M.1 : audit = VALIDÉ ; source de vérité = VALIDÉ ; JSON legacy = VALIDÉ ;
+M.1-FIX configuration partielle = VALIDÉ ; run legacy ZENER = VALIDÉ.**
+
+**STATUT M.1 : TERMINÉ / FIGÉ.**
 
 **PR reste DRAFT. Aucun merge vers `main`.**
 

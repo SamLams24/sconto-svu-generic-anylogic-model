@@ -109,7 +109,7 @@ diagnostic commandes bloquées) ; absent du master — Bloc A/C.
 - [x] Matching strict flux/commande — **PORTÉ** (2026-09-16, commit `bf0e490`, Build/run utilisateur OK)
 - [x] Diagnostic commandes bloquées — **PORTÉ** (2026-09-16, commit `0363b6b`, Build/run nominal utilisateur OK ; test fonctionnel forcé [DIAG-BLOQUEE] À TESTER ULTÉRIEUREMENT)
 - [x] Stock matière détaillé — **PORTÉ** (2026-09-16, commit `d52d431`, Build AnyLogic utilisateur OK ; validation fonctionnelle différée au Bloc A.4, où la fonction sera consommée pour la première fois)
-- [x] Historique Dashboard / Excel — **PORTÉ, CORRIGÉ (A.4-FIX-1/2/3/4)** ; validation définitive **EN ATTENTE** du nouveau run utilisateur post-fix (2026-09-16/17, voir section A.4-FIX ci-dessous)
+- [x] Historique Dashboard / Excel — **PORTÉ, CORRIGÉ (A.4-FIX-1/2/3/4/5)** ; validation définitive **EN ATTENTE** du nouveau run utilisateur post-fix (2026-09-16/17, voir section A.4-FIX ci-dessous)
 - [ ] États holoniques cohérents
 - [ ] Build AnyLogic utilisateur
 - [ ] Run court générique utilisateur
@@ -892,6 +892,163 @@ resultats" pour obtenir un export final synchronisé.**
 - **Commit** : voir SHA ci-dessous (message `fix(generic): finalize dashboard history on run stop`).
 
 **Bloc A.4 : validation définitive toujours EN ATTENTE du run post A.4-FIX-4.**
+
+### A.4-FIX-5 — ABox finale absente + terminaison réelle du moteur (2026-09-17)
+
+**Validation du run post A.4-FIX-4** : confirmée — mécanisme Historique Dashboard
+totalement fonctionnel : ~81 snapshots, premier ~t=16,5, cadence 30 s régulière,
+snapshots jusqu'à t=2370, **snapshot final exact à t=2391,3**, aucun timestamp
+dupliqué, 26 colonnes cohérentes, export Excel final réussi (`[EXCEL] Export Excel #6
+reussi`). **A.2 (diagnostic commandes bloquées) validé fonctionnellement** :
+`[DIAG-BLOQUEE]` réellement observé sur `REAPPRO_1`. Deux problèmes résiduels
+identifiés par analyse croisée Excel/ABox/CSV, traités ici.
+
+#### A.4-FIX-5A — ABox finale absente
+
+**Investigation menée avant toute modification** :
+
+1. **`aboxExportActif`** : déclaré `public boolean aboxExportActif = true;` (défaut
+   codé en dur), rechargé depuis le JSON via `jsonBool(am,"enabled",true)` — donc
+   `true` par défaut, sauf configuration explicite contraire.
+2. **`aboxExportSurArret`** : déclaré `public boolean aboxExportSurArret = false;`
+   (défaut codé en dur), rechargé depuis le JSON via
+   `jsonBool(am,"exportOnStop",false)` — **`false` par défaut**, sauf activation
+   explicite `"exportOnStop": true` dans le scénario JSON.
+3. **`exporterABoxRuntimeTTL(String raison)`** : commence par
+   `if (!aboxExportActif) return "";` (garde interne supplémentaire, cohérente avec
+   le point 1). Construit un `run:exportReason` et un `run:simulationTimeSeconds`
+   à partir de `raison` et `time()` au moment de l'appel — mécanisme sain, aucune
+   anomalie trouvée ici.
+4. **Nom de fichier** : `"SCONTO_SVU_ABOX_" + aboxSafeId(nomEntreprise) + "_" +
+   aboxEnsureRunId() + ".ttl"`, où `aboxEnsureRunId()` calcule `aboxRunId` **une
+   seule fois par run** (`if (aboxRunId == null || aboxRunId.isEmpty())`, mis en
+   cache pour tout le run) — donc **toutes les exportations ABox d'un même run
+   écrivent dans EXACTEMENT LE MÊME FICHIER et se remplacent mutuellement** (pas de
+   suffixe temporel variable par export, contrairement à la convention `RUN_<t1>_<t2>`
+   décrite dans `reference/colleague/docs/SCENARIOS_AND_DATA.md` — **divergence
+   documentaire notée** : cette doc semble décrire un comportement plus ancien ou
+   différent du code actuel du master ; le code fait foi). Ce n'est pas un défaut :
+   cela signifie qu'un export réussi écrase simplement le précédent, donc que le
+   fichier `.ttl` présent sur disque reflète toujours le DERNIER export réussi.
+5. **Cause exacte établie** : `finaliserRunEtExporter()` gardait son export ABox
+   derrière `aboxExportActif && aboxExportSurArret` (fidèle au code original
+   d'`arreterSimulation()` avant tout portage). Pour le scénario du run analysé,
+   `aboxExportSurArret=false` — **l'appel n'a donc jamais eu lieu**, ce qui est le
+   comportement STRICTEMENT ATTENDU compte tenu de cette configuration. Le dernier
+   export ABox réussi restait celui de la clôture de `CMD_6`
+   (`exportReason=ORDER_CLOSED_CMD_6`), écrit par le mécanisme de clôture de
+   commande (C14, `aboxExportSurClotureCommande`, **inchangé**), qui n'a plus été
+   réécrit depuis faute d'un événement déclencheur postérieur (aucune commande
+   close après CMD_6, et le point 5B ci-dessous explique pourquoi la finalisation
+   elle-même n'a pas non plus produit un déclencheur ABox par défaut).
+
+**Décision** : **aucun changement de sémantique** apporté à `aboxExportSurArret` — ce
+réglage scénario existant (`"exportOnStop"`) est respecté tel quel, ne pas en
+présumer une intention différente sans audit complet demandé par l'utilisateur.
+**Correctif appliqué = observabilité, pas changement de comportement** : ajout de
+logs explicites (voir section Logging ci-dessous) pour que ce SKIP, auparavant
+totalement silencieux, soit désormais visible et explicite dans le journal
+(`[FINALIZE] ABox finale SKIP : aboxExportActif=... ; aboxExportSurArret=...`).
+**Recommandation utilisateur** : pour obtenir systématiquement un TTL final
+synchronisé avec l'Excel final à chaque arrêt, activer `"exportOnStop": true` dans
+le scénario JSON — décision volontairement laissée à l'utilisateur, cette bascule
+existante n'appartenant pas au périmètre de ce correctif.
+
+#### Logging finalisation (toutes les étapes de `finaliserRunEtExporter()`)
+
+Ajout de `board.logEvent(...)` explicites à chaque étape, remplaçant les
+`catch (Throwable ignored...) {}` silencieux par des traces non destructives mais
+visibles :
+- `[FINALIZE] Dashboard final capture t=...`
+- `[FINALIZE-ERROR] Dashboard : ...` (si exception)
+- `[FINALIZE] ABox finale exportee <fichier> | t=...` (si le garde `aboxExportActif
+  && aboxExportSurArret` est satisfait)
+- `[FINALIZE] ABox finale SKIP : aboxExportActif=... ; aboxExportSurArret=...` (sinon)
+- `[FINALIZE-ERROR] ABox : ...` (si exception)
+- `[FINALIZE] Excel final exporte t=...`
+- `[FINALIZE] Excel final SKIP : exportExcelActif=false` (sinon)
+- `[FINALIZE-ERROR] Excel : ...` (si exception)
+- `[FINALIZE] finishSimulation demande = true/false` (dans `arreterSimulation()`,
+  après l'appel, voir A.4-FIX-5B)
+
+**Robustesse `runFinalise`** : stratégie **simple** retenue (un seul drapeau,
+positionné à `true` avant les exports), documentée explicitement dans le code :
+un export qui échoue ne sera pas retenté par un second appel (idempotence
+prioritaire sur la reprise automatique), mais l'échec reste visible via
+`[FINALIZE-ERROR]`. Pas de séparation en 3 drapeaux (`dashboardFinalCapture`/
+`aboxFinalExportee`/`excelFinalExporte`) — jugée non nécessaire au regard de
+l'objectif (idempotence + visibilité, pas résilience/reprise).
+
+#### A.4-FIX-5B — terminaison réelle du moteur AnyLogic
+
+**Observation du run réel** : après `[T=2391.3] === SIMULATION ARRETEE - PI=7.809
+===` et `[T=2391.3] [EXCEL] Export Excel #6 reussi`, le journal continuait avec
+`[T=2400.0] [HOLON-STRAT] ...` puis `[T=2400.0] [DIAG-BLOQUEE] ...`, et l'interface
+est restée active jusqu'à environ t=2477. **`modeExecution=false` et
+`arrivee.reset()` n'arrêtent que la logique métier du modèle, pas le moteur de
+simulation AnyLogic lui-même**, qui continue à faire avancer le temps et déclencher
+les événements cycliques (`bilanPeriodique`, `DashboardHistoryManager`, etc.) tant
+qu'il n'est pas explicitement arrêté.
+
+**API utilisée** : `Agent.finishSimulation()` (héritée par `Main`, qui étend
+`Agent`), appelée directement comme `finishSimulation()`. D'après la documentation
+de l'API AnyLogic (méthode stable, présente depuis plusieurs versions majeures) :
+termine la simulation après l'événement courant, sans détruire immédiatement le
+modèle — les résultats restent consultables. C'est la sémantique demandée
+(privilégiée à `getEngine().finish()`/`stopSimulation()`, non utilisées).
+**Signature utilisée** : `boolean finishSimulation()` (sans argument, retour
+booléen indiquant si la demande a été acceptée).
+
+**Aucun usage préalable de cette API dans `model/SCONTO_SVU_GENERIC_MASTER.alp` ni
+dans `reference/colleague/`** — vérifié par grep, aucun résultat des deux côtés.
+**Cette signature n'a donc pas pu être confirmée par compilation locale** (aucun
+outil de build AnyLogic disponible dans cet environnement) : elle repose sur la
+documentation Agent de l'API AnyLogic 8.9.x. **Le Build AnyLogic de l'utilisateur
+reste la validation de référence**, comme pour l'ensemble de cette fusion.
+
+**Emplacement exact** : dans `arreterSimulation()`, après `finaliserRunEtExporter()`
+(donc après capture Dashboard finale + export ABox + export Excel), conformément à
+l'ordre demandé :
+```java
+modeExecution = false;
+arrivee.reset();
+strategic.piGlobalCourant = strategic.calculerPIGlobal();
+board.logEvent("=== SIMULATION ARRETEE - PI=... ===");
+finaliserRunEtExporter();
+boolean finishOk = finishSimulation();
+board.logEvent("[FINALIZE] finishSimulation demande = " + finishOk);
+```
+
+**Fichier modifié** : `model/SCONTO_SVU_GENERIC_MASTER.alp`.
+
+**Ce qui n'a pas été touché** : aucun changement aux snapshots C14 de clôture de
+commande, à `c14SnapshotFinalEffectue`, à `calculerPIGlobal()`/PI-SCOR, ni à la
+fondation multi-produit (`stockFiniParProduit`, `synchroniserListeProduits()`, etc.)
+— confirmé par l'emplacement des deux seuls blocs de diff (`finaliserRunEtExporter()`
+et `arreterSimulation()`).
+
+**Validations statiques** :
+- XML bien formé : OK.
+- IDs AnyLogic : 1679/1679 uniques, inchangé (uniquement du code Java libre modifié/
+  ajouté, aucun élément `<Function>`/`<Variable>` AnyLogic ajouté).
+- `git diff --check` : aucune erreur d'espace blanc.
+- Grep DataCo : 0 occurrence.
+- Diff confiné à 2 fonctions (`finaliserRunEtExporter()` lignes ~7129-7186,
+  `arreterSimulation()` lignes ~11868-11901) : aucun changement C14/PI-SCOR/
+  multi-produit, vérifié par les plages de lignes du diff.
+- **Build AnyLogic** : EN ATTENTE (utilisateur) — vérification de compilation de
+  `finishSimulation()` en particulier.
+- **Run** : EN ATTENTE (utilisateur). Protocole suggéré : run > 900 s, clic sur
+  "Arreter et voir resultats", puis vérifier (1) le moteur s'arrête réellement peu
+  après (plus d'événements `[HOLON-STRAT]`/`[DIAG-BLOQUEE]` après le log
+  `[FINALIZE] finishSimulation demande=...`) ; (2) présence des nouveaux logs
+  `[FINALIZE]` ; (3) si `"exportOnStop": true` est activé dans le scénario, présence
+  d'un TTL `RUN_FINALIZED` avec un `simulationTimeSeconds` proche du temps d'arrêt
+  réel ; (4) sinon, présence du log `[FINALIZE] ABox finale SKIP` expliquant
+  l'absence.
+- **Commit** : voir SHA ci-dessous (message `fix(generic): finalize and finish model execution`).
+
+**Bloc A.4 : validation définitive toujours EN ATTENTE du run post A.4-FIX-5.**
 
 ## Bloc M — Fondation multi-produit Generic (2026-09-16, PLANIFIÉ — NON COMMENCÉ)
 

@@ -7126,15 +7126,64 @@ void capturerPointHistoriqueDashboard() {
 // d'improviser une solution de bas niveau (API moteur) sans validation reelle
 // dans AnyLogic. Recommandation utilisateur : toujours cliquer
 // "Arreter et voir resultats" pour obtenir un export final synchronise.
+// A.4-FIX-5 -- LOGGING EXPLICITE (les catch silencieux ne suffisent pas pour une
+// fonction de finalisation scientifique) : chaque etape journalise son resultat
+// via board.logEvent(), y compris les cas de SKIP volontaire (configuration) et
+// les erreurs (non destructives, mais visibles, prefixees [FINALIZE-ERROR]).
+// A.4-FIX-5 -- IDEMPOTENCE : runFinalise est positionne a true AVANT les exports
+// (pas apres), volontairement -- strategie simple retenue plutot que 3 drapeaux
+// distincts (dashboard/abox/excel), pour ne pas complexifier au-dela du besoin.
+// Consequence assumee : si un export echoue (exception), un second appel ne le
+// retentera PAS (idempotence prioritaire sur la reprise automatique) -- l'echec
+// reste neanmoins visible via [FINALIZE-ERROR] dans le journal des evenements.
+// A.4-FIX-5A -- ABox finale : gardee derriere aboxExportActif && aboxExportSurArret,
+// EXACTEMENT comme le code original d'arreterSimulation() avant tout portage --
+// semantique NON modifiee (aboxExportSurArret est un reglage scenario existant,
+// "exportOnStop" dans le JSON, defaut=false). Cause identifiee du "TTL RUN_FINALIZED
+// absent" observe sur le run precedent : aboxExportSurArret valait false pour ce
+// scenario, donc l'export etait deja correctement ignore -- pas un bug, mais un
+// SKIP totalement silencieux jusqu'ici. Desormais journalise explicitement en
+// [FINALIZE] ... SKIP, pour que ce ne soit plus une absence inexpliquee. Pour
+// obtenir systematiquement un TTL final synchronise avec l'Excel final, activer
+// "exportOnStop": true dans le scenario JSON (ou champ correspondant si expose en
+// UI) -- decision laissee a l'utilisateur, cette semantique existante n'a pas ete
+// modifiee ici.
 void finaliserRunEtExporter() {
     if (runFinalise) return;   // idempotence : deja finalise pour ce run
     runFinalise = true;
-    try { capturerPointHistoriqueDashboard(); } catch (Throwable ignoredHistoriqueDashboardFinal) {}
-    if (aboxExportActif && aboxExportSurArret) {
-        try { exporterABoxRuntimeTTL("RUN_FINALIZED"); } catch (Throwable ignoredAboxFinal) {}
+
+    try {
+        capturerPointHistoriqueDashboard();
+        if (board != null) board.logEvent(String.format(java.util.Locale.US,
+            "[FINALIZE] Dashboard final capture t=%.1f", time()));
+    } catch (Throwable exDash) {
+        if (board != null) board.logEvent("[FINALIZE-ERROR] Dashboard : " + exDash.getMessage());
     }
+
+    if (aboxExportActif && aboxExportSurArret) {
+        try {
+            String fichierAbox = exporterABoxRuntimeTTL("RUN_FINALIZED");
+            if (board != null) board.logEvent(String.format(java.util.Locale.US,
+                "[FINALIZE] ABox finale exportee %s | t=%.1f", fichierAbox, time()));
+        } catch (Throwable exAbox) {
+            if (board != null) board.logEvent("[FINALIZE-ERROR] ABox : " + exAbox.getMessage());
+        }
+    } else if (board != null) {
+        board.logEvent("[FINALIZE] ABox finale SKIP : aboxExportActif=" + aboxExportActif
+            + " ; aboxExportSurArret=" + aboxExportSurArret
+            + " (reglage scenario \"exportOnStop\", non modifie par ce correctif)");
+    }
+
     if (exportExcelActif) {
-        try { exporterToutesLesTablesExcel(); } catch (Throwable ignoredExportFinal) {}
+        try {
+            exporterToutesLesTablesExcel();
+            if (board != null) board.logEvent(String.format(java.util.Locale.US,
+                "[FINALIZE] Excel final exporte t=%.1f", time()));
+        } catch (Throwable exExcel) {
+            if (board != null) board.logEvent("[FINALIZE-ERROR] Excel : " + exExcel.getMessage());
+        }
+    } else if (board != null) {
+        board.logEvent("[FINALIZE] Excel final SKIP : exportExcelActif=false");
     }
 }
 
@@ -11832,6 +11881,23 @@ board.logEvent("=== SIMULATION ARRETEE - PI=" + String.format("%.3f", strategic.
 // la limite connue (n'est PAS appelee par le bouton natif Stop/Terminate
 // d'AnyLogic, qui ne declenche aucun code du modele).
 finaliserRunEtExporter();
+// A.4-FIX-5B -- termine reellement le moteur AnyLogic APRES les exports finaux
+// ci-dessus (ordre obligatoire : les exports doivent voir l'etat du modele avant
+// le passage du moteur a FINISHED). Observation ayant motive cet ajout : sur le
+// run precedent, modeExecution=false + arrivee.reset() n'arretaient que la
+// logique metier du modele -- le moteur AnyLogic continuait reellement de
+// tourner ([HOLON-STRAT]/[DIAG-BLOQUEE] observes ~9s apres "SIMULATION ARRETEE",
+// interface active jusqu'a ~t+86s). API Agent.finishSimulation() (heritee par
+// Main) : termine la simulation apres l'evenement courant sans detruire
+// immediatement le modele, laissant les resultats consultables -- c'est le
+// comportement recherche (a la difference d'un arret moteur brutal). Cette API
+// n'a aucun usage prealable dans ce fichier ni dans reference/colleague/ : sa
+// disponibilite pour AnyLogic 8.9.x est basee sur la documentation Agent de
+// l'API AnyLogic (methode heritee, stable depuis plusieurs versions majeures),
+// non verifiee par compilation locale -- le Build AnyLogic de l'utilisateur reste
+// la validation de reference, comme pour tout le reste de cette fusion.
+boolean finishOk = finishSimulation();
+board.logEvent("[FINALIZE] finishSimulation demande = " + finishOk);
 //viewDashboard.navigateTo();]]></Body>
 				</Function>
 				<Function AccessType="default" StaticFunction="false">

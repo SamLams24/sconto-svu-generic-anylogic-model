@@ -31,6 +31,9 @@ public java.util.ArrayList<Object[]> historiqueDashboard = new java.util.ArrayLi
 // qu'un cycle de DashboardHistoryManager et une cloture de commande survenant
 // au meme instant simule ne produisent jamais deux lignes pour le meme temps.
 public double dernierTempsCaptureHistoriqueDashboard = -1.0;
+// A.4-FIX-4 -- garde d'idempotence de finaliserRunEtExporter() : un run ne se
+// finalise qu'une fois (remis a false a chaque demarrerSimulation()).
+public boolean runFinalise = false;
 
 // File FIFO de visualisation des communications.
 // Les communications métier restent distribuées immédiatement, mais leur
@@ -7091,6 +7094,50 @@ void capturerPointHistoriqueDashboard() {
     });
 }
 
+// A.4-FIX-4 -- FINALISATION DE RUN, IDEMPOTENTE.
+// Contexte : le run precedent a montre que arreterSimulation() ne suffisait pas a
+// garantir un export final synchronise, car son seul point d'entree UI
+// ("Arreter et voir resultats", ActionCode=arreterSimulation()) etait desactive
+// (<Enabled>false</Enabled>), rendant la fonction inaccessible. Un run se
+// terminait alors uniquement par le bouton natif Stop/Terminate du moteur
+// AnyLogic -- qui ne declenche aucun code du modele (verifie : aucun bloc
+// "on destroy"/"on finish" n'existe dans ce fichier, ni sur la classe Main, ni
+// sur le SimulationExperiment -- seul StartupCode existe). Consequence
+// observee : DashboardHistoryManager continuait de capturer en memoire (gate =
+// modeExecution seul, cf. A.4-FIX-2), mais plus aucune ecriture Excel/ABox ne
+// se declenchait apres la derniere cloture de commande (qui desactive
+// definitivement ExcelExportManager via c14SnapshotFinalEffectue) : historique
+// Dashboard/Excel/ABox figes a t=628 alors que la simulation avait continue
+// jusqu'a t=1489 (CMD_4 a CMD_7 crees/traites, visibles uniquement dans un CSV
+// exporte manuellement entretemps via un bouton totalement independant,
+// CoordinatorAgent.exporterCSV()).
+// Correctif retenu (le moins invasif des options evaluees) : regrouper ici la
+// capture finale + les exports de cloture dans une fonction UNIQUE et
+// IDEMPOTENTE, appelee par arreterSimulation() (dont le bouton UI est
+// desormais reactive -- <Enabled>true</Enabled> -- ce qui est la correction
+// principale : sans un point d'entree UI reellement accessible, aucune
+// finalisation cote modele n'est possible). Elle ne modifie ni les
+// snapshots de preuve sur cloture de commande (C14, inchanges, conserves) ni
+// c14SnapshotFinalEffectue.
+// LIMITE CONNUE ET ASSUMEE : cette fonction n'est PAS invoquee si l'utilisateur
+// utilise le bouton natif Stop/Terminate d'AnyLogic au lieu du bouton
+// "Arreter et voir resultats" du modele -- aucun hook de cycle de vie n'existe
+// dans ce schema pour intercepter cet arret natif, et il serait risque
+// d'improviser une solution de bas niveau (API moteur) sans validation reelle
+// dans AnyLogic. Recommandation utilisateur : toujours cliquer
+// "Arreter et voir resultats" pour obtenir un export final synchronise.
+void finaliserRunEtExporter() {
+    if (runFinalise) return;   // idempotence : deja finalise pour ce run
+    runFinalise = true;
+    try { capturerPointHistoriqueDashboard(); } catch (Throwable ignoredHistoriqueDashboardFinal) {}
+    if (aboxExportActif && aboxExportSurArret) {
+        try { exporterABoxRuntimeTTL("RUN_FINALIZED"); } catch (Throwable ignoredAboxFinal) {}
+    }
+    if (exportExcelActif) {
+        try { exporterToutesLesTablesExcel(); } catch (Throwable ignoredExportFinal) {}
+    }
+}
+
 // Bloc A.4 -- en-tetes de la feuille Excel "Historique Dashboard", dans le meme
 // ordre que capturerPointHistoriqueDashboard() ci-dessus (26 colonnes = 26 valeurs
 // par ligne). Volontairement sans les 2 colonnes de tracabilite PI du collegue
@@ -11669,6 +11716,7 @@ reinitialiserHistoriqueFluxInformationnels();
 // chaque demarrerSimulation() pour que l'export Excel ne melange jamais deux runs.
 historiqueDashboard.clear();
 dernierTempsCaptureHistoriqueDashboard = -1.0;
+runFinalise = false;
 
 // Initialiser les agents tactiques
 while (tacticals.size() > 0) {
@@ -11774,24 +11822,16 @@ viewExecution.navigateTo();]]></Body>
 					<PublicFlag>false</PublicFlag>
 					<PresentationFlag>true</PresentationFlag>
 					<ShowLabel>true</ShowLabel>
-					<Body><![CDATA[// A.4-FIX-2 -- garantit un point d'historique Dashboard au temps reel d'arret,
-// meme si le dernier cycle periodique de DashboardHistoryManager remonte a
-// plusieurs secondes (ex. dernier cycle a t=570, arret reel a t=582) : sans
-// cela, la portion finale d'activite entre le dernier cycle et l'arret manuel
-// n'apparaitrait jamais dans l'historique. capturerPointHistoriqueDashboard()
-// ignore elle-meme cet appel si un point existe deja pour ce temps exact.
-try { capturerPointHistoriqueDashboard(); } catch (Throwable ignoredHistoriqueDashboardArret) {}
-modeExecution = false;
+					<Body><![CDATA[modeExecution = false;
 arrivee.reset();
 strategic.piGlobalCourant = strategic.calculerPIGlobal();
 board.logEvent("=== SIMULATION ARRETEE - PI=" + String.format("%.3f", strategic.piGlobalCourant) + " ===");
-if (aboxExportActif && aboxExportSurArret) exporterABoxRuntimeTTL("SIMULATION_STOP");
-// A.4-FIX-2 -- ecrit l'historique Dashboard accumule (dont le point ci-dessus)
-// dans le classeur final, y compris si le cycle periodique d'export etait deja
-// arrete (c14SnapshotFinalEffectue) : sans cet appel, les points captures apres
-// la derniere ecriture physique resteraient uniquement en memoire, perdus a la
-// fin de la simulation.
-if (exportExcelActif) { try { exporterToutesLesTablesExcel(); } catch (Throwable ignoredExportFinal) {} }
+// A.4-FIX-4 -- la capture finale + l'export ABox/Excel de cloture sont
+// centralises dans finaliserRunEtExporter() (idempotent), reutilisable depuis
+// n'importe quel chemin d'arret futur. Voir son commentaire pour le detail et
+// la limite connue (n'est PAS appelee par le bouton natif Stop/Terminate
+// d'AnyLogic, qui ne declenche aucun code du modele).
+finaliserRunEtExporter();
 //viewDashboard.navigateTo();]]></Body>
 				</Function>
 				<Function AccessType="default" StaticFunction="false">
@@ -29446,9 +29486,9 @@ messageStatut="Export CSV genere.";]]></ActionCode>
 					<ShowLabel>false</ShowLabel>
 					<DrawMode>SHAPE_DRAW_2D3D</DrawMode>
 					<BasicProperties Width="200" Height="30">
-                        <EmbeddedIcon>false</EmbeddedIcon>	
+                        <EmbeddedIcon>false</EmbeddedIcon>
 						<TextColor>-65536</TextColor>
-						<Enabled>false</Enabled>
+						<Enabled>true</Enabled>
 						<ActionCode><![CDATA[arreterSimulation();]]></ActionCode>
 					</BasicProperties>
 					<ExtendedProperties>

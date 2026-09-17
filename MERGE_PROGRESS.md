@@ -109,7 +109,7 @@ diagnostic commandes bloquées) ; absent du master — Bloc A/C.
 - [x] Matching strict flux/commande — **PORTÉ** (2026-09-16, commit `bf0e490`, Build/run utilisateur OK)
 - [x] Diagnostic commandes bloquées — **PORTÉ** (2026-09-16, commit `0363b6b`, Build/run nominal utilisateur OK ; test fonctionnel forcé [DIAG-BLOQUEE] À TESTER ULTÉRIEUREMENT)
 - [x] Stock matière détaillé — **PORTÉ** (2026-09-16, commit `d52d431`, Build AnyLogic utilisateur OK ; validation fonctionnelle différée au Bloc A.4, où la fonction sera consommée pour la première fois)
-- [x] Historique Dashboard / Excel — **PORTÉ, CORRIGÉ (A.4-FIX-1/2/3)** ; validation définitive **EN ATTENTE** du nouveau run utilisateur post-fix (2026-09-16, commits `69c78d6`, `afc3e16`, voir A.4-FIX ci-dessous)
+- [x] Historique Dashboard / Excel — **PORTÉ, CORRIGÉ (A.4-FIX-1/2/3/4)** ; validation définitive **EN ATTENTE** du nouveau run utilisateur post-fix (2026-09-16/17, voir section A.4-FIX ci-dessous)
 - [ ] États holoniques cohérents
 - [ ] Build AnyLogic utilisateur
 - [ ] Run court générique utilisateur
@@ -767,6 +767,131 @@ exploitable, inchangée.
 - **Commit** : voir SHA ci-dessous (message `fix(generic): correct dashboard history semantics`).
 
 **Bloc A.4 : validation définitive EN ATTENTE du nouveau run utilisateur post-fix.**
+
+### A.4-FIX-4 — finalisation robuste sur arrêt de run (2026-09-17)
+
+**Validation du run post A.4-FIX-2/3** : confirmée par l'utilisateur — la capture
+périodique dédiée fonctionne (snapshots t=14,4 / 30 / 60 / 90 / ... / 600, continuant
+bien après les premières clôtures de commande). Une nouvelle analyse croisée
+Excel + ABox + CSV du même run a cependant révélé un problème de **finalisation** :
+Excel/ABox figés à t=628 (synchronisés entre eux : 3 commandes closes, PI=8,039,
+274 `RawEvent` = 274 événements "Execution Brute") alors que le CSV du même run va
+jusqu'à t=1489,888 et contient des traces de CMD_4 à CMD_7 (588 lignes postérieures
+à t=628) — preuve que la simulation avait continué bien au-delà du dernier
+Excel/ABox persisté.
+
+**Investigation menée avant toute modification** (consigne explicite : ne rien
+modifier tant que la cause n'est pas établie) :
+
+1. **Tous les chemins d'arrêt identifiés** : recherche exhaustive dans
+   `model/SCONTO_SVU_GENERIC_MASTER.alp` de `arreterSimulation()`, de tout bloc
+   "on destroy"/"on finish", et des tags enfants de `ActiveObjectClass` (`Main`) et
+   de `SimulationExperiment`.
+2. **Appelant(s) actuel(s) de `arreterSimulation()`** : **un seul**, le bouton
+   `button3` ("Arreter et voir resultats"), dont la propriété était
+   `<Enabled>false</Enabled>` — **le bouton est désactivé, donc `arreterSimulation()`
+   n'est jamais réellement invocable depuis l'interface.**
+3. **Origine du CSV allant jusqu'à t=1489,888** : élucidée — un bouton natif distinct
+   et **toujours actif**, `btnDashExport` ("Exporter CSV"), appelle
+   `supervisor.exporterCSV(nomEntreprise)` (fonction de `CoordinatorAgent`,
+   totalement indépendante du pipeline Excel/ABox de `Main`). Un second mécanisme,
+   un bouton générique "Exporter CSV" dans les popups de table (`exportTableToCSV()`),
+   est également indépendant. Le CSV à t=1489,888 provient donc d'un clic manuel sur
+   l'un de ces boutons à ce moment du run, sans lien avec un défaut du pipeline
+   Excel/ABox — **rien à corriger côté CSV**.
+4. **`DashboardHistoryManager` actif après t=628 ?** — oui, quasi certainement : sa
+   condition est `modeExecution` seul (A.4-FIX-2), indépendante de
+   `c14SnapshotFinalEffectue` et de `exportExcelActif` côté écriture ; rien dans le
+   code n'aurait pu l'arrêter avant t=1489. Le problème n'est donc **pas** la capture
+   (déjà corrigée en A.4-FIX-2) mais l'**écriture** : plus aucun déclencheur d'écriture
+   Excel/ABox n'intervient après la dernière clôture de commande, faute de
+   `arreterSimulation()` accessible.
+5. **Recherche d'un hook de cycle de vie AnyLogic** (Option B envisagée) : absente.
+   Les tags enfants de `ActiveObjectClass` (`Main`) sont
+   `Id, Name, AdditionalClassCode, StartupCode, Generic, GenericParameter,
+   FlowChartsUsage, SamplesToKeep, LimitNumberOfArrayElements, ElementsLimitValue,
+   MakeDefaultViewArea, SceneGridColor, SceneBackgroundColor, SceneSkybox,
+   AgentProperties, EnvironmentProperties, DatasetsCreationProperties, ScaleRuler,
+   CurrentLevel, ConnectionsId, Variables, Events, Functions, AgentLinks,
+   EmbeddedObjects, Presentation, Areas` — seul `StartupCode` existe, **aucun bloc
+   "on destroy"/"on finish"**. La section `SimulationExperiment` ne contient aucun
+   champ de ce type non plus (`StopOption=Never`, pas de code de fin). **Conclusion :
+   le bouton natif Stop/Terminate d'AnyLogic ne peut déclencher aucun code du
+   modèle** — confirmé, pas supposé.
+
+**Décision — solution la moins invasive retenue** (évaluation des options A/B/C
+demandées) :
+- **Option A** (faire appeler `arreterSimulation()` par le bouton natif AnyLogic) :
+  impossible — ce bouton est un contrôle du moteur, hors de portée du code modèle.
+- **Option B** (hook de cycle de vie sur l'agent Main) : **indisponible** dans ce
+  schéma `.alp`/cette version AnyLogic (vérifié au point 5) ; tenter un contournement
+  bas niveau (API moteur non documentée dans ce fichier) aurait été invasif et non
+  vérifiable statiquement — écarté par prudence.
+- **Option C retenue, réduite à l'essentiel** : nouvelle fonction unique et
+  **idempotente** `finaliserRunEtExporter()`, appelée par `arreterSimulation()`
+  (qui reste l'unique point d'entrée réel) — **et réactivation du bouton
+  `button3`** (`<Enabled>false</Enabled>` → `<Enabled>true</Enabled>`), qui est la
+  correction déterminante : sans point d'entrée UI accessible, aucune finalisation
+  côté modèle n'est possible, quelle que soit la qualité du code de finalisation.
+
+**Fichier modifié** : `model/SCONTO_SVU_GENERIC_MASTER.alp`.
+
+**Fonctions/variables/contrôles touchés** :
+- ajout `boolean runFinalise` (champ `Main`, garde d'idempotence, remis à `false`
+  dans `demarrerSimulation()` aux côtés des autres réinitialisations de l'historique) ;
+- ajout `void finaliserRunEtExporter()` : si `runFinalise` est déjà vrai, ne fait
+  rien ; sinon positionne `runFinalise=true` puis (a) capture finale via
+  `capturerPointHistoriqueDashboard()` (déjà protégée contre les doublons de temps,
+  A.4-FIX-2), (b) export ABox si `aboxExportActif && aboxExportSurArret` (même garde
+  que l'ancien code d'`arreterSimulation()`, raison `"RUN_FINALIZED"`), (c) export
+  Excel complet si `exportExcelActif` ;
+- `arreterSimulation()` : simplifiée — conserve `modeExecution=false`,
+  `arrivee.reset()`, le log `"=== SIMULATION ARRETEE ..."`, puis délègue tout le reste
+  à un appel unique `finaliserRunEtExporter();` (élimine la duplication de logique
+  introduite en A.4-FIX-2) ;
+- **contrôle `button3`** ("Arreter et voir resultats") : `Enabled` passé de `false` à
+  `true`.
+
+**Ce qui n'a pas été touché (conformément à la consigne C14)** : les deux chemins
+d'export "sur clôture de commande" (`finDeParcours()`/second chemin Deliver) et leur
+positionnement de `c14SnapshotFinalEffectue` restent **strictement inchangés** — ces
+snapshots de preuve continuent d'exister exactement comme avant. Aucune tentative de
+renommer ou de refactoriser ce drapeau n'a été faite (audit complet non réalisé,
+hors périmètre de ce correctif).
+
+**Limite assumée et documentée (dans le code et ici)** : si l'utilisateur arrête le
+run via le bouton natif Stop/Terminate d'AnyLogic plutôt que via "Arreter et voir
+resultats", `finaliserRunEtExporter()` ne sera **pas** appelée — aucune solution
+fiable et vérifiable n'a été trouvée pour intercepter cet arrêt natif depuis le
+modèle. **Recommandation utilisateur : toujours cliquer sur "Arreter et voir
+resultats" pour obtenir un export final synchronisé.**
+
+**Validations statiques** :
+- XML bien formé : OK.
+- IDs AnyLogic : 1679/1679 uniques, inchangé (aucun élément `<Function>`/`<Variable>`
+  AnyLogic ajouté — `finaliserRunEtExporter()` est du code Java libre comme
+  `capturerPointHistoriqueDashboard()` ; seul le contrôle `button3` existant a été
+  modifié, sans nouvel `<Id>`).
+- `git diff --check` : aucune erreur d'espace blanc.
+- Grep DataCo : 0 occurrence.
+- Idempotence vérifiée par lecture : un second appel à `finaliserRunEtExporter()`
+  retourne immédiatement (`if (runFinalise) return;`) — aucun risque de double export
+  ABox, de doublon de dernière ligne Dashboard, ni de mutation de stock/commande (la
+  fonction ne touche ni l'un ni l'autre de toute façon, capture + export seulement).
+- Aucune duplication de timestamp final : `capturerPointHistoriqueDashboard()`
+  conserve sa garde `dernierTempsCaptureHistoriqueDashboard` (A.4-FIX-2), qui
+  s'applique aussi à l'appel de finalisation.
+- **Build AnyLogic** : EN ATTENTE (utilisateur).
+- **Run** : EN ATTENTE (utilisateur). Protocole suggéré : run > 900 s, puis clic sur
+  "Arreter et voir resultats" (désormais actif) pour arrêter normalement ; vérifier
+  (1) CSV max time ≈ Tfinal (via un export manuel, pour comparaison) ; (2) dernière
+  ligne Historique Dashboard ≈ Tfinal ; (3) l'Excel final est bien réécrit après
+  cette ligne ; (4) l'ABox finale correspond au même run (raison
+  `RUN_FINALIZED`) ; (5) aucune exception au clic ; (6) aucun doublon de timestamp
+  final dans l'historique.
+- **Commit** : voir SHA ci-dessous (message `fix(generic): finalize dashboard history on run stop`).
+
+**Bloc A.4 : validation définitive toujours EN ATTENTE du run post A.4-FIX-4.**
 
 ## Bloc M — Fondation multi-produit Generic (2026-09-16, PLANIFIÉ — NON COMMENCÉ)
 

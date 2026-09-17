@@ -1985,6 +1985,143 @@ somme à tout instant, chaque crédit de production est traçable à
 
 **PR reste DRAFT. Aucun merge vers `main`.**
 
+## Bloc M.2-TEST-FIX — écrasement post-initialisation du stock par produit (2026-09-17)
+
+**Déclencheur** : run réel utilisateur de `scenario_M2_multiproduit_AB.json`
+(global=100, A=60, B=40 configurés). Résultat observé : `Finished Stock`
+au premier snapshot (t=50 s) = **200** au lieu de 100 ; bilan final
+A=82/B=70 au lieu de A=42/B=10 attendus. La preuve par le bilan (voir message
+utilisateur) montre que ces valeurs correspondent exactement à un
+démarrage réel A=100/B=100 (100−30+12=82 ; 100−30=70), pas 60/40.
+
+### Confirmation de la cause racine (audit avant modification)
+
+`demarrerSimulation()` appelle, dans cet ordre exact (lignes ~11979-11980
+avant ce correctif) :
+```java
+initialiserStocksProduits();
+appliquerStocksInitiauxConfig();
+```
+`initialiserStocksProduits()` (Bloc M.1/M.1-FIX) construit correctement
+`stockFiniParProduit` = {A=60, B=40} à partir de `stockInitialParProduit`
+et du reliquat. Mais `appliquerStocksInitiauxConfig()`, juste après,
+contenait (avant correctif) :
+```java
+if (champStockInitialProduitFini >= 0) {
+    for (PosteGenericAgent p : postes) { ... p.niveauStock = Math.max(0, champStockInitialProduitFini); ... }
+    synchroniserListeProduits();
+    if (stockFiniParProduit != null) {
+        for (ScenarioFlux produit : listeProduits) {
+            stockFiniParProduit.put(cleProduit(produit.typeProduit), Math.max(0.0, champStockInitialProduitFini));
+        }
+    }
+}
+```
+Ce bloc s'exécutait **inconditionnellement**, y compris en mode multi-produit,
+et réinjectait le stock **global** (100) dans **chaque** produit de la map —
+d'où A=100, B=100, agrégat=200. Confirmé par lecture directe du code (pas
+supposé) : ce second appel avait bien été manqué par l'audit exhaustif M.2
+(qui listait `consommerStockFiniProduit()`/`crediterStockFiniProduit()`/
+`synchroniserStockFiniAgrege()` mais pas `appliquerStocksInitiauxConfig()`).
+
+### Audit exhaustif complémentaire (tous les écrivains de stock fini)
+
+Grep exhaustif de `stockFiniParProduit.put/clear/=` et
+`niveauStock =/+=/-=` sur tout le master :
+
+| Site | Classification | Verdict |
+|---|---|---|
+| `appliquerStocksInitiauxConfig()` L3775-3794 (avant fix) | initialisation | **BUG** — reconstruisait la map depuis le global en mode multi |
+| `initialiserStocksProduits()` | initialisation | correct, source de vérité, non modifié |
+| `consommerStockFiniProduit()` | consommation | correct (map → agrégat via `synchroniserStockFiniAgrege`), non modifié |
+| `crediterStockFiniProduit()` | crédit | correct (map → agrégat), non modifié |
+| `synchroniserStockFiniAgrege()` | compatibilité agrégée | correct, direction map→agrégat uniquement, non modifié |
+| chargement JSON `postes[].niveauStock` (L~15263) | initialisation (par poste, avant tout calcul multi-produit) | hors périmètre, écrasé de toute façon par les 2 appels ci-dessus au démarrage du run |
+| `PosteGenericAgent` Exit `onExit` (mono, `niveauStock += 1`) | crédit (mono uniquement) | correct, déjà audité en M.2, non modifié |
+
+Confirmation : aucune autre fonction hors `initialiserStocksProduits()`,
+`consommerStockFiniProduit()` et `crediterStockFiniProduit()` ne reconstruit
+arbitrairement une valeur métier par produit. `synchroniserStockFiniAgrege()`
+reste utilisée uniquement dans le sens map → agrégat.
+
+### Correctif appliqué
+
+`appliquerStocksInitiauxConfig()` sépare désormais explicitement les deux
+modes :
+- **Mono** (`!modeMultiProduitActif`) : logique legacy conservée à
+  l'identique, ligne par ligne (aucun changement de comportement).
+- **Multi** (`modeMultiProduitActif`) : ne touche plus jamais
+  `stockFiniParProduit` (la map, déjà construite par
+  `initialiserStocksProduits()` juste avant, reste la source de vérité) ;
+  se contente d'appeler `synchroniserStockFiniAgrege(null)` pour
+  resynchroniser `niveauStock` (agrégat de compatibilité) à partir de la
+  map réelle. Direction strictement `map → agrégat`, jamais l'inverse.
+
+### Tests statiques (raisonnement manuel, à confirmer par le run utilisateur)
+
+| Test | Entrée | Attendu | Résultat du raisonnement sur le nouveau code |
+|---|---|---|---|
+| F-1 | global=100, A=60, B=40 (explicites) | A=60, B=40, agrégat=100 | reliquat=0 (sommeExplicite=100=global) → A=60, B=40 conservés ; `appliquerStocksInitiauxConfig()` ne touche plus la map ; agrégat resynchronisé=100. **Conforme** |
+| F-2 | global=100, map vide, 2 produits | A=50, B=50, agrégat=100 | reliquat=100 réparti sur 2 non-configurés → 50/50 ; non ré-écrasé ensuite. **Conforme** |
+| F-3 | global=100, A=80 explicite, B absent | A=80, B=20, agrégat=100 | reliquat=20 sur B seul (non configuré) → A=80, B=20 ; non ré-écrasé. **Conforme** |
+| F-4 | global=100, A=80, B=50 (somme=130>global) | A=80, B=50, agrégat=130 (WARN, jamais ramené à 100) | `sommeExplicite(130) > stockGlobal(100)` → WARN loggé, reliquat=0, valeurs explicites conservées telles quelles ; `appliquerStocksInitiauxConfig()` ne force plus jamais niveauStock=global (100) — agrégat resynchronisé=130. **Conforme** |
+| F-5 | Mono, `modeMultiProduitActif=false` | comportement legacy strictement inchangé | branche `if (!modeMultiProduitActif)` = code legacy identique, aucune ligne modifiée. **Conforme** |
+
+### Régression M.2 — non affectée (confirmé)
+
+Le run utilisateur apporte une preuve positive indépendante pour M.2 :
+consommation isolée A/B fonctionnelle, crédit REAPPRO_1 exclusivement sur
+PRODUIT_A fonctionnel, aucun crédit parasite sur B. Seule l'**initialisation**
+était en cause — `consommerStockFiniProduit()`/`crediterStockFiniProduit()`
+non modifiées dans ce correctif.
+
+### Vues affichant la quantité de stock — mise à jour pour précision par produit
+
+Demande complémentaire explicite de l'utilisateur : les vues montrant une
+quantité de stock doivent désormais préciser la répartition par produit en
+mode multi-produit (lecture seule, aucun impact sur le calcul du stock) :
+
+- **Nouvelle fonction `detailStockFiniParProduit()`** (même principe que
+  `detailStockMatiereParMatiere()` du Bloc A.3) : sérialise
+  `stockFiniParProduit` en `"idProduit=valeur|idProduit=valeur|..."` ;
+  chaîne vide en mono-produit (map non source de vérité dans ce mode).
+- **Feuille Excel "Historique Dashboard"** : nouvelle colonne
+  `"Finished Stock — détail par produit"` insérée juste après
+  `"Finished Stock (Products)"` dans `historiqueDashboardColumns()` et
+  `capturerPointHistoriqueDashboard()` (27 colonnes désormais, contre 26
+  avant ce bloc). Purement additif — aucune colonne existante déplacée ou
+  renommée.
+- **Carte live du tableau de bord "Finished Stock"** : nouvelle fonction
+  `stockFiniAffichageText()` remplace l'ancien
+  `TextCode` `(int) stockProduitFiniDisponibleTotal()`. En mono-produit,
+  rendu strictement identique (agrégat seul). En multi-produit, affiche
+  `"<agrégat> (PRODUIT_A=60, PRODUIT_B=40)"`. À vérifier visuellement par
+  l'utilisateur au prochain run : la largeur fixe du composant `Text`
+  (`Width="200"`) n'a pas été agrandie — un nombre élevé de produits
+  catalogués pourrait tronquer l'affichage (aucune régression fonctionnelle,
+  uniquement un point de lisibilité à confirmer).
+- La feuille Excel **"Performance par produit"** (existante, cf. Bloc
+  M.2-TEST §6) restait déjà correcte et n'a pas été modifiée.
+
+### Validations statiques
+
+- XML bien formé (`xml.etree.ElementTree`) : OK
+- IDs AnyLogic uniques : 1680/1680 (aucun doublon)
+- `git diff --check` : aucune erreur (bruit de sauvegarde automatique
+  AnyLogic pré-existant sur une ligne `<EmbeddedIcon>` hors périmètre de ce
+  correctif, revenu à l'identique avant commit)
+- Grep DataCo (`prophet|recalibrator|autocommande|dataco`, insensible à la
+  casse) : 5 occurrences, toutes dans des commentaires pré-existants du
+  Bloc M.2 documentant le portage technique depuis
+  `reference/dataco-multiproduct/` (mécanisme uniquement, aucune donnée/logique
+  DataCo réelle) — 0 nouvelle occurrence introduite par ce correctif
+- `scenario_M2_multiproduit_AB.json` et `scenario_ZENER_SA_Togo_v39.json`
+  inchangés (seul le `.alp` a été modifié)
+
+**Commit** : `fix(generic): preserve per-product stock during run initialization`
+
+**PR reste DRAFT. Aucun merge vers `main`. M.3 et Bloc B non commencés.**
+
 ## Bloc B — PI / SCOR
 - [ ] Warm-up / amorçage
 - [ ] Poids effectifs et données disponibles

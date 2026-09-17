@@ -7,7 +7,7 @@
 <AnyLogicWorkspace WorkspaceVersion="1.9" AnyLogicVersion="8.9.8.202602271015" AlpVersion="8.9.7">
 <Model>
 	<Id>1780965648271</Id>
-	<Name><![CDATA[SCONTO_SVU_FINAL_VALIDATED]]></Name>
+	<Name><![CDATA[SCONTO_SVU_GENERIC_MASTER]]></Name>
 	<EngineVersion>6</EngineVersion>
 	<JavaPackageName><![CDATA[sconto_vsm_generic]]></JavaPackageName>
 	<ModelTimeUnit><![CDATA[Second]]></ModelTimeUnit>
@@ -3772,23 +3772,53 @@ void appliquerStocksInitiauxConfig() {
 
     // Produit fini : la valeur champStockInitialProduitFini provient soit du
     // JSON, soit d'un profil/override utilisateur.
+    //
+    // Bloc M.2-TEST-FIX -- BUG CONFIRME PAR RUN REEL (fixture A/B 60/40).
+    // Cette section ecrasait INCONDITIONNELLEMENT stockFiniParProduit avec
+    // champStockInitialProduitFini (la valeur GLOBALE) pour CHAQUE produit.
+    // demarrerSimulation() appelle initialiserStocksProduits() (qui construit
+    // correctement 60/40 a partir de stockInitialParProduit) PUIS
+    // appliquerStocksInitiauxConfig(), qui reinjectait alors 100/100 (le
+    // stock global duplique sur chaque produit) -- agregat observe = 200 au
+    // lieu de 100. stockFiniParProduit est la SOURCE DE VERITE en mode multi
+    // (voir initialiserStocksProduits()) : elle ne doit plus jamais etre
+    // reconstruite ici. Seul le mode MONO conserve la logique legacy a
+    // l'identique (ecrasement direct de niveauStock ET peuplement "dormant"
+    // de la map, jamais lue tant que modeMultiProduitActif=false).
     if (champStockInitialProduitFini >= 0) {
-        for (PosteGenericAgent p : postes) {
-            if (p == null || !estPosteStockFini(p)) continue;
-            if (stocksDejaAppliques.contains(p.idPoste)) continue;
-            p.niveauStock = Math.max(0, champStockInitialProduitFini);
-            stocksDejaAppliques.add(p.idPoste);
-            nbStocksFinis++;
-        }
+        if (!modeMultiProduitActif) {
+            for (PosteGenericAgent p : postes) {
+                if (p == null || !estPosteStockFini(p)) continue;
+                if (stocksDejaAppliques.contains(p.idPoste)) continue;
+                p.niveauStock = Math.max(0, champStockInitialProduitFini);
+                stocksDejaAppliques.add(p.idPoste);
+                nbStocksFinis++;
+            }
 
-        synchroniserListeProduits();
-        if (stockFiniParProduit != null) {
-            for (ScenarioFlux produit : listeProduits) {
-                if (produit == null) continue;
-                stockFiniParProduit.put(
-                    cleProduit(produit.typeProduit),
-                    Math.max(0.0, champStockInitialProduitFini)
-                );
+            synchroniserListeProduits();
+            if (stockFiniParProduit != null) {
+                for (ScenarioFlux produit : listeProduits) {
+                    if (produit == null) continue;
+                    stockFiniParProduit.put(
+                        cleProduit(produit.typeProduit),
+                        Math.max(0.0, champStockInitialProduitFini)
+                    );
+                }
+            }
+        } else {
+            // MULTI -- stockFiniParProduit a deja ete construite par
+            // initialiserStocksProduits() (appelee juste avant, avec
+            // repartition explicite/reliquat via stockInitialParProduit).
+            // Direction UNIQUEMENT map -> agregat, jamais l'inverse : on ne
+            // fait plus stockFiniParProduit.put(produit, champStockInitialProduitFini).
+            // On se contente de resynchroniser niveauStock (agregat de
+            // compatibilite) a partir de la map reelle.
+            synchroniserStockFiniAgrege(null);
+            for (PosteGenericAgent p : postes) {
+                if (p == null || !estPosteStockFini(p)) continue;
+                if (stocksDejaAppliques.contains(p.idPoste)) continue;
+                stocksDejaAppliques.add(p.idPoste);
+                nbStocksFinis++;
             }
         }
     }
@@ -7152,6 +7182,59 @@ String detailStockMatiereParMatiere() {
     return sb.toString();
 }
 
+// Bloc M.2-TEST-FIX -- detail du stock produit fini, produit par produit, meme
+// principe/format que detailStockMatiereParMatiere() ci-dessus
+// ("idProduit=valeur|idProduit=valeur|..."), pour que la feuille "Historique
+// Dashboard" cesse d'exposer uniquement l'agregat stockProduitFiniDisponibleTotal()
+// en mode multi-produit (cf. bug M.2-TEST-FIX : un agregat correct pouvait
+// masquer une repartition par produit incorrecte, ou inversement). Lecture
+// seule de stockFiniParProduit (source de verite, jamais modifiee ici) ;
+// chaine vide en mono-produit, ou tant que modeMultiProduitActif=false, car
+// stockFiniParProduit n'est alors pas la source de verite (voir
+// initialiserStocksProduits()).
+String detailStockFiniParProduit() {
+    if (!modeMultiProduitActif || stockFiniParProduit == null || stockFiniParProduit.isEmpty()) return "";
+    synchroniserListeProduits();
+    StringBuilder sb = new StringBuilder();
+    for (ScenarioFlux sc : listeProduits) {
+        if (sc == null || sc.typeProduit == null) continue;
+        String cle = cleProduit(sc.typeProduit);
+        Double v = stockFiniParProduit.get(cle);
+        if (sb.length() > 0) sb.append("|");
+        sb.append(sc.typeProduit).append("=").append(String.format(java.util.Locale.US, "%.2f", v != null ? v.doubleValue() : 0.0));
+    }
+    return sb.toString();
+}
+
+// Bloc M.2-TEST-FIX -- texte d'affichage de la carte tableau de bord "Finished
+// Stock" (vue live, pas l'export Excel -- voir detailStockFiniParProduit()
+// ci-dessus pour l'equivalent Historique Dashboard). En mono-produit,
+// comportement legacy strictement inchange (agregat seul, meme rendu qu'avant
+// ce bloc). En multi-produit, ajoute la repartition par produit entre
+// parentheses pour que la carte ne montre plus un agregat correct pouvant
+// masquer une repartition par produit incorrecte (cf. bug M.2-TEST-FIX).
+// Lecture seule de stockProduitFiniDisponibleTotal()/stockFiniParProduit ;
+// aucun impact sur le calcul du stock lui-meme.
+String stockFiniAffichageText() {
+    int total = (int) stockProduitFiniDisponibleTotal();
+    if (!modeMultiProduitActif) return String.valueOf(total);
+    String detail = detailStockFiniParProduit();
+    if (detail.isEmpty()) return String.valueOf(total);
+    StringBuilder sb = new StringBuilder();
+    sb.append(total).append(" (");
+    String[] paires = detail.split("\\|");
+    for (int i = 0; i < paires.length; i++) {
+        String[] kv = paires[i].split("=");
+        if (kv.length != 2) continue;
+        double v;
+        try { v = Double.parseDouble(kv[1]); } catch (NumberFormatException ex) { v = 0.0; }
+        if (i > 0) sb.append(", ");
+        sb.append(kv[0]).append("=").append((int) v);
+    }
+    sb.append(")");
+    return sb.toString();
+}
+
 // Bloc A.4 -- historique temporel du Dashboard (KPI + SCOR + PI), pour permettre
 // de retracer dans Excel les courbes/diagrammes du tableau de bord au lieu d'un
 // simple instantane final. Capture un point PAR APPEL (voir call sites : t=0 et
@@ -7218,6 +7301,7 @@ void capturerPointHistoriqueDashboard() {
         fmt1(board.kpiGlobal.avgLeadTime() / 60.0),
         wipReelSansJetonsVisuels(),
         (int) stockFini,
+        detailStockFiniParProduit(),
         fmt1((board.kpiZener != null ? board.kpiZener : board.kpiGlobal).pce() * 100),
         fmt1(tempsAttenteGlobalCoherent()),
         board.nbMTS,
@@ -7331,8 +7415,9 @@ void finaliserRunEtExporter() {
 }
 
 // Bloc A.4 -- en-tetes de la feuille Excel "Historique Dashboard", dans le meme
-// ordre que capturerPointHistoriqueDashboard() ci-dessus (26 colonnes = 26 valeurs
-// par ligne). Volontairement sans les 2 colonnes de tracabilite PI du collegue
+// ordre que capturerPointHistoriqueDashboard() ci-dessus (27 colonnes = 27 valeurs
+// par ligne depuis l'ajout M.2-TEST-FIX de "Finished Stock -- detail par produit").
+// Volontairement sans les 2 colonnes de tracabilite PI du collegue
 // (cf. commentaire de capturerPointHistoriqueDashboard()).
 String[] historiqueDashboardColumns() {
     return new String[] {
@@ -7341,6 +7426,7 @@ String[] historiqueDashboardColumns() {
         "Avg Lead Time (min)",
         "Work In Process (Products)",
         "Finished Stock (Products)",
+        "Finished Stock — détail par produit",
         "PCE (%)",
         "Waiting Time (s)",
         "Order Mode - MTS (nb)",
@@ -30685,7 +30771,7 @@ Index (PI)]]></Text>
 					<Rotation>0.0</Rotation>
 					<Color>-16777216</Color>
 					<Text><![CDATA[0]]></Text>
-					<TextCode><![CDATA[(int) stockProduitFiniDisponibleTotal()]]></TextCode>
+					<TextCode><![CDATA[stockFiniAffichageText()]]></TextCode>
 					<Font>
 						<Name>SansSerif</Name>
 						<Size>14</Size>
@@ -54133,6 +54219,158 @@ public class MachineSim implements Serializable {
 }]]></Text>
 		</JavaClass>
 	</JavaClasses>
+	<ModelResources>
+		<Resource>
+			<Id>1789686155601</Id>
+			<Path><![CDATA[aiguillage.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155602</Id>
+			<Path><![CDATA[back-office.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155603</Id>
+			<Path><![CDATA[box (1).png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155605</Id>
+			<Path><![CDATA[container.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155607</Id>
+			<Path><![CDATA[delay02.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155608</Id>
+			<Path><![CDATA[delivery-truck.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155609</Id>
+			<Path><![CDATA[email.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155610</Id>
+			<Path><![CDATA[enterprise.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155611</Id>
+			<Path><![CDATA[facility.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155612</Id>
+			<Path><![CDATA[factory-machine.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155613</Id>
+			<Path><![CDATA[forklift.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155614</Id>
+			<Path><![CDATA[gestion.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155616</Id>
+			<Path><![CDATA[jacket.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155617</Id>
+			<Path><![CDATA[manufacturing.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155618</Id>
+			<Path><![CDATA[ordre.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155620</Id>
+			<Path><![CDATA[produit.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155622</Id>
+			<Path><![CDATA[replacement.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155623</Id>
+			<Path><![CDATA[roadmap.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155626</Id>
+			<Path><![CDATA[stock.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155627</Id>
+			<Path><![CDATA[stockage.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155628</Id>
+			<Path><![CDATA[stockage02.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155629</Id>
+			<Path><![CDATA[stocks.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155630</Id>
+			<Path><![CDATA[storage.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155631</Id>
+			<Path><![CDATA[supply-chain-management.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+		<Resource>
+			<Id>1789686155632</Id>
+			<Path><![CDATA[task.png]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+	</ModelResources>
     <RequiredLibraryReference>
 		<LibraryName><![CDATA[com.anylogic.libraries.modules.markup_descriptors]]></LibraryName>
 		<VersionMajor>1</VersionMajor>

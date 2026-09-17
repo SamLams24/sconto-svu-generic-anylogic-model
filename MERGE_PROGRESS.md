@@ -107,9 +107,9 @@ diagnostic commandes bloquées) ; absent du master — Bloc A/C.
 
 ## Bloc A — corrections sûres
 - [x] Matching strict flux/commande — **PORTÉ** (2026-09-16, commit `bf0e490`, Build/run utilisateur OK)
-- [x] Diagnostic commandes bloquées — **PORTÉ** (2026-09-16, commit `0363b6b`, Build/run nominal utilisateur OK ; test fonctionnel forcé [DIAG-BLOQUEE] À TESTER ULTÉRIEUREMENT)
-- [x] Stock matière détaillé — **PORTÉ** (2026-09-16, commit `d52d431`, Build AnyLogic utilisateur OK ; validation fonctionnelle différée au Bloc A.4, où la fonction sera consommée pour la première fois)
-- [x] Historique Dashboard / Excel — **PORTÉ, CORRIGÉ (A.4-FIX-1/2/3/4/5)** ; validation définitive **EN ATTENTE** du nouveau run utilisateur post-fix (2026-09-16/17, voir section A.4-FIX ci-dessous)
+- [x] Diagnostic commandes bloquées — **PORTÉ ET VALIDÉ FONCTIONNELLEMENT** (2026-09-16/17, commit `0363b6b`, `[DIAG-BLOQUEE]` observé réellement sur `REAPPRO_1`)
+- [x] Stock matière détaillé — **PORTÉ ET VALIDÉ** (2026-09-16, commit `d52d431`, consommé et validé via le Bloc A.4)
+- [x] Historique Dashboard / Excel — **TERMINÉ / FIGÉ** (2026-09-16/17, commits `69c78d6`…`0da7d92`, `e32fbed` ; voir "Validation utilisateur définitive — Bloc A.4" ci-dessous)
 - [ ] États holoniques cohérents
 - [ ] Build AnyLogic utilisateur
 - [ ] Run court générique utilisateur
@@ -1049,6 +1049,50 @@ et `arreterSimulation()`).
 - **Commit** : voir SHA ci-dessous (message `fix(generic): finalize and finish model execution`).
 
 **Bloc A.4 : validation définitive toujours EN ATTENTE du run post A.4-FIX-5.**
+
+### Validation utilisateur définitive — Bloc A.4 (2026-09-17, commit `0da7d92`)
+
+Run analysé sur console complète, Excel final, ABox TTL finale et CSV.
+
+- **Build AnyLogic** : OK.
+- **Run** : OK — Tfinal console = 2161,8 s, PI final = 7,896.
+- **Séquence de finalisation observée**, cohérente avec l'ordre implémenté :
+  ```
+  [T=2161.8] === SIMULATION ARRETEE - PI=7.896 ===
+  [T=2161.8] [FINALIZE] Dashboard final capture t=2161.8
+  [T=2161.8] [S2.2-ABOX] ... raison=RUN_FINALIZED
+  [T=2161.8] [FINALIZE] ABox finale exportee ...
+  [T=2161.8] [EXCEL] Export Excel #6 reussi ...
+  [T=2161.8] [FINALIZE] Excel final exporte t=2161.8
+  [T=2161.8] [FINALIZE] finishSimulation demande = true
+  ```
+  **Aucun événement métier après Tfinal — le moteur AnyLogic s'arrête réellement**
+  (confirme A.4-FIX-5B : `finishSimulation()` fonctionne comme documenté).
+- **A.4 Historique Dashboard** : VALIDÉ — 73 snapshots, 73 timestamps uniques,
+  initial=48,3, cadence périodique 30s (60, 90, ... 2160), final exact=2161,8,
+  PI final=7,896, aucune duplication.
+- **A.4 ABox RUN_FINALIZED** : VALIDÉ — `runId=RUN_1773129600000_1789659541911`,
+  `exportReason=RUN_FINALIZED`, `simulationTimeSeconds=2161,75`, `RawEvent=975`,
+  TTL syntaxiquement valide. Ce run avait donc `"exportOnStop": true` activé
+  (cf. A.4-FIX-5A) — confirme que le chemin `aboxExportSurArret=true` fonctionne
+  correctement une fois activé par l'utilisateur.
+- **A.4 finishSimulation** : VALIDÉ — moteur réellement arrêté, aucune activité
+  résiduelle observée.
+- **Cohérence croisée** : 975 événements "Execution Brute" Excel == 975 `RawEvent`
+  ABox ; Dashboard Global PI=7,896 cohérent partout ; 0 erreur Excel
+  (`#REF!`/`#DIV/0!`/`#VALUE!`/`#NAME?`/`#N/A`).
+- **A.2 diagnostic `[DIAG-BLOQUEE]`** : **VALIDÉ FONCTIONNELLEMENT** — observé
+  réellement sur `REAPPRO_1` lors du run précédent (post A.4-FIX-4).
+- **CSV** : non synchronisé avec la finalisation (exporté manuellement vers
+  t≈2133/2477 selon les runs, avant l'arrêt) — **comportement attendu, pas un
+  défaut A.4** (le CSV est un mécanisme totalement indépendant, cf. A.4-FIX-5A).
+  Synchronisation éventuelle à revoir dans un futur bloc si souhaité.
+- **Point mineur noté pour un futur bloc (A.4 non rouvert pour cela)** : la feuille
+  "Synthèse C14" affiche `exports=5` alors que l'export final réel est `#6`
+  (compteur probablement lu avant son incrément) — cosmétique, sans impact sur les
+  données exportées.
+
+**BLOC A.4 : STATUT FINAL = TERMINÉ / FIGÉ.**
 
 ## Bloc M — Fondation multi-produit Generic (2026-09-16, PLANIFIÉ — NON COMMENCÉ)
 

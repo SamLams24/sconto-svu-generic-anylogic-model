@@ -1750,6 +1750,239 @@ demandé explicitement par ce bloc.
 (`modeMultiProduitActif=true`) n'a pas encore été testé en conditions réelles —
 c'est l'objet du sous-bloc M.2-TEST ci-dessous.
 
+## Bloc M.2-TEST — fixture synthétique A/B (2026-09-17)
+
+**Sous-bloc de TEST uniquement.** Aucun code moteur modifié, aucune politique
+autonome multi-produit implémentée, PI/SCOR non touché. Un seul livrable : une
+fixture JSON dérivée d'un scénario Generic déjà validé, plus ce journal.
+
+### 1. Schéma JSON audité (avant toute création de fixture)
+
+| Champ / mécanisme | Chemin | Signification | Utilisé par | Valeur retenue pour la fixture |
+|---|---|---|---|---|
+| `scenarios[].typeProduit` | racine JSON | Identité d'un `ScenarioFlux` — devient la clé catalogue via `cleProduit()` | `synchroniserListeProduits()`, `estScenarioCasTest()`, `choisirScenarioProduit()`, `codeProduitCommande()`, `cmd.idScenario` | `"PRODUIT_A"` / `"PRODUIT_B"` (voir §2) |
+| `scenarios[].sequence` | racine JSON | Liste ordonnée d'`idPoste` parcourus par ce produit | `routeProductionMakeDepuisScenario()`, `lancerProductionCommandeOrchestree()` | Copie exacte de la séquence `"SCENARIO DISTRIBUTION"` de ZENER (contient `sM1.5.1`, le magasin produits finis) |
+| `scenarios[].nomenclature` | racine JSON | Matières consommées par unité produite | `consommerMatieresPour()`, `bilanMatierePourScenario()` | Copie exacte (GPL_VRAC, BOUTEILLE_VIDE_12KG, ACCESSOIRES_KIT) — matières **partagées** entre A et B, simplification documentée §5 |
+| `scenarios[].debitParHeure`/`debitParHeureBase` | racine JSON | Débit nominal du scénario (utilisé par la sélection Poisson en mode NON piloté par commande, et comme référence de calibration) | `ajusterDebits()`, sélection légataire `arrivee` | `80` (identique à ZENER, inchangé) |
+| `parametresGlobaux.modeMultiProduitActif` | `parametresGlobaux` | Active la branche multi-produit (Bloc M) | Toutes les fonctions du scaffold M.1/M.2 | `true` |
+| `parametresGlobaux.rotationProduitsActive` | `parametresGlobaux` | Force une rotation round-robin déterministe entre produits catalogués | `choisirScenarioProduit()` | `true` (mécanisme déjà générique, activé uniquement pour ce test) |
+| `parametresGlobaux.champStockInitialProduitFini` | `parametresGlobaux` | Stock global de référence (mono) / total nominal (multi, cf. M.1-FIX) | `initialiserStocksProduits()` | `100` (absent du JSON ZENER original → défaut Java 90.0 ; explicité ici pour un total rond) |
+| `parametresGlobaux.stockInitialParProduit` | `parametresGlobaux` | Map optionnelle de stocks initiaux explicites par produit (Bloc M.1) | `stockInitialConfigurePourProduit()` | `{"PRODUIT_A": 60, "PRODUIT_B": 40}` — cas 2 de M.1-FIX (map complète, respectée exactement, somme=100) |
+| `estScenarioCasTest(sc)` | code (`~L4207`) | `nomScenario(sc).toUpperCase().contains("ZENER CAS 1"/"2"/"3")` — **hardcodé littéralement sur ces 3 chaînes** (limite de généricité pré-existante, non introduite par ce bloc, non corrigée ici — hors périmètre) | `estProduitEnregistrable()`, `indexScenarioNominal()`, `genererCommande()` | Noms `PRODUIT_A`/`PRODUIT_B` ne matchent aucune de ces 3 chaînes → catalogables (voir §2) |
+| `modePilotageParCommande` | **PAS dans le JSON** — champ Java sans binding JSON (vérifié par grep, aucun `jsonBool(...)` correspondant) | Sélectionne le pilotage par commande vs le flux autonome "génération 1" | `genererCommande()`, `traiterAlertesTactiques()`, événement `arrivee` | Défaut Java `true` — **déjà le mode actif**, aucune action requise |
+| `nombreCommandesATester`/`limiterNombreCommandes` | **PAS dans le JSON** | Bornent la campagne de test | `genererCommande()`, `verifierPolitiqueStockProduit()` | Défauts Java `45`/`true` — suffisant pour observer plusieurs cycles A/B, réglable via l'UI si un run plus court est souhaité (non requis) |
+| `quantiteCommandeFixeActive`/`quantiteCommandeFixe` | **PAS dans le JSON** | Fige la quantité de chaque commande | `quantitePourNouvelleCommande()` | Défaut Java `false`/`2` — quantités aléatoires par défaut ; documenté §4, réglable via l'UI si des deltas exacts sont souhaités |
+| `champScenarioSelectionne` | **PAS dans le JSON** | Sélection manuelle courante (UI) | `choisirScenarioPourCommande()`, lu par `choisirScenarioProduit()` **seulement si `rotationProduitsActive=false`** | Sans effet ici : `rotationProduitsActive=true` court-circuite ce chemin (voir §4) |
+
+**Aucun champ JSON inexistant n'a été inventé.** Les trois derniers champs listés
+« PAS dans le JSON » sont des réglages runtime/UI, confirmés par grep exhaustif de
+toutes les affectations `jsonBool`/`jsonDouble`/`jsonInt` correspondantes — aucune
+trouvée pour `modePilotageParCommande`, `nombreCommandesATester`,
+`limiterNombreCommandes`, `quantiteCommandeFixeActive`, `quantiteCommandeFixe`,
+`champScenarioSelectionne` : ils ne peuvent être réglés que dans l'interface
+AnyLogic (panneau « Contrôle commandes » évoqué dans les journaux précédents),
+jamais dans un fichier de scénario.
+
+### 2. Noms A/B retenus et pourquoi ils sont catalogables
+
+`estProduitEnregistrable(sc)` exclut uniquement les scénarios pour lesquels
+`estScenarioCasTest(sc)` est vrai, et cette dernière ne teste que la présence
+littérale de `"ZENER CAS 1"`, `"ZENER CAS 2"` ou `"ZENER CAS 3"` (majuscules,
+insensible à la casse) dans `nomScenario(sc)` (= `sc.typeProduit`). `"PRODUIT_A"`
+et `"PRODUIT_B"` ne contiennent aucune de ces sous-chaînes → catalogables par
+construction, sans dépendre d'une heuristique de nommage fragile. Leur nature
+synthétique/test est documentée dans le **nom du fichier**
+(`scenario_M2_multiproduit_AB.json`) et dans `meta.nomEntreprise`/
+`parametresGlobaux.nomEntreprise` (suffixés `"(FIXTURE TEST M.2 MULTI-PRODUIT --
+NON PRODUCTION)"`), pas dans `typeProduit` lui-même — précisément pour ne pas
+risquer une exclusion involontaire par un futur ajustement du prédicat.
+
+### 3. Fixture créée — dérivée de ZENER, ZENER non modifié
+
+`scenario_M2_multiproduit_AB.json` (racine du dépôt, aux côtés des autres
+scénarios Generic) est une copie complète de `scenario_ZENER_SA_Togo_v39.json`
+(64 postes, 5 acteurs, 3 fiches matière — **byte-identiques**, vérifié
+programmatiquement) dans laquelle **seuls** les `scenarios[]` et 5 champs de
+`parametresGlobaux` diffèrent :
+
+| Élément | ZENER original | Fixture |
+|---|---|---|
+| `scenarios[]` (5 entrées : Distribution, Deliver Return, Cas 1/2/3) | — | **Remplacés par 2 entrées** : `PRODUIT_A` et `PRODUIT_B`, chacune une copie exacte de `"SCENARIO DISTRIBUTION"` (séquence avec `sM1.5.1`, nomenclature 3 matières, débit 80) — seul `typeProduit` diffère |
+| `parametresGlobaux.modeMultiProduitActif` | absent (défaut `false`) | `true` |
+| `parametresGlobaux.rotationProduitsActive` | absent (défaut `false`) | `true` |
+| `parametresGlobaux.champStockInitialProduitFini` | absent (défaut Java `90.0`) | `100` |
+| `parametresGlobaux.stockInitialParProduit` | absent | `{"PRODUIT_A": 60, "PRODUIT_B": 40}` |
+| `meta.nomEntreprise` / `parametresGlobaux.nomEntreprise` | `"ZENER SA Togo"` | suffixé `"(FIXTURE TEST M.2 MULTI-PRODUIT -- NON PRODUCTION)"` |
+| `postes`, `acteurs`, `machines`, `fichesMatiere` | — | **Inchangés, byte-identiques** (vérifié par comparaison programmatique) |
+
+**`scenario_ZENER_SA_Togo_v39.json` n'a subi aucune modification** — la fixture est
+un fichier entièrement séparé.
+
+### 4. Génération des commandes A/B — mécanisme vérifié, pas supposé
+
+Audit de `genererCommande()` (`~L12646`) :
+```java
+ScenarioFlux scenarioCommande = modeMultiProduitActif
+    ? choisirScenarioProduit(n)
+    : choisirScenarioPourCommande();
+...
+if (scenarioCommande != null) {
+    cmd.idScenario = scenarioCommande.typeProduit;
+}
+```
+**Confirmé, pas supposé** : avec `modeMultiProduitActif=true` (fixture), chaque
+commande appelle bien `choisirScenarioProduit(n)`, qui — puisque
+`rotationProduitsActive=true` et `listeProduits.size()=2` — **court-circuite** la
+sélection manuelle (`choisirScenarioPourCommande()`) et applique
+`index = floorMod(n-1, 2)` : `CMD_1→PRODUIT_A, CMD_2→PRODUIT_B, CMD_3→PRODUIT_A,
+CMD_4→PRODUIT_B, ...` (rotation strictement déterministe, confirmée par lecture de
+code, `PRODUIT_A` étant le premier élément de `listeProduits` car premier dans
+`scenarios[]`). `cmd.idScenario = scenarioCommande.typeProduit` assigne ensuite
+l'identité exacte utilisée par tout le reste du moteur (`codeProduitCommande()`,
+`performanceProduitRow()`, et par le crédit de production ajouté en M.2 via
+`fluxAppartientACommande()`).
+
+`rotationProduitsActive` n'est activé que dans cette fixture, uniquement pour
+garantir un test déterministe — pas une règle métier par défaut (reste `false`
+partout ailleurs, y compris dans le master lui-même).
+
+### 5. Consommation — quantités réellement configurables
+
+`quantiteCommandeFixeActive` (défaut `false`) n'a **aucun binding JSON** : les
+quantités par commande suivront la distribution aléatoire par défaut de
+`quantitePourNouvelleCommande()`, pas des valeurs fixes comme "10" ou "5". **Ceci
+est documenté conformément à la consigne** plutôt que d'inventer un mécanisme de
+fixation par JSON inexistant. Pour un test avec des deltas parfaitement
+prévisibles, l'utilisateur peut activer manuellement "quantité fixe" dans le
+panneau de contrôle AnyLogic avant de démarrer — non requis pour valider les
+invariants d'isolation (M2-3/M2-4), qui tiennent quelle que soit la quantité
+exacte tant qu'elle est positive.
+
+**Simplification documentée** : PRODUIT_A et PRODUIT_B partagent la **même**
+nomenclature/matières (copie de celle de `SCENARIO DISTRIBUTION`) — le test porte
+sur l'isolation du **stock produit fini**, pas sur la contention de matières
+premières entre références, qui reste hors périmètre de ce sous-bloc.
+
+### 6. Politique autonome — ne peut pas être désactivée proprement, documenté sans y toucher
+
+Audit de l'appelant de `verifierPolitiqueStockProduit()` : appelée
+inconditionnellement depuis le cycle tactique périodique de l'acteur `sM`
+(`~L51381`, `if ("sM".equals(idMacroProcessus)) { main.verifierPolitiqueStockProduit(); }`),
+**sans aucun flag JSON ou paramètre d'activation/désactivation existant**. Elle
+reste, comme documenté au Bloc M.2, **mono-scénario** (`scRef` = scénario nominal
+unique, ne boucle sur aucun produit).
+
+**Décision, conformément à la consigne** (« si elle ne peut pas être désactivée
+sans code : STOP et documenter, ne pas implémenter M.3 pour faire fonctionner le
+test ») : **non désactivée, non modifiée**. Impact documenté plutôt que corrigé :
+`indexScenarioNominal()` retombera sur le "premier scénario non cas-test" (donc
+`PRODUIT_A`, puisqu'il est en position 0 dans `scenarios[]`) si le stock **agrégé**
+(A+B combinés, lu via le poste physique partagé) descend sous le point de
+commande. Un REAPPRO autonome pourrait alors se déclencher, **mais uniquement sur
+PRODUIT_A** (jamais B, puisque `declencherProductionAutonome(scRef, ...)` fixe
+`cmd.idScenario = scRef.typeProduit` correctement). Cela n'invalide pas le test :
+un tel REAPPRO créditerait A exclusivement, via le même chemin d'identité déjà
+démontré en M.2 — sa présence dans les logs (`[STOCK] Production autonome
+déclenchée : REAPPRO_x ...`) est à noter comme variable non contrôlée dans
+l'interprétation des deltas exacts, pas comme un défaut du test.
+
+### 7. Observabilité — exports existants confirmés fiables, aucune instrumentation ajoutée
+
+Audit de la feuille Excel **"Performance par produit"** (`performanceProduitRow()`,
+`~L7401`) : lit **directement** `stockFiniParProduit.get(cle)` (`~L7411`) pour la
+colonne "Stock fini restant", et filtre `commandes` par `cleProduit(c.idScenario)`
+pour "Nombre de commandes"/"Quantité commandée"/"Quantité livrée"/"Commandes en
+retard" — **par produit**, déjà correct et déjà branché sur la source de vérité
+multi-produit, sans dépendre d'aucun changement de M.2. La feuille "Multi-produit
+ZENER" (`multiProduitConfigurationRows()`), en revanche, est purement
+descriptive/configuration (nomenclature, statut d'intégration) — **pas un export
+de stock runtime**, ne pas s'y fier pour les valeurs A/B.
+
+L'agrégat (`stockProduitFiniDisponibleTotal()`, déjà corrigé en M.2 pour utiliser
+`sommeStockFiniParProduit()` en mode multi) reste lisible via la carte dashboard
+"Finished Stock" et la feuille "Dashboard Global".
+
+**Conclusion : les exports existants sont fiables. Aucune instrumentation
+`.alp` (log `[MULTI-STOCK]` ou autre) n'a été ajoutée** — conformément à la
+consigne "si elles sont fiables : utiliser les exports existants" et "si
+uniquement JSON + documentation sont nécessaires : ne modifie pas le .alp".
+**Aucun fichier `.alp` n'a été modifié dans ce sous-bloc.**
+
+### 8. Invariant à vérifier manuellement après le run (pas d'automatisation ajoutée)
+
+Après le run avec la fixture :
+1. Ouvrir la feuille "Performance par produit" : relever "Stock fini restant" pour
+   `PRODUIT_A` et `PRODUIT_B`, les additionner.
+2. Comparer à la valeur "Finished Stock" de la carte dashboard / feuille
+   "Dashboard Global" (= `stockProduitFiniDisponibleTotal()` = `sommeStockFiniParProduit()`
+   en mode multi, cf. M.2).
+3. Les deux doivent être **strictement égales** (pas seulement proches — même
+   source de calcul, aucune tolérance flottante attendue en pratique puisque
+   `stockProduitFiniDisponibleTotal()` en mode multi *est* `sommeStockFiniParProduit()`).
+4. Si un poste physique de compatibilité est observable (`sM1.5.1.niveauStock` via
+   un log `[MTS]`/popup), il doit également correspondre à cette même somme,
+   `synchroniserStockFiniAgrege()` l'écrivant explicitement à chaque
+   consommation/crédit.
+
+Aucun log `[MULTI-PRODUIT][ERROR]` de désaccord n'a été ajouté (pas nécessaire :
+l'agrégat et la somme sont *la même valeur calculée*, pas deux valeurs
+indépendantes à comparer avec tolérance — un écart ne peut résulter que d'un bug
+de synchronisation, pas d'un artefact d'arrondi).
+
+### 9. Concurrent modification — audité, aucun risque nouveau
+
+Boucles potentiellement concernées auditées : `choisirScenarioProduit()`,
+`stockFiniDisponiblePourScenario()`, `crediterStockFiniProduit()`,
+`consommerStockFiniProduit()` appellent toutes `synchroniserListeProduits()` (qui
+**reconstruit** `listeProduits`/`catalogueProduits` depuis `scenarios`, jamais
+l'inverse) mais aucune ne boucle sur `listeProduits` PENDANT qu'une autre fonction
+du même appel la reconstruit — chaque appel à `synchroniserListeProduits()` se
+termine avant que le code appelant n'itère quoi que ce soit. La nouvelle boucle
+de résolution d'identité ajoutée en M.2 (`for (CommandeAgent cmd : main.commandes)`)
+ne touche ni ne reconstruit `commandes` ni `listeProduits` pendant son parcours.
+**Aucune `ConcurrentModificationException` identifiée comme risque réel** pour ce
+sous-bloc ; aucun snapshot stable ajouté (n'aurait rien protégé de plus).
+
+### Fichier créé
+
+`scenario_M2_multiproduit_AB.json` (racine du dépôt). **Aucun fichier `.alp`
+modifié.**
+
+### Protocole utilisateur — étape par étape
+
+1. Ouvrir `model/SCONTO_SVU_GENERIC_MASTER.alp` dans AnyLogic (commit `5a46764`
+   ou plus récent — aucun changement de code depuis ce commit n'est nécessaire
+   pour ce test).
+2. Build (vérifier 0 erreur).
+3. Lancer une simulation, charger `scenario_M2_multiproduit_AB.json` (et non
+   `scenario_ZENER_SA_Togo_v39.json`) via le mécanisme de chargement de scénario
+   habituel.
+4. Démarrer la simulation normalement (pilotage par commande déjà actif par
+   défaut, aucun réglage supplémentaire requis).
+5. Laisser tourner suffisamment pour observer plusieurs commandes des deux
+   produits (au moins 4-6 commandes, réparties automatiquement en alternance
+   A/B/A/B/... par la rotation).
+6. Arrêter proprement via "Arreter et voir resultats" (finalise l'export, cf.
+   Bloc A.4).
+7. Ouvrir l'Excel exporté : feuille "Performance par produit" → noter le "Stock
+   fini restant" de `PRODUIT_A` et `PRODUIT_B`, additionner.
+8. Comparer à "Finished Stock" (carte dashboard / feuille "Dashboard Global").
+   Les deux valeurs doivent être identiques (§8).
+9. Vérifier dans "Performance par produit" que les commandes sont bien réparties
+   entre les deux références (nombre de commandes > 0 pour A **et** B).
+10. Chercher dans le journal des événements/logs d'éventuelles lignes
+    `[MULTI-PRODUIT][WARN]` (produit inconnu — ne devrait apparaître que si un
+    chemin hors pilotage par commande était atteint, cf. §6/limite documentée en
+    M.2) et `[STOCK] Production autonome déclenchée : REAPPRO_...` (politique
+    autonome, §6 — attendu occasionnellement sur PRODUIT_A uniquement, sans
+    invalider le test).
+11. Vérifier l'absence de toute exception dans la console/le journal.
+
+**Résultat attendu** : A et B évoluent indépendamment (une commande PRODUIT_A ne
+modifie jamais le stock PRODUIT_B et réciproquement), l'agrégat reste égal à la
+somme à tout instant, chaque crédit de production est traçable à
+`cmd.idScenario`, aucune exception.
+
 **PR reste DRAFT. Aucun merge vers `main`.**
 
 ## Bloc B — PI / SCOR

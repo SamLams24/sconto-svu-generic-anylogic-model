@@ -1445,6 +1445,113 @@ comblé — reporté explicitement).
 - **Commit** : voir SHA ci-dessous (message
   `feat(generic): establish multi-product stock source of truth`).
 
+### M.1-FIX — configuration partielle des stocks initiaux (2026-09-17)
+
+**Origine** : revue du commit `30e17c2` — cas non couvert identifié dans
+`stockInitialConfigurePourProduit()`.
+
+**Bug confirmé** : la version M.1 initiale divisait systématiquement
+`champStockInitialProduitFini` par le nombre **total** de produits, y compris ceux
+déjà configurés explicitement dans `stockInitialParProduit` — contredisant
+directement le commentaire selon lequel `champStockInitialProduitFini` représente
+le TOTAL disponible. Exemple : `global=18000`, 3 produits, `{A: 10000}` seul
+configuré → ancien code : `A=10000, B=6000, C=6000` (18000/3), **total=22000**
+(création artificielle de 4000 unités).
+
+**Politique implémentée** (dans `initialiserStocksProduits()`, calculée une seule
+fois avant de remplir `stockFiniParProduit`, puis passée à
+`stockInitialConfigurePourProduit()` sous forme d'une allocation par défaut déjà
+calculée — solution retenue comme la plus simple/lisible, évite tout recalcul en
+O(n²)) :
+1. Parcourir `listeProduits` (les produits réellement catalogués uniquement — une
+   clé de `stockInitialParProduit` ne correspondant à aucun produit catalogué est
+   **ignorée** pour ce calcul, sans jamais consommer le reliquat d'un produit réel) ;
+   calculer `sommeExplicite` (somme des valeurs configurées) et `nbConfigures`.
+2. `nbNonConfigures = n - nbConfigures` ; `reliquat = max(0, stockGlobal - sommeExplicite)`.
+3. `allocationParDefaut = nbNonConfigures > 0 ? reliquat / nbNonConfigures : 0`.
+4. Si `sommeExplicite > stockGlobal` : log `[MULTI-PRODUIT][WARN]` explicite,
+   **aucune réduction silencieuse** des valeurs explicites — le reliquat est alors
+   nul (repli sur 0 pour les non configurés, jamais une valeur négative).
+5. Chaque produit reçoit sa valeur explicite si configurée, sinon
+   `allocationParDefaut`.
+
+**Fichier modifié** : `model/SCONTO_SVU_GENERIC_MASTER.alp` — `stockInitialConfigurePourProduit()`
+(signature changée : `int nbProduits` → `double allocationParDefaut`, déjà
+calculée par l'appelant) et `initialiserStocksProduits()` (branche multi-produit
+réécrite ; branche mono-produit strictement inchangée).
+
+**Tests statiques vérifiés par relecture du code (non exécutables sans AnyLogic)** :
+
+| Test | Entrée | Résultat attendu | Résultat du code |
+|---|---|---|---|
+| S-1 | `global=18000`, 3 produits, map vide | 6000/6000/6000, somme=18000 | `sommeExplicite=0, nbNonConfigures=3, reliquat=18000, allocation=6000` → conforme |
+| S-2 | `global=18000`, `{A:6000,B:7000,C:5000}` | valeurs exactes, somme=18000 | tous configurés → valeurs explicites retournées telles quelles → conforme |
+| S-3 | `global=18000`, `{A:10000}` seul | A=10000, B=4000, C=4000, somme=18000 | `sommeExplicite=10000, nbNonConfigures=2, reliquat=8000, allocation=4000` → conforme |
+| S-4 | `global=18000`, `{A:15000,B:10000}`, C absent | A=15000, B=10000, C=0, somme=25000, WARN | `sommeExplicite=25000 > 18000` → WARN loggé ; `reliquat=max(0,18000-25000)=0` → `allocation=0` → C=0 → conforme |
+| S-5 | clé fantôme `INCONNU=5000` (produit absent du catalogue) | ne réduit pas le reliquat des vrais produits | boucle de calcul limitée à `listeProduits` ; `INCONNU` jamais consulté → `sommeExplicite`/`nbConfigures` inchangés → conforme |
+| S-6 | `modeMultiProduitActif=false` | comportement mono inchangé | branche `else` strictement identique à avant M.1 (`champStockInitialProduitFini` par entrée, jamais lu tant que le mode est off) → conforme |
+
+### Audit complémentaire — `synchroniserStockFiniAgrege()` (2026-09-17, PAS DE MODIFICATION)
+
+**Question posée** : les postes matchant `estPosteStockFini()` sont-ils traités
+ailleurs comme des stocks physiques distincts (additifs) ou comme des miroirs du
+même agrégat ?
+
+**Preuve trouvée** : `stockProduitFiniDisponibleTotal()` (fonction `<Function>`
+existante, utilisée notamment par `AM.3.45`/`AM.2.8` dans `valeurRuntimeMetriqueSCOR()`)
+**somme** `p.niveauStock` sur **tous** les postes matchant `estPosteStockFini(p)` :
+```java
+for (PosteGenericAgent p : postes) {
+    if (p != null && estPosteStockFini(p)) total += Math.max(0, p.niveauStock);
+}
+```
+Cette fonction traite donc explicitement plusieurs postes stock-fini comme des
+**stocks physiques distincts et additifs**. Or `synchroniserStockFiniAgrege()`
+(Bloc M.1) écrit actuellement la **même** valeur `total` dans **tous** les postes
+matchant `estPosteStockFini()` (traitement en **miroirs**, pas en stocks distincts).
+**Ces deux fonctions ont des hypothèses logiquement incompatibles** : si plus d'un
+poste matche `estPosteStockFini()` alors que `modeMultiProduitActif=true`,
+`synchroniserStockFiniAgrege()` écrirait le même total N fois, et
+`stockProduitFiniDisponibleTotal()` additionnerait ces N copies identiques —
+double comptage démontré **par construction du code**, pas seulement supposé.
+
+**Vérification empirique sur les scénarios actuellement fournis** (comptage des
+postes matchant `estPosteStockFini()` — `typePoste==STOCKAGE` ou `codeSCOR`
+commençant par `M1.5` ou nom contenant "PRODUITS FINIS") :
+- `scenario_ZENER_SA_Togo_v39.json` : **1 poste** (`sM1.5.1`).
+- `scenario_2_velo_urbain.json` : **0 poste**.
+- `scenario_3_automobile_gx5.json` : **0 poste**.
+
+**Conclusion** : sur les trois scénarios génériques actuellement fournis avec le
+dépôt, `estPosteStockFini()` ne matche jamais plus d'un poste — **aucun double
+comptage réel ne se produit aujourd'hui**. Le risque est **logique et latent**,
+pas actuellement déclenché : il ne se matérialiserait que si un futur scénario
+JSON définissait plusieurs postes de type `STOCKAGE`/`M1.5` (ex. un magasin
+produits finis dédié par ligne de produit, dans une configuration multi-produit
+avec stocks physiquement séparés). Conformément à la consigne (« ne modifier ce
+mécanisme que si un double comptage réel est démontré »), **`synchroniserStockFiniAgrege()`
+n'a PAS été modifiée** dans ce correctif. Le sujet est documenté ici pour
+audit lors du sous-bloc M suivant, en particulier si une architecture à plusieurs
+postes de stock fini physiquement distincts par produit est un jour envisagée
+(auquel cas `synchroniserStockFiniAgrege()` devra être repensée pour écrire une
+part du total par poste plutôt que le total complet sur chacun).
+
+**Validations statiques (M.1-FIX)** :
+- XML bien formé : OK.
+- IDs AnyLogic : 1655/1655 uniques, inchangé.
+- `git diff --check` : aucune erreur d'espace blanc.
+- Grep DataCo : 0 occurrence.
+- Diff confiné à `stockInitialConfigurePourProduit()`/`initialiserStocksProduits()`
+  (~L6855-6926) — aucun changement à `synchroniserStockFiniAgrege()` (audité,
+  non modifié), à `consommerStockFiniProduit()`, `crediterStockFiniProduit`
+  (toujours absente), réapprovisionnement, politique autonome, PI/SCOR, exports,
+  états holoniques, ordonnancement.
+- **Build AnyLogic** : EN ATTENTE (utilisateur).
+- **Run** : EN ATTENTE (utilisateur) — même protocole que M.1 (run ZENER standard,
+  `modeMultiProduitActif` absent/false, comportement strictement inchangé).
+- **Commit** : voir SHA ci-dessous (message
+  `fix(generic): preserve total stock with partial product config`).
+
 **PR reste DRAFT. Aucun merge vers `main`.**
 
 ## Bloc B — PI / SCOR

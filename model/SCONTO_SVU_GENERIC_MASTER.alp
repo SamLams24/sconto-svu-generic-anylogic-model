@@ -6852,18 +6852,20 @@ void synchroniserStockFiniAgrege(PosteGenericAgent fallback) {
     if (!applique && fallback != null) fallback.niveauStock = total;
 }
 
-// Bloc M.1 -- stock initial d'UN produit : valeur explicite du JSON
-// (stockInitialParProduit) si configuree, sinon repartition EQUITABLE du stock
-// global (champStockInitialProduitFini représente le TOTAL disponible pour
-// toutes les references, jamais une valeur a dupliquer). C'est cette fonction,
-// et elle seule, qui empeche le bug de duplication (stock global x N produits).
-double stockInitialConfigurePourProduit(ScenarioFlux sc, int nbProduits) {
+// Bloc M.1-FIX -- stock initial d'UN produit : valeur explicite du JSON
+// (stockInitialParProduit) si configuree pour CE produit, sinon
+// allocationParDefaut (deja calculee par l'appelant a partir du RELIQUAT reel,
+// pas d'une simple division globale/N -- voir initialiserStocksProduits()).
+// C'est cette fonction, combinee au calcul de reliquat de l'appelant, qui
+// empeche le bug de duplication (stock global x N produits) ET le bug de
+// creation de stock (configuration partielle mal repartie, voir M.1-FIX).
+double stockInitialConfigurePourProduit(ScenarioFlux sc, double allocationParDefaut) {
     String cle = cleProduit(sc != null ? sc.typeProduit : "");
     Double configure = stockInitialParProduit != null ? stockInitialParProduit.get(cle) : null;
     if (configure != null && !Double.isNaN(configure) && !Double.isInfinite(configure)) {
         return Math.max(0.0, configure);
     }
-    return nbProduits > 0 ? Math.max(0.0, champStockInitialProduitFini) / (double) nbProduits : 0.0;
+    return Math.max(0.0, allocationParDefaut);
 }
 
 // Bloc M.1 -- CORRECTIF DE FOND. Version precedente : chaque produit recevait
@@ -6871,22 +6873,56 @@ double stockInitialConfigurePourProduit(ScenarioFlux sc, int nbProduits) {
 // 18000 avec 3 produits donnait 18000+18000+18000=54000, une duplication pure et
 // simple deja identifiee et documentee comme defaut connu (voir le commentaire
 // C14.10/C14.12 historique de consommerStockFiniProduit() juste en dessous).
-// Desormais : en mode multi-produit, chaque produit recoit
-// stockInitialConfigurePourProduit() (valeur explicite ou repartition equitable) ;
 // en mono-produit, le comportement historique est conserve a l'identique (la map
 // reste peuplee de champStockInitialProduitFini par entree, mais elle n'est lue
 // nulle part tant que modeMultiProduitActif=false -- consommerStockFiniProduit()
 // et stockFiniDisponiblePourScenario() empruntent alors la branche mono-produit,
 // qui ne touche que PosteGenericAgent.niveauStock, seule source de verite mono).
+//
+// Bloc M.1-FIX -- CONFIGURATION PARTIELLE. La premiere version divisait
+// systematiquement champStockInitialProduitFini par le nombre TOTAL de produits,
+// y compris ceux deja configures explicitement dans stockInitialParProduit :
+// global=18000, A configure a 10000, B/C non configures -> A=10000, B=6000,
+// C=6000 (18000/3), total=22000 -- une creation artificielle de 4000 unites,
+// alors que champStockInitialProduitFini est cense representer le TOTAL. Corrige
+// en calculant d'abord le RELIQUAT reel (global - somme des valeurs explicites
+// des produits reellement catalogues, les cles inconnues du catalogue etant
+// ignorees pour ce calcul) puis en le repartissant uniquement entre les
+// produits NON configures : global=18000, A=10000 configure -> reliquat=8000
+// reparti sur B et C (non configures) -> B=4000, C=4000, total=18000 exact. Si
+// la somme des valeurs explicites depasse le stock global, les valeurs
+// explicites sont conservees telles quelles (jamais reduites silencieusement) et
+// un WARN est journalise ; le reliquat est alors nul.
 void initialiserStocksProduits() {
     synchroniserListeProduits();
     stockFiniParProduit.clear();
     int n = listeProduits.size();
-    for (ScenarioFlux sc : listeProduits) {
-        double stockInitial = modeMultiProduitActif
-            ? stockInitialConfigurePourProduit(sc, n)
-            : Math.max(0.0, champStockInitialProduitFini);
-        stockFiniParProduit.put(cleProduit(sc.typeProduit), stockInitial);
+    if (modeMultiProduitActif) {
+        double stockGlobal = Math.max(0.0, champStockInitialProduitFini);
+        double sommeExplicite = 0.0;
+        int nbConfigures = 0;
+        for (ScenarioFlux sc : listeProduits) {
+            Double v = stockInitialParProduit != null ? stockInitialParProduit.get(cleProduit(sc.typeProduit)) : null;
+            if (v != null && !Double.isNaN(v) && !Double.isInfinite(v)) {
+                sommeExplicite += Math.max(0.0, v);
+                nbConfigures++;
+            }
+        }
+        int nbNonConfigures = n - nbConfigures;
+        double reliquat = Math.max(0.0, stockGlobal - sommeExplicite);
+        double allocationParDefaut = nbNonConfigures > 0 ? reliquat / (double) nbNonConfigures : 0.0;
+        if (sommeExplicite > stockGlobal + 0.0001 && board != null) {
+            board.logEvent(String.format(java.util.Locale.US,
+                "[MULTI-PRODUIT][WARN] somme des stocks initiaux explicites (%.1f) depasse le stock global configure (%.1f) -- valeurs explicites conservees telles quelles, aucune reduction silencieuse ; produits non configures = 0 unite chacun.",
+                sommeExplicite, stockGlobal));
+        }
+        for (ScenarioFlux sc : listeProduits) {
+            stockFiniParProduit.put(cleProduit(sc.typeProduit), stockInitialConfigurePourProduit(sc, allocationParDefaut));
+        }
+    } else {
+        for (ScenarioFlux sc : listeProduits) {
+            stockFiniParProduit.put(cleProduit(sc.typeProduit), Math.max(0.0, champStockInitialProduitFini));
+        }
     }
     lignesProduitParCommande.clear();
     synchroniserStockFiniAgrege(null);

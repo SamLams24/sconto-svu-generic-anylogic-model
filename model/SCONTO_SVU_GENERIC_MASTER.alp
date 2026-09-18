@@ -1020,8 +1020,9 @@ double bornerQuantiteLot(double qStar, double plafond) {
 // tirage aleatoire. Meme filtre de type que dureeTraitement() (seuls DELAI,
 // STOCKAGE et AIGUILLAGE portent une duree), pour que nominal et observe
 // soient comparables. Lecture seule (PosteGenericAgent.loiTemps/typePoste),
-// aucun etat mute. Fondation pour Bloc B.2 (RS.2.x, perimetre entreprise
-// focale) -- non consommee dans ce bloc.
+// aucun etat mute. Consommee depuis le Bloc B.2 par calculerPIGlobal()
+// (perimetre entreprise focale, ponderation du nominal RS par les passages
+// reels) et par majBorneCycleMacro() ci-dessous.
 double dureeTraitementNominale(PosteGenericAgent p) {
     if (p == null || p.loiTemps == null) return 0.0;
     try {
@@ -1034,6 +1035,33 @@ double dureeTraitementNominale(PosteGenericAgent p) {
                 return 0.0;
         }
     } catch (Throwable ignored) { return 0.0; }
+}
+
+// Bloc B.2 -- Borne de normalisation d'un temps de cycle macro-processus SCOR
+// (RS.2.x), indexee sur son temps de cycle NOMINAL (voir dureeTraitementNominale()
+// ci-dessus), pondere par la frequence de passage reelle -- pas une simple
+// somme des nominaux de TOUS les postes du macro (Source/Make comportent des
+// chemins paralleles/optionnels qu'une unite ne traverse qu'en partie).
+// Echelle retenue : tenir son temps nominal vaut 10/10, un multiple
+// facteurToleranceCycleMacro (defaut 10.0, StrategicAgent) du nominal vaut 0/10
+// -- sauf activation de la decroissance hyperbolique (Bloc B.1,
+// NormalizationProfile.decroissanceLente), qui remplace cette coupure dure par
+// une decroissance lente au-dela du plancher : deux niveaux d'engorgement tres
+// differents (ex. 13x et 56x le nominal) restent alors mesurablement distincts
+// au lieu d'etre tous deux ecrases a 0.000. Seul appelant : la section RS.2.x
+// de calculerPIGlobal() (Bloc B.2/B.3).
+void majBorneCycleMacro(String codeSCOR, double nominalPondere) {
+    if (codeSCOR == null) return;
+    if (!(nominalPondere > 0)) return; // pas de nominal exploitable : on garde le profil courant
+    double facteur = 10.0;
+    try {
+        if (strategic != null && strategic.facteurToleranceCycleMacro > 1.5) {
+            facteur = strategic.facteurToleranceCycleMacro;
+        }
+    } catch (Throwable ignored) {}
+    normalizationProfiles.put(codeSCOR,
+        new NormalizationProfile(codeSCOR, "COST", nominalPondere, facteur * nominalPondere,
+                                 "B.2_DECROISSANCE_LENTE", "2.0", true));
 }
 
 double dureeReceptionEtControleReelle(String idMatiere) {
@@ -49212,12 +49240,10 @@ void recevoirMessageHierarchique(AERMessage msg) {
 
 // ============================================================
 // Bloc B.1 -- FONDATIONS PI/SCOR (warm-up, poids effectifs, seuil RL petits
-// echantillons, tracabilite du perimetre). Portees isolement du modele
-// collegue ; AUCUNE n'est encore lue/ecrite par calculerPIGlobal() ou tout
-// autre code de ce master (verifie par grep) -- champs inertes tant que le
-// Bloc B.2 ne cable pas leur usage dans le calcul du PI. Reinitialisees a
-// chaque run par demarrerSimulation(), a l'identique de scoreRL/scoreRS/etc.
-// ci-dessous (deja presents dans ce master).
+// echantillons, tracabilite du perimetre). Reinitialisees a chaque run par
+// demarrerSimulation(), a l'identique de scoreRL/scoreRS/etc. ci-dessous
+// (deja presents dans ce master). Cablees dans calculerPIGlobal() depuis le
+// Bloc B.2.
 // ============================================================
 String attributsPonderesPI = "";
 double sommePoidsEffectifsPI = 0;
@@ -49227,6 +49253,17 @@ boolean donneesRLPresentesPrecedent = false;
 boolean donneesRSPresentesPrecedent = false;
 boolean donneesAMPresentesPrecedent = false;
 double dernierLogDetailSCOR = -999.0;
+
+// ============================================================
+// Bloc B.2 -- configuration statique RS (tolerance de depassement du cycle
+// nominal, cf. majBorneCycleMacro() dans Main) et pilotage MTS (plafond de
+// securite du debit decide par ajusterDebits()). Valeurs par defaut EXACTES
+// du modele collegue -- jamais mutees a l'execution, donc PAS reinitialisees
+// par demarrerSimulation() (contrairement aux 8 champs B.1 ci-dessus, qui
+// sont un etat de run).
+// ============================================================
+double facteurToleranceCycleMacro = 10.0;
+double plafondMultipleDebitBase = 3.0;
 ]]></AdditionalClassCode>
 			<Generic>false</Generic>
 			<GenericParameter>
@@ -50036,11 +50073,46 @@ BlackboardAgent board = main.board;
 if (board == null) return 0;
 detailN3.clear(); // legacy name; contient des metriques SCOR N1/N2/N3 runtime
 
-KPIBundle sP = board.kpiParMacro.get("sP");
-KPIBundle sS = board.kpiParMacro.get("sS");
-KPIBundle sM = board.kpiParMacro.get("sM");
-KPIBundle sD = board.kpiParMacro.get("sD");
-KPIBundle sR = board.kpiParMacro.get("sR");
+// Bloc B.2 -- PERIMETRE DU PI = ENTREPRISE FOCALE. board.kpiParMacro agrege
+// TOUS les postes d'un macro-processus quel que soit l'acteur responsable :
+// les postes de categorie CLIENT ou FOURNISSEUR y entrent au meme titre que
+// ceux de l'entreprise focale (audit B.1 : confirme sur les 3 scenarios
+// groupes actuels). On reconstruit ici des bundles macro LOCAUX en
+// n'agregeant que les micro-activites dont l'acteur responsable est
+// l'entreprise focale (ActeurSC.ENTREPRISE_FOCALE, deja utilise ailleurs
+// dans ce master pour l'export ABox) -- jamais un test sur un nom
+// d'entreprise (aucun "ZENER"/nomEntreprise.contains(...) ici). board.kpiParMacro
+// n'est PAS mute : il continue d'alimenter les vues et la detection de
+// goulots sur la chaine etendue.
+KPIBundle sP = new KPIBundle(), sS = new KPIBundle(), sM = new KPIBundle(),
+          sD = new KPIBundle(), sR = new KPIBundle();
+java.util.HashMap<String,Long> unitesParMacro = new java.util.HashMap<String,Long>();
+java.util.HashMap<String,Double> nominalPondereParMacro = new java.util.HashMap<String,Double>();
+for (PosteGenericAgent p : main.postes) {
+    if (p == null) continue;
+    if (!ActeurSC.ENTREPRISE_FOCALE.equals(main.normaliserCategorieActeur(p.categorieActeurResponsable))) continue;
+    KPIBundle b = board.kpiParMicroActivite.get(p.idPoste);
+    if (b == null) continue;
+    String macroP = main.macroPrefixe(p.codeSCOR);
+    // Nombre d'unites entrees dans le macro = plus grand nombre de passages
+    // observe sur un de ses postes. Sert de denominateur au temps de cycle
+    // du macro-processus (voir plus bas).
+    Long mx = unitesParMacro.get(macroP);
+    if (mx == null || b.count > mx.longValue()) unitesParMacro.put(macroP, b.count);
+    // Nominal du macro, pondere par le nombre de passages reels de ce poste :
+    // un poste traverse par 18% des unites (rework) ne pese que 0,18 fois sa
+    // duree nominale, exactement comme dans la valeur observee.
+    double nominalPoste = main.dureeTraitementNominale(p);
+    if (nominalPoste > 0 && b.count > 0) {
+        Double accNom = nominalPondereParMacro.get(macroP);
+        nominalPondereParMacro.put(macroP, (accNom == null ? 0.0 : accNom.doubleValue()) + nominalPoste * b.count);
+    }
+    if ("sS".equals(macroP)) sS.agreger(b);
+    else if ("sM".equals(macroP)) sM.agreger(b);
+    else if ("sD".equals(macroP)) sD.agreger(b);
+    else if ("sR".equals(macroP)) sR.agreger(b);
+    else if ("sP".equals(macroP)) sP.agreger(b);
+}
 double wip = board.avgWIP();
 double termineesDebit = board.totalTerminees;
 try {
@@ -50058,70 +50130,130 @@ if (capaciteTotale <= 0) capaciteTotale = 1; // garde-fou division par zero
 
 // ============================================================
 // RL — Reliability : seules les mesures réellement observables sur le run
-// contribuent au PI. Les métriques documentaires, défauts réels, scrap/rework
-// détaillés ou conformité administrative restent dans le catalogue 139, mais
-// elles ne sont plus utilisées comme contribution si les données sources ne
-// sont pas présentes dans la simulation.
+// contribuent au PI.
+// Bloc B.2 -- Adaptation documentee par rapport au code donneur : le
+// donneur consolide tout sur sa fonction tauxCommandesLivreesCloses()
+// (ratio SERVIE/(SERVIE+EN_RETARD+REFUSEE+BLOQUE_*), REAPPRO_ exclus).
+// Cette fonction existe deja dans CE master sous le meme nom mais avec une
+// semantique DEGENERE (elle retourne toujours 1.0 des qu'une commande a
+// clos -- confirme par audit B.1, MERGE_PROGRESS.md) : l'appeler ici
+// afficherait RL a tort en permanence a 10/10. main.verifierFillRate() de
+// CE master calcule deja exactement le ratio recherche (commandes clientes
+// livrees a temps parmi les commandes clientes CLOSES), sous un nom
+// different -- reutilise ici a la place, conformement au principe
+// "composer/reutiliser, ne pas dupliquer" (Bloc B.1). tauxCommandesLivreesCloses()
+// lui-meme N'EST PAS modifie (differe a B.3 avec le reste des mappings SCOR).
+// La garde d'echantillon (nombreCommandesClosesFiabilite()/seuilMinEchantillonRL,
+// Bloc B.1) est en revanche portee exactement comme le donneur.
 // ============================================================
 java.util.ArrayList<MetriqueN3> rl = new java.util.ArrayList<MetriqueN3>();
-double fillRate = main.verifierFillRate();
-double tauxLivraisonComplete = main.tauxCommandesLivreesCloses();
+double tauxLivraisonComplete = main.verifierFillRate(); // NaN tant qu'aucune commande cliente n'est close
+int nbCommandesClosesRL = main.nombreCommandesClosesFiabilite();
+// En dessous du seuil, les metriques notees (qui partagent la meme source)
+// sont affichees mais ne contribuent pas au PI : absence de donnee (ou
+// echantillon trop petit) != performance nulle. Avec seuilMinEchantillonRL=1
+// (valeur du donneur, non modifiee ici), cette garde protege uniquement le
+// cas n=0 -- elle ne constitue PAS une garantie de robustesse statistique
+// sur petits echantillons (n=1 n'est pas "statistiquement suffisant").
+boolean commandesClosesPresentes = nbCommandesClosesRL >= seuilMinEchantillonRL;
+double fillRate = tauxLivraisonComplete;
 double exactitudeArticle = tauxLivraisonComplete;
 double exactitudeQuantite = tauxLivraisonComplete;
 
-int nRL = 4;
+// RL.3.33/RL.3.35 n'ont aucune source de donnee independante dans ce modele
+// (pas de simulation d'erreur d'article ni de quantite) : ce sont des proxies
+// qui recopiaient la meme valeur, donnant l'illusion de 4 mesures SCOR
+// independantes alors qu'il n'y en a qu'une seule reelle. Poids 0
+// (informatif, hors score), meme traitement que CO.3.13/CO.3.11/AM.3.18.
+// RL.2.1 (% of Orders Delivered in Full) mesure la COMPLETUDE d'une
+// livraison, pas sa ponctualite : ce modele ne livre jamais partiellement
+// une commande close, donc la completude vaudrait 1.0 par construction --
+// poids 0 egalement (affiche, hors score) plutot que de recopier
+// silencieusement la ponctualite et de la compter deux fois dans RL.
+// RL.2.2 (Delivery Performance to Customer Commit Date) porte donc seule
+// l'attribut : c'est la seule mesure de fiabilite reellement observable ici.
+int nRL = 1;
 double poidsRL = 1.0 / nRL;
-rl.add(new MetriqueN3("Commandes livrées complètes", "RL.2.1", "ratio 0-1", tauxLivraisonComplete, main.normaliserValeurMetriqueSCOR("RL.2.1", tauxLivraisonComplete), poidsEffectifN3("Commandes livrées complètes", poidsRL)));
-rl.add(new MetriqueN3("Commandes livrées à temps", "RL.2.2", "ratio 0-1", fillRate, main.normaliserValeurMetriqueSCOR("RL.2.2", fillRate), poidsEffectifN3("Commandes livrées à temps", poidsRL)));
-rl.add(new MetriqueN3("Exactitude des articles livrés", "RL.3.33", "ratio 0-1", exactitudeArticle, main.normaliserValeurMetriqueSCOR("RL.3.33", exactitudeArticle), poidsEffectifN3("Exactitude des articles livrés", poidsRL)));
-rl.add(new MetriqueN3("Exactitude des quantités livrées", "RL.3.35", "ratio 0-1", exactitudeQuantite, main.normaliserValeurMetriqueSCOR("RL.3.35", exactitudeQuantite), poidsEffectifN3("Exactitude des quantités livrées", poidsRL)));
+rl.add(new MetriqueN3("Commandes livrées complètes (informatif, hors score)", "RL.2.1", commandesClosesPresentes ? "ratio 0-1" : "ratio 0-1 (aucune commande close)", tauxLivraisonComplete, commandesClosesPresentes ? main.normaliserValeurMetriqueSCOR("RL.2.1", tauxLivraisonComplete) : 0.0, 0.0));
+rl.add(new MetriqueN3("Commandes livrées à temps", "RL.2.2", commandesClosesPresentes ? "ratio 0-1" : "ratio 0-1 (aucune commande close)", fillRate, commandesClosesPresentes ? main.normaliserValeurMetriqueSCOR("RL.2.2", fillRate) : 0.0, commandesClosesPresentes ? poidsEffectifN3("Commandes livrées à temps", poidsRL) : 0.0));
+rl.add(new MetriqueN3("Exactitude des articles livrés (informatif, hors score)", "RL.3.33", commandesClosesPresentes ? "ratio 0-1" : "ratio 0-1 (aucune commande close)", exactitudeArticle, commandesClosesPresentes ? main.normaliserValeurMetriqueSCOR("RL.3.33", exactitudeArticle) : 0.0, 0.0));
+rl.add(new MetriqueN3("Exactitude des quantités livrées (informatif, hors score)", "RL.3.35", commandesClosesPresentes ? "ratio 0-1" : "ratio 0-1 (aucune commande close)", exactitudeQuantite, commandesClosesPresentes ? main.normaliserValeurMetriqueSCOR("RL.3.35", exactitudeQuantite) : 0.0, 0.0));
 scoreRL = agregerN3(rl);
+// Affichage honnete du score RL sous le seuil d'echantillon : les metriques
+// notees ayant alors un poids 0, agregerN3() les ignore et scoreRL
+// retombait a 0 -- un "0/10" qui se lit comme une performance nulle alors
+// qu'il signifie seulement "pas encore assez de commandes closes". Le PI
+// lui-meme n'est PAS fausse (wEffRL=0 : RL est exclu de l'agregation tant
+// que sommePoidsRL vaut 0, voir plus bas) -- on ne corrige donc que la
+// valeur affichee.
+if (!commandesClosesPresentes && nbCommandesClosesRL > 0 && !Double.isNaN(tauxLivraisonComplete)) {
+    java.util.ArrayList<MetriqueN3> rlAffichage = new java.util.ArrayList<MetriqueN3>();
+    rlAffichage.add(new MetriqueN3("Commandes livrées à temps", "RL.2.2", "ratio 0-1 (provisoire, hors PI)", fillRate, main.normaliserValeurMetriqueSCOR("RL.2.2", fillRate), 1.0));
+    scoreRL = agregerN3(rlAffichage);
+}
 detailN3.put("RL", rl);
 
 // ============================================================
-// RS — Responsiveness (temps de cycle par macro-processus SCOR)
-// S2.2 C05 : bornes stables chargées depuis normalizationProfiles JSON.
-// borneCT/borneLT ci-dessous restent calculées uniquement pour diagnostic historique ;
-// elles ne pilotent plus les scores du PI.
+// RS — Responsiveness (temps de cycle par macro-processus SCOR, perimetre
+// entreprise focale). avgCycleTime() renvoie la moyenne du temps de
+// traitement PAR PASSAGE SUR UN POSTE, alors que SCOR RS.2.x designe le
+// temps de cycle du MACRO-PROCESSUS, c'est-a-dire la duree qu'une unite met
+// a le TRAVERSER (files d'attente internes comprises, pas seulement les
+// temps operatoires). On calcule desormais le temps CUMULE (traitement +
+// attente) du macro divise par le nombre d'unites qui y sont entrees.
 // ============================================================
 java.util.ArrayList<MetriqueN3> rs = new java.util.ArrayList<MetriqueN3>();
-double ctS = (sS != null) ? sS.avgCycleTime() : 0;
-double ctM = (sM != null) ? sM.avgCycleTime() : 0;
-double ctD = (sD != null) ? sD.avgCycleTime() : 0;
-double ctR = (sR != null) ? sR.avgCycleTime() : 0;
-// VSM-FIX-08 -- sources uniques, identiques au Dashboard Global et a l'ABox.
+double ctS = 0, ctM = 0, ctD = 0, ctR = 0;
+Long nUS = unitesParMacro.get("sS");
+Long nUM = unitesParMacro.get("sM");
+Long nUD = unitesParMacro.get("sD");
+Long nUR = unitesParMacro.get("sR");
+if (nUS != null && nUS.longValue() > 0) ctS = (sS.sumCycleTime + sS.sumWaitTime) / (double) nUS.longValue();
+if (nUM != null && nUM.longValue() > 0) ctM = (sM.sumCycleTime + sM.sumWaitTime) / (double) nUM.longValue();
+if (nUD != null && nUD.longValue() > 0) ctD = (sD.sumCycleTime + sD.sumWaitTime) / (double) nUD.longValue();
+if (nUR != null && nUR.longValue() > 0) ctR = (sR.sumCycleTime + sR.sumWaitTime) / (double) nUR.longValue();
+
+// Borne = nominal pondere ramene a une unite, meme construction que la
+// valeur observee ci-dessus (division par le nombre d'unites entrees dans
+// le macro). Active la decroissance lente (Bloc B.1) UNIQUEMENT pour ces
+// profils RS -- jamais globalement.
+String[] macrosRS = {"sS", "sM", "sD", "sR"};
+String[] codesRS  = {"RS.2.1", "RS.2.2", "RS.2.3", "RS.2.5"};
+for (int iRS = 0; iRS < macrosRS.length; iRS++) {
+    Long nU = unitesParMacro.get(macrosRS[iRS]);
+    Double nomPond = nominalPondereParMacro.get(macrosRS[iRS]);
+    if (nU != null && nU.longValue() > 0 && nomPond != null && nomPond.doubleValue() > 0) {
+        main.majBorneCycleMacro(codesRS[iRS], nomPond.doubleValue() / (double) nU.longValue());
+    }
+}
+// Sources uniques, identiques au Dashboard Global et a l'ABox.
 double ltG = main.orderFulfillmentLeadTimeGlobal();
-double wtG = main.orderWaitingTimeGlobal();
+double wtG = main.tempsAttenteGlobalCoherent(); // NaN tant qu'aucune commande n'est comptabilisee
+boolean commandeGlobaleClose = board.kpiGlobal != null && board.kpiGlobal.count > 0;
 
-// borne dynamique : 2x la moyenne des CT macro observes non nuls (jamais < 1s pour eviter une division degeneree)
-double sommeCT = 0; int nCT = 0;
-if (ctS > 0) { sommeCT += ctS; nCT++; }
-if (ctM > 0) { sommeCT += ctM; nCT++; }
-if (ctD > 0) { sommeCT += ctD; nCT++; }
-if (ctR > 0) { sommeCT += ctR; nCT++; }
-double borneCT = (nCT > 0) ? Math.max(1.0, (sommeCT / nCT) * 2.0) : 3600;
-double borneLT = borneCT * 2.0;
-
-int nRS = 2;
+int nRS = 0;
+if (commandeGlobaleClose) nRS += 2;
 if (main.macroExecutee(sS)) nRS++;
 if (main.macroExecutee(sM)) nRS++;
 if (main.macroExecutee(sD)) nRS++;
 if (main.macroExecutee(sR)) nRS++;
+if (nRS == 0) nRS = 1; // garde-fou division par zero : aucune metrique RS n'a de donnee
 double poidsRS = 1.0 / nRS;
 if (main.macroExecutee(sS)) rs.add(new MetriqueN3("Source Cycle Time — Temps de cycle Source", "RS.2.1", "s", ctS, main.normaliserValeurMetriqueSCOR("RS.2.1", ctS), poidsEffectifN3("Source Cycle Time — Temps de cycle Source", poidsRS)));
 if (main.macroExecutee(sM)) rs.add(new MetriqueN3("Make Cycle Time — Temps de cycle Make", "RS.2.2", "s", ctM, main.normaliserValeurMetriqueSCOR("RS.2.2", ctM), poidsEffectifN3("Make Cycle Time — Temps de cycle Make", poidsRS)));
 if (main.macroExecutee(sD)) rs.add(new MetriqueN3("Deliver Cycle Time — Temps de cycle Deliver", "RS.2.3", "s", ctD, main.normaliserValeurMetriqueSCOR("RS.2.3", ctD), poidsEffectifN3("Deliver Cycle Time — Temps de cycle Deliver", poidsRS)));
 if (main.macroExecutee(sR)) rs.add(new MetriqueN3("Return Cycle Time — Temps de cycle Return", "RS.2.5", "s", ctR, main.normaliserValeurMetriqueSCOR("RS.2.5", ctR), poidsEffectifN3("Return Cycle Time — Temps de cycle Return", poidsRS)));
-rs.add(new MetriqueN3("Order Fulfillment Cycle Time — Lead Time global de commande", "RS.1.1", "s", ltG, main.normaliserValeurMetriqueSCOR("RS.1.1", ltG), poidsEffectifN3("Order Fulfillment Cycle Time — Lead Time global de commande", poidsRS)));
-rs.add(new MetriqueN3("Order Fulfillment Dwell Time — Temps d’attente global", "RS.3.94", "s", wtG, main.normaliserValeurMetriqueSCOR("RS.3.94", wtG), poidsEffectifN3("Order Fulfillment Dwell Time — Temps d’attente global", poidsRS)));
+rs.add(new MetriqueN3("Order Fulfillment Cycle Time — Lead Time global de commande", "RS.1.1", commandeGlobaleClose ? "s" : "s (aucune commande close)", ltG, commandeGlobaleClose ? main.normaliserValeurMetriqueSCOR("RS.1.1", ltG) : 0.0, commandeGlobaleClose ? poidsEffectifN3("Order Fulfillment Cycle Time — Lead Time global de commande", poidsRS) : 0.0));
+rs.add(new MetriqueN3("Order Fulfillment Dwell Time — Temps d’attente global", "RS.3.94", commandeGlobaleClose ? "s" : "s (aucune commande close)", wtG, commandeGlobaleClose ? main.normaliserValeurMetriqueSCOR("RS.3.94", wtG) : 0.0, commandeGlobaleClose ? poidsEffectifN3("Order Fulfillment Dwell Time — Temps d’attente global", poidsRS) : 0.0));
 scoreRS = agregerN3(rs);
 detailN3.put("RS", rs);
 
 // ============================================================
 // AG — Agility : seules les metriques reellement mesurables sont
-// retenues (pas de Time to Recovery ni de VaR : aucune donnee de
-// risque/incident n'existe dans ce modele -- on ne fabrique pas
-// un chiffre qui ne reposerait sur rien).
+// retenues. AG.3.32 est la seule grandeur SCOR normative reelle ; les 2
+// autres sont des PROXIES explicitement nommes (PROXY.AG.*), jamais
+// presentes comme des metriques SCOR normatives (Bloc B.2, point 6/7 de
+// la consigne).
 // ============================================================
 java.util.ArrayList<MetriqueN3> ag = new java.util.ArrayList<MetriqueN3>();
 double tauxOccupation = wip / capaciteTotale; // indicateur estimé de saturation, borne par la capacite reelle declaree
@@ -50131,7 +50263,7 @@ int nAG = 3;
 double poidsAG = 1.0 / nAG;
 ag.add(new MetriqueN3("Current Delivery Volume / Throughput — Volume livré et débit de sortie", "AG.3.32", "ent/h", debit, main.normaliserValeurMetriqueSCOR("AG.3.32", debit), poidsEffectifN3("Current Delivery Volume / Throughput — Volume livré et débit de sortie", poidsAG)));
 ag.add(new MetriqueN3("System Utilization — Taux d’occupation du système (estimation WIP/capacité)", "PROXY.AG.SYSTEM_UTILIZATION", "ratio 0-1", tauxOccupation, main.normaliserValeurMetriqueSCOR("PROXY.AG.SYSTEM_UTILIZATION", tauxOccupation), poidsEffectifN3("System Utilization — Taux d’occupation du système (estimation WIP/capacité)", poidsAG)));
-ag.add(new MetriqueN3("Stabilite du debit (1 - coeff. de variation observe)", "AG.1.1", "ratio 0-1", adaptabilite, main.normaliserValeurMetriqueSCOR("AG.1.1", adaptabilite), poidsEffectifN3("Stabilite du debit (1 - coeff. de variation observe)", poidsAG)));
+ag.add(new MetriqueN3("Stabilite du debit observe (proxy, hors referentiel SCOR)", "PROXY.AG.STABILITE_DEBIT", "ratio 0-1", adaptabilite, main.normaliserValeurMetriqueSCOR("PROXY.AG.STABILITE_DEBIT", adaptabilite), poidsEffectifN3("Stabilite du debit observe (proxy, hors referentiel SCOR)", poidsAG)));
 scoreAG = agregerN3(ag);
 detailN3.put("AG", ag);
 
@@ -50139,10 +50271,12 @@ detailN3.put("AG", ag);
 // CO — Cost : le seul score de performance defendable ici est le
 // ratio cout total / chiffre d'affaire genere (TSCMC ratio) -- a
 // condition que l'utilisateur ait renseigne un CA par unite.
-// coutMainOeuvre et coutMatiere sont affiches a titre informatif
-// (poids 0) : leur repartition relative n'est PAS une mesure de
-// performance en soi (depenser plus en main d'oeuvre qu'en matiere
-// n'est ni bon ni mauvais dans l'absolu).
+// Bloc B.2 -- l'assiette de CA utilise desormais unitesLivreesClients()
+// (Bloc B.1) au lieu de main.nbTermines : un compteur HYBRIDE (incremente
+// par unite sur le flux de production, mais une seule fois par commande sur
+// le chemin de livraison directe MTS -- le mode nominal de ce master), qui
+// sous-estimait le CA d'un facteur proche de la taille moyenne de commande.
+// REAPPRO_* deja exclus par unitesLivreesClients().
 // ============================================================
 java.util.ArrayList<MetriqueN3> co = new java.util.ArrayList<MetriqueN3>();
 double[] couts = main.calculerCoutsCumules(); // [0]=coutMainOeuvre, [1]=coutMatiere, [2]=coutTotalDeclare
@@ -50150,10 +50284,11 @@ double coutMainOeuvre = couts[0];
 double coutMatiere = couts[1];
 double coutTotal = couts[2];
 
-boolean donneesFinancieresPresentes = (main.chiffreAffaireParUnite > 0 && main.nbTermines > 0);
+int unitesFacturables = main.unitesLivreesClients();
+boolean donneesFinancieresPresentes = (main.chiffreAffaireParUnite > 0 && unitesFacturables > 0);
 double ratioCoutCA = Double.NaN;
 if (donneesFinancieresPresentes) {
-    double ca = main.chiffreAffaireParUnite * main.nbTermines;
+    double ca = main.chiffreAffaireParUnite * unitesFacturables;
     ratioCoutCA = (ca > 0) ? Math.min(1.0, coutTotal / ca) : Double.NaN;
 }
 
@@ -50167,21 +50302,25 @@ scoreCO = agregerN3(co);
 detailN3.put("CO", co);
 
 // ============================================================
-// AM — Asset Management : actifs fixes declares + disponibilite
-// machine (deja calculee dans MachineSim) + jours de stock reel.
-// La valeur d'actif fixe est affichee a titre informatif (poids 0) :
-// aucune reference comparative n'existe pour juger si un montant est
-// "bon" ou "mauvais", contrairement aux taux/durees normalisables.
+// AM — Asset Management : actifs fixes declares + disponibilite machine
+// (proxy, hors referentiel SCOR normatif -- meme grandeur qu'auparavant
+// sous AM.3.9, renommee pour ne plus la presenter comme une metrique SCOR
+// reelle) + jours de stock reel (AM.2.2, metrique SCOR reelle).
 // ============================================================
 java.util.ArrayList<MetriqueN3> am = new java.util.ArrayList<MetriqueN3>();
 double valeurActifsTotale = main.calculerValeurActifsFixes();
 double disponibiliteMachinesMoy = main.calculerDisponibiliteMachinesMoyenne();
 double joursStock = main.calculerInventoryDaysOfSupply();
+// calculerInventoryDaysOfSupply() renvoie 0 tant qu'aucun debit n'a ete
+// observe (pas une vraie mesure de "0 jour de stock") : meme principe que
+// CO.1.1, on exclut cette metrique du calcul plutot que de compter une
+// fausse rupture de stock.
+boolean debitObserve = main.nbTermines > 0;
 
 int nAM = 2; // seules 2 metriques contribuent reellement au score pondere
 double poidsAM = 1.0 / nAM;
-am.add(new MetriqueN3("Disponibilite moyenne des machines (MTBF/(MTBF+MTTR))", "AM.3.9", "ratio 0-1", disponibiliteMachinesMoy, main.normaliserValeurMetriqueSCOR("AM.3.9", disponibiliteMachinesMoy), poidsEffectifN3("Disponibilite moyenne des machines (MTBF/(MTBF+MTTR))", poidsAM)));
-am.add(new MetriqueN3("Inventory Days of Supply (stock reel observe)", "AM.2.2", "jours", joursStock, main.normaliserValeurMetriqueSCOR("AM.2.2", joursStock), poidsEffectifN3("Inventory Days of Supply (stock reel observe)", poidsAM)));
+am.add(new MetriqueN3("Disponibilite machine (proxy, hors referentiel SCOR)", "PROXY.AM.DISPONIBILITE_MACHINE", "ratio 0-1", disponibiliteMachinesMoy, main.normaliserValeurMetriqueSCOR("PROXY.AM.DISPONIBILITE_MACHINE", disponibiliteMachinesMoy), poidsEffectifN3("Disponibilite machine (proxy, hors referentiel SCOR)", poidsAM)));
+am.add(new MetriqueN3("Inventory Days of Supply (stock reel observe)", "AM.2.2", debitObserve ? "jours" : "jours (aucun debit observe)", joursStock, debitObserve ? main.normaliserValeurMetriqueSCOR("AM.2.2", joursStock) : 0.0, debitObserve ? poidsEffectifN3("Inventory Days of Supply (stock reel observe)", poidsAM) : 0.0));
 am.add(new MetriqueN3("Valeur des actifs fixes declares (informatif, hors score)", "AM.3.18", valeurActifsTotale > 0 ? "EUR" : "EUR (non renseigne)", valeurActifsTotale, 0.0, 0.0));
 scoreAM = agregerN3(am);
 detailN3.put("AM", am);
@@ -50201,8 +50340,92 @@ FuzzyGradeSet gRS=FuzzyGradeSet.agregerMetriques(rs);
 FuzzyGradeSet gAG=FuzzyGradeSet.agregerMetriques(ag);
 FuzzyGradeSet gCO=FuzzyGradeSet.agregerMetriques(co);
 FuzzyGradeSet gAM=FuzzyGradeSet.agregerMetriques(am);
-FuzzyGradeSet gPI=FuzzyGradeSet.agregerGrades(new FuzzyGradeSet[]{gRL,gRS,gAG,gCO,gAM},new double[]{w_RL,w_RS,w_AG,w_CO,w_AM});
+
+// Bloc B.2 -- POIDS EFFECTIFS. Une famille dont AUCUNE metrique n'a de
+// donnee (toutes a poids 0, ex. RS avant toute commande terminee, ou CO
+// sans chiffre d'affaire renseigne) produit un FuzzyGradeSet entierement a
+// zero. Sans ce garde-fou, agregerGrades() traiterait ce "pas de donnee"
+// comme une performance nulle (grade F=pire note) et l'incorporerait quand
+// meme dans la moyenne ponderee -- l'absence de donnees n'est jamais un
+// score de zero.
+double sommePoidsRL=0, sommePoidsRS=0, sommePoidsAG=0, sommePoidsCO=0, sommePoidsAM=0;
+for (MetriqueN3 m : rl) sommePoidsRL += Math.max(0.0, m.poids);
+for (MetriqueN3 m : rs) sommePoidsRS += Math.max(0.0, m.poids);
+for (MetriqueN3 m : ag) sommePoidsAG += Math.max(0.0, m.poids);
+for (MetriqueN3 m : co) sommePoidsCO += Math.max(0.0, m.poids);
+for (MetriqueN3 m : am) sommePoidsAM += Math.max(0.0, m.poids);
+double wEffRL = sommePoidsRL > 0 ? w_RL : 0.0;
+double wEffRS = sommePoidsRS > 0 ? w_RS : 0.0;
+double wEffAG = sommePoidsAG > 0 ? w_AG : 0.0;
+double wEffCO = sommePoidsCO > 0 ? w_CO : 0.0;
+double wEffAM = sommePoidsAM > 0 ? w_AM : 0.0;
+FuzzyGradeSet gPI=FuzzyGradeSet.agregerGrades(new FuzzyGradeSet[]{gRL,gRS,gAG,gCO,gAM},new double[]{wEffRL,wEffRS,wEffAG,wEffCO,wEffAM});
 double pi=gPI.defuzzifier();
+
+// Tracabilite du perimetre du PI. Un attribut peut etre AFFICHE avec un
+// score reel tout en etant EXCLU de l'agregation (poids effectif 0, faute
+// d'echantillon suffisant) : le PI est alors renormalise sur les seuls
+// attributs restants. Sans cette information, le PI n'est pas recalculable
+// a la main a partir des 5 scores affiches.
+StringBuilder perimetre = new StringBuilder();
+if (wEffRL > 0) perimetre.append(perimetre.length() > 0 ? "+" : "").append("RL");
+if (wEffRS > 0) perimetre.append(perimetre.length() > 0 ? "+" : "").append("RS");
+if (wEffAG > 0) perimetre.append(perimetre.length() > 0 ? "+" : "").append("AG");
+if (wEffCO > 0) perimetre.append(perimetre.length() > 0 ? "+" : "").append("CO");
+if (wEffAM > 0) perimetre.append(perimetre.length() > 0 ? "+" : "").append("AM");
+attributsPonderesPI = perimetre.length() > 0 ? perimetre.toString() : "aucun (PI non calcule)";
+sommePoidsEffectifsPI = wEffRL + wEffRS + wEffAG + wEffCO + wEffAM;
+
+// Bloc B.1/B.2 -- WARM-UP. Tant que les 5 attributs ne sont pas TOUS
+// ponderes, le PI ne porterait que sur un sous-ensemble renormalise : deux
+// PI calcules sur des perimetres differents ne sont pas comparables. On
+// maintient donc le PI a sa valeur d'initialisation (ciblePIGlobal) tant
+// que le perimetre est incomplet, et on ne le laisse varier qu'a partir du
+// moment ou les 5 attributs sont mesures -- une fois atteint, on ne revient
+// plus artificiellement en amorcage sur une simple absence ponctuelle
+// ulterieure (perimetrePIDejaComplet reste vrai a vie pour ce run).
+boolean perimetreComplet = (wEffRL > 0 && wEffRS > 0 && wEffAG > 0 && wEffCO > 0 && wEffAM > 0);
+if (perimetreComplet) perimetrePIDejaComplet = true;
+// Garde-fou : si CO ne peut structurellement JAMAIS entrer (aucun chiffre
+// d'affaire configure dans le scenario), attendre le perimetre complet
+// gelerait le PI a la cible pendant tout le run. Dans ce cas on ne gele pas
+// et le PI reste renormalise sur les attributs reellement disponibles.
+boolean attenteImpossible = (wEffCO <= 0 && !(main.chiffreAffaireParUnite > 0));
+boolean phaseAmorcagePI = !perimetrePIDejaComplet && !perimetreComplet && !attenteImpossible;
+if (phaseAmorcagePI) {
+    pi = ciblePIGlobal;
+    attributsPonderesPI = "AMORCAGE (PI maintenu a la cible) | mesures: "
+        + (perimetre.length() > 0 ? perimetre.toString() : "aucun");
+}
+
+// Log de transition (une seule fois, pas a chaque cycle) : signale quand
+// une famille de metriques SCOR bascule de "pas encore de donnee" a
+// "incluse dans le PI".
+if (commandesClosesPresentes && !donneesRLPresentesPrecedent) {
+    board.logEvent("[SCOR] RL passe en donnees reelles (premiere commande close) : score=" + String.format("%.2f", scoreRL));
+}
+donneesRLPresentesPrecedent = commandesClosesPresentes;
+if (commandeGlobaleClose && !donneesRSPresentesPrecedent) {
+    board.logEvent("[SCOR] RS passe en donnees reelles (premiere commande terminee) : score=" + String.format("%.2f", scoreRS));
+}
+donneesRSPresentesPrecedent = commandeGlobaleClose;
+if (debitObserve && !donneesAMPresentesPrecedent) {
+    board.logEvent("[SCOR] AM passe en donnees reelles (premier debit observe) : score=" + String.format("%.2f", scoreAM));
+}
+donneesAMPresentesPrecedent = debitObserve;
+
+// Decomposition RL/RS/AG/CO/AM a chaque calcul, limitee a une fois toutes
+// les 5s pour rester lisible sur un run complet (calculerPIGlobal() est
+// sinon appelee a chaque unite terminee) -- throttling via
+// dernierLogDetailSCOR (Bloc B.1), pas de nouveau flag verboseLogs.
+if (board != null && (time() - dernierLogDetailSCOR >= 5.0)) {
+    dernierLogDetailSCOR = time();
+    board.logEvent(String.format(java.util.Locale.US,
+        "[SCOR-DETAIL] RL=%.2f RS=%.2f AG=%.2f CO=%.2f AM=%.2f -> PI=%.3f | wEff=%.2f | perimetre=%s | phase=%s",
+        scoreRL, scoreRS, scoreAG, scoreCO, scoreAM, pi, sommePoidsEffectifsPI,
+        attributsPonderesPI, phaseAmorcagePI ? "AMORCAGE" : "ACTIVE"));
+}
+
 return (Double.isNaN(pi)||Double.isInfinite(pi))?0.0:Math.max(0.0,Math.min(10.0,pi));]]></Body>
 				</Function>
 				<Function AccessType="default" StaticFunction="false">
@@ -50344,7 +50567,52 @@ return type;]]></Body>
 					<PresentationFlag>true</PresentationFlag>
 					<ShowLabel>true</ShowLabel>
 					<Body><![CDATA[Main main = (Main) getOwner();
-double debitActuel = (time() > 0) ? main.nbTermines * 3600.0 / time() : 0;
+
+// Bloc B.2 -- Debit de reference = demande CLIENT reelle (quantite des
+// commandes clientes creees, hors REAPPRO_), pas la production totale.
+// Utiliser main.nbTermines ici creait une boucle de retroaction positive
+// sans rapport avec la demande reelle : plus la production autonome MTS
+// tourne (Bloc M.3), plus nbTermines grimpe, plus previsionDemande grimpe,
+// plus le stock cible grimpe (ajusterDebits() ci-dessous), plus on produit
+// -- independamment du rythme reel des commandes clients (qui peut au
+// contraire ralentir pendant que ce cycle s'auto-alimente). Confirme
+// reproductible dans ce master par audit B.1 (MERGE_PROGRESS.md).
+double qteClientCreeeTotale = 0;
+double tPremiereCommandeClient = Double.NaN;
+int nbCommandesClientCreees = 0;
+java.util.Map<String, Double> qteClientCreeeParProduit = new java.util.HashMap<String, Double>();
+java.util.Map<String, Double> tPremiereCommandeParProduit = new java.util.HashMap<String, Double>();
+java.util.Map<String, Integer> nbCommandesParProduit = new java.util.HashMap<String, Integer>();
+for (CommandeAgent cmd : main.commandes) {
+    if (cmd == null || cmd.idCommande == null) continue;
+    if (cmd.idCommande.startsWith("REAPPRO_")) continue;
+    qteClientCreeeTotale += cmd.qte;
+    nbCommandesClientCreees++;
+    if (Double.isNaN(tPremiereCommandeClient) || cmd.tCreation < tPremiereCommandeClient) {
+        tPremiereCommandeClient = cmd.tCreation;
+    }
+    if (cmd.idScenario != null) {
+        Double cumul = qteClientCreeeParProduit.get(cmd.idScenario);
+        qteClientCreeeParProduit.put(cmd.idScenario, (cumul == null ? 0.0 : cumul) + cmd.qte);
+        Integer n = nbCommandesParProduit.get(cmd.idScenario);
+        nbCommandesParProduit.put(cmd.idScenario, (n == null ? 0 : n) + 1);
+        Double tPrem = tPremiereCommandeParProduit.get(cmd.idScenario);
+        if (tPrem == null || cmd.tCreation < tPrem) tPremiereCommandeParProduit.put(cmd.idScenario, cmd.tCreation);
+    }
+}
+
+// Les commandes clientes arrivent en rafales espacees, pas en flux continu :
+// une simple moyenne "quantite cumulee / temps ecoule depuis T=0" est
+// extremement instable tant que peu de commandes existent. On exige donc au
+// moins 2 commandes clientes (pour disposer d'un vrai intervalle observe) et
+// on mesure le debit depuis la 1ere commande, pas depuis T=0. Sous ce seuil,
+// previsionDemande reste a 0, ce qui declenche deja le repli existant sur
+// debitParHeureBase dans ajusterDebits().
+double debitActuel = 0;
+if (nbCommandesClientCreees >= 2 && !Double.isNaN(tPremiereCommandeClient)) {
+    double dureeEcoulee = Math.max(60.0, time() - tPremiereCommandeClient);
+    debitActuel = qteClientCreeeTotale * 3600.0 / dureeEcoulee;
+}
 
 historiqueDebit.add(debitActuel);
 if (historiqueDebit.size() > 10) historiqueDebit.remove(0);
@@ -50356,16 +50624,24 @@ if (previsionDemande == 0) {
     previsionDemande = alpha * debitActuel + (1 - alpha) * previsionDemande;
 }
 
-// Meme lissage, applique separement a chaque produit (scenario), pour
-// alimenter le calcul du besoin net en matieres (Main.calculerBesoinsNets).
-if (time() > 0) {
-    for (ScenarioFlux sc : main.scenarios) {
-        Long nb = main.nbTerminesParProduit.get(sc.typeProduit);
-        double debitProduit = (nb != null) ? nb * 3600.0 / time() : 0;
-        Double prev = previsionParProduit.get(sc.typeProduit);
-        double nouvellePrev = (prev == null || prev == 0) ? debitProduit : (alpha * debitProduit + (1 - alpha) * prev);
-        previsionParProduit.put(sc.typeProduit, nouvellePrev);
+// Meme lissage et meme garde-fou d'echantillon minimal, applique separement
+// a chaque produit (scenario), pour alimenter le calcul du besoin net en
+// matieres (Main.calculerBesoinsNets) -- base desormais sur la quantite de
+// commandes clientes creees PAR PRODUIT (filtrees par cmd.idScenario exact),
+// jamais sur les unites produites (main.nbTerminesParProduit) ni sur un stock
+// agrege : chaque produit ne voit que sa propre demande cliente.
+for (ScenarioFlux sc : main.scenarios) {
+    Integer nProduit = nbCommandesParProduit.get(sc.typeProduit);
+    Double tPremProduit = tPremiereCommandeParProduit.get(sc.typeProduit);
+    double debitProduit = 0;
+    if (nProduit != null && nProduit >= 2 && tPremProduit != null) {
+        Double qte = qteClientCreeeParProduit.get(sc.typeProduit);
+        double dureeEcouleeProduit = Math.max(60.0, time() - tPremProduit);
+        debitProduit = (qte != null) ? qte * 3600.0 / dureeEcouleeProduit : 0;
     }
+    Double prev = previsionParProduit.get(sc.typeProduit);
+    double nouvellePrev = (prev == null || prev == 0) ? debitProduit : (alpha * debitProduit + (1 - alpha) * prev);
+    previsionParProduit.put(sc.typeProduit, nouvellePrev);
 }]]></Body>
 				</Function>
 				<Function AccessType="default" StaticFunction="false">
@@ -50445,9 +50721,19 @@ for (ScenarioFlux sc : main.scenarios) {
     Double pvProduit = previsionParProduit.get(sc.typeProduit);
     double prevision = (pvProduit != null && pvProduit > 0) ? pvProduit : previsionDemande;
 
-    // Stock de produits finis reellement observe pour ce scenario
+    // Bloc B.2 -- Stock de produits finis reellement observe POUR CE PRODUIT.
+    // stockFini.niveauStock est l'AGREGAT de compatibilite du Bloc M
+    // (synchroniserStockFiniAgrege()) : en mode multi-produit, le relire ici
+    // dans cette boucle par-scenario le sommerait N fois dans
+    // totalStockObserve des que 2+ produits partagent le meme poste
+    // physique -- confirme par audit B.1 (MERGE_PROGRESS.md), exactement le
+    // cas de la fixture scenario_M2_multiproduit_AB.json (PRODUIT_A/PRODUIT_B
+    // partagent sM1.5.1). stockFiniDisponiblePourScenario() est deja la
+    // source de verite du Bloc M (figee) : mono -> stockFini.niveauStock
+    // (comportement historique inchange) ; multi -> stockFiniParProduit[sc].
+    // Ne recalcule ni ne modifie stockFiniParProduit.
     PosteGenericAgent stockFini = main.trouverStockFiniPourScenario(sc);
-    double stockObserve = (stockFini != null) ? stockFini.niveauStock : 0;
+    double stockObserve = main.stockFiniDisponiblePourScenario(sc, stockFini);
 
     // Stock cible = couverture (en heures) de la demande prevue
     double stockCible = prevision * couvertureStockCibleHeures;
@@ -50469,6 +50755,16 @@ for (ScenarioFlux sc : main.scenarios) {
     if (prevision <= 0 && stockObserve <= 0) {
         debitFinal = sc.debitParHeureBase * facteurAjustement;
     }
+
+    // Bloc B.2 -- Plafond de securite physique : quelle que soit l'erreur de
+    // prevision ou l'ecart de stock, le debit decide ne doit jamais depasser
+    // un multiple raisonnable de la capacite nominale du scenario
+    // (debitParHeureBase). Sans ce plafond, une prevision encore bruitee (peu
+    // d'echantillons) amplifiee par couvertureStockCibleHeures/
+    // horizonRattrapageHeures peut produire un debit decide de plusieurs
+    // ordres de grandeur au-dessus de toute capacite reelle.
+    double plafond = sc.debitParHeureBase * plafondMultipleDebitBase;
+    if (plafond > 0) debitFinal = Math.min(debitFinal, plafond);
 
     sc.debitParHeure = debitFinal;
 

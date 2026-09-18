@@ -8677,8 +8677,26 @@ void initialiserProfilsNormalisationDefaut() {
     ajouterProfilNormalisationDefaut("AG.3.32", "BENEFIT", 0.0, Math.max(1.0, champDebit * 2.0), src);
     ajouterProfilNormalisationDefaut("PROXY.AG.SYSTEM_UTILIZATION", "COST", 0.0, 1.5, src);
     ajouterProfilNormalisationDefaut("AG.1.1", "BENEFIT", 0.0, 1.0, src);
+    // Bloc B.2-FIX -- BUG CONFIRME PAR RUN REEL (ZENER mono et fixture A/B) :
+    // calculerPIGlobal() (Bloc B.2) a renomme les codes AG.1.1 -> PROXY.AG.STABILITE_DEBIT
+    // et AM.3.9 -> PROXY.AM.DISPONIBILITE_MACHINE pour etiqueter honnetement
+    // ces 2 grandeurs comme des proxies plutot que des metriques SCOR
+    // normatives -- un changement d'ETIQUETAGE voulu, PAS de calcul. Mais
+    // aucun profil de normalisation n'existait sous ces NOUVEAUX codes :
+    // scorePerformanceMetriqueSCOR() ne trouvait aucun profil pour
+    // "PROXY.AG.STABILITE_DEBIT"/"PROXY.AM.DISPONIBILITE_MACHINE", et son
+    // repli de secours (reserve aux prefixes RL./RS./AG./CO./AM., jamais a
+    // "PROXY.") retombait sur Double.NaN -- traite ensuite comme un grade F
+    // (score 0) par l'agregation floue, alors que les valeurs reelles
+    // (~0.94-0.95 dans les 2 runs) auraient du scorer pres de 10/10.
+    // Correctif : alias exact des profils historiques AG.1.1/AM.3.9
+    // (memes direction/min/max/source, aucune nouvelle borne inventee) sous
+    // les nouveaux codes, pour que valeur numerique ancienne = valeur
+    // numerique nouvelle, seul le code/libelle devient honnetement PROXY.
+    ajouterProfilNormalisationDefaut("PROXY.AG.STABILITE_DEBIT", "BENEFIT", 0.0, 1.0, src);
     ajouterProfilNormalisationDefaut("CO.1.1", "COST", 0.0, 1.0, src);
     ajouterProfilNormalisationDefaut("AM.3.9", "BENEFIT", 0.0, 1.0, src);
+    ajouterProfilNormalisationDefaut("PROXY.AM.DISPONIBILITE_MACHINE", "BENEFIT", 0.0, 1.0, src);
     ajouterProfilNormalisationDefaut("AM.2.2", "COST", 0.0, 30.0, src);
 }
 
@@ -12275,9 +12293,22 @@ try { tickAppro.reset(); } catch (Throwable ignored) {}
 
 board.reset();
 // Bloc B.1 -- remise a zero des fondations PI/SCOR par run (memes champs
-// qu'introduits sur StrategicAgent ; voir son AdditionalClassCode). Inerte
-// tant que le Bloc B.2 ne cable pas leur lecture dans calculerPIGlobal().
+// qu'introduits sur StrategicAgent ; voir son AdditionalClassCode). Cablees
+// dans calculerPIGlobal() depuis le Bloc B.2.
 if (strategic != null) {
+    // Bloc B.2-FIX -- BUG CONFIRME PAR RUN REEL : les premiers snapshots
+    // Historique Dashboard affichaient PI=0 (pas PI=cible=7.5) pendant
+    // l'amorcage. Cause racine : capturerPointHistoriqueDashboard() lit
+    // strategic.piGlobalCourant DIRECTEMENT (jamais calculerPIGlobal()),
+    // et ce champ demarre a 0 (valeur d'initialisation de la Variable) tant
+    // qu'aucun appel reel a calculerPIGlobal() n'a encore eu lieu -- la
+    // logique de warm-up de calculerPIGlobal() elle-meme (qui force
+    // pi=ciblePIGlobal tant que le perimetre est incomplet, Bloc B.2) n'a
+    // aucun effet sur ce premier instant puisqu'elle n'a pas encore ete
+    // executee. Corrige en alignant le champ affiche sur la cible des le
+    // demarrage du run, comme le fait le reste de ce bloc pour les autres
+    // etats PI/SCOR.
+    strategic.piGlobalCourant = strategic.ciblePIGlobal;
     strategic.donneesRLPresentesPrecedent = false;
     strategic.donneesRSPresentesPrecedent = false;
     strategic.donneesAMPresentesPrecedent = false;
@@ -13513,17 +13544,32 @@ return somme / n;]]></Body>
 					<PublicFlag>false</PublicFlag>
 					<PresentationFlag>true</PresentationFlag>
 					<ShowLabel>true</ShowLabel>
-					<Body><![CDATA[// Jours de stock = niveau de stock physique reel (niveauStock, deja maintenu
-// par les postes STOCKAGE a chaque passage) divise par le debit de sortie
-// journalier observe. Si aucun poste STOCKAGE n'existe ou si le debit est nul,
-// retourne 0 plutot qu'une valeur fictive.
-double stockTotal = 0;
+					<Body><![CDATA[// Jours de stock = stock fini pertinent (stockProduitFiniDisponibleTotal(),
+// Bloc M -- deja mono/multi-produit-safe, jamais un double comptage) divise
+// par le debit de sortie journalier observe.
+// Bloc B.2-FIX -- BUG CONFIRME PAR RUN REEL (ZENER mono et fixture A/B) :
+// AM.2.2 retournait 0 malgre un Finished Stock et un debit non nuls dans les
+// deux runs. Cause racine identifiee par lecture directe des scenarios JSON :
+// le poste produit fini (ex. sM1.5.1 "Transfert vers magasin produits finis")
+// est type DELAI dans TOUS les scenarios fournis (ZENER, velo urbain,
+// automobile GX5), jamais STOCKAGE -- le filtre `p.typePoste == TypePoste.STOCKAGE`
+// ci-dessous ne matchait donc JAMAIS aucun poste, `aDesStocks` restait faux,
+// et la fonction retournait 0 avant meme de lire un stock ou un debit. Ce
+// n'etait ni une sentinelle "aucune donnee" ni une vraie rupture de stock :
+// une mauvaise source de lecture. Corrige en reutilisant
+// estPosteStockFini(p) -- le meme predicat que le Bloc M (TypePoste.STOCKAGE
+// EN PLUS d'un repli codeSCOR/nom pour les postes DELAI comme M1.5) -- pour
+// detecter la presence d'un poste produit fini, et
+// stockProduitFiniDisponibleTotal() (Bloc M, deja mono/multi-safe) pour la
+// valeur elle-meme, au lieu de resommer manuellement p.niveauStock ici (qui
+// aurait pu reintroduire un risque de double comptage multi-produit deja
+// corrige ailleurs). Le debit (nbTermines/board.totalTerminees, ci-dessous)
+// n'est PAS modifie : la cause demontree du bug est uniquement le filtre de
+// stock, pas le debit.
+double stockTotal = stockProduitFiniDisponibleTotal();
 boolean aDesStocks = false;
 for (PosteGenericAgent p : postes) {
-    if (p.typePoste == TypePoste.STOCKAGE) {
-        stockTotal += p.niveauStock;
-        aDesStocks = true;
-    }
+    if (estPosteStockFini(p)) { aDesStocks = true; break; }
 }
 if (!aDesStocks) return 0;
 

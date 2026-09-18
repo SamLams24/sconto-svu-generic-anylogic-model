@@ -2781,10 +2781,131 @@ la fixture A/B, ZENER, le JSON/scénarios, les Blocs C/D/E
 
 **PR reste DRAFT. Aucun merge vers `main`. B.3 non commencé.**
 
+## VALIDATION UTILISATEUR RUNTIME — B.2 + BLOC B.2-FIX (2026-09-18)
+
+Deux runs réels après `34c5e5a` (ZENER mono : 8 commandes closes, PI≈7.682 ;
+fixture A/B : 7 commandes closes, stock final A=33/B=10, REAPPRO_1→PRODUIT_A,
+REAPPRO_2→PRODUIT_B) confirment : **`prevoirDemande()` VALIDÉE runtime**
+(prévisions cohérentes avec le rythme des commandes clientes, mono≈165-166
+ent/h, multi≈185-187 ent/h) ; **`ajusterDebits()` VALIDÉE runtime en multi**
+(stock stratégique = Dashboard Finished Stock, plus de multiplication
+agrégée : T=1320 stock=41=Dashboard 41) ; RS fini et discriminant
+(RS.2.2≈1.5-1.9/10) ; CO actif (~9.5/10) ; aucune régression Bloc M.
+
+Trois bugs runtime confirmés et corrigés dans ce même commit :
+
+### 1. Proxies AG/AM non calibrés (score 0/F au lieu d'un score réel)
+
+**Cause racine identifiée par lecture de code** : le renommage B.2
+`AG.1.1 → PROXY.AG.STABILITE_DEBIT` / `AM.3.9 → PROXY.AM.DISPONIBILITE_MACHINE`
+devait être un changement d'étiquetage honnête, sans impact numérique. Mais
+`initialiserProfilsNormalisationDefaut()` n'enregistrait un profil que sous
+les **anciens** codes — `scorePerformanceMetriqueSCOR()` ne trouvait donc
+aucun profil pour les nouveaux codes, et son repli de secours (réservé aux
+préfixes `RL./RS./AG./CO./AM.`, jamais `PROXY.`) retombait sur `Double.NaN`,
+traité ensuite comme un grade F (score 0) par l'agrégation floue — alors que
+les valeurs réelles (~0.94-0.95 dans les 2 runs) auraient dû scorer près de
+10/10.
+
+**Correctif** : alias exact des profils historiques (mêmes
+direction/min/max/source, aucune nouvelle borne inventée) sous les nouveaux
+codes — `PROXY.AG.STABILITE_DEBIT` reprend exactement le profil `AG.1.1`
+(`BENEFIT`, 0.0→1.0), `PROXY.AM.DISPONIBILITE_MACHINE` reprend exactement le
+profil `AM.3.9` (`BENEFIT`, 0.0→1.0). Les anciens codes `AG.1.1`/`AM.3.9`
+restent enregistrés (compatibilité mappings legacy, non touchés en B.2/B.3).
+Ancienne valeur numérique = nouvelle valeur numérique ; seul le code/libellé
+devient honnêtement PROXY.
+
+### 2. AM.2.2 (Inventory Days of Supply) retournait 0 malgré un stock et un débit non nuls
+
+**Audit demandé avant toute modification** : `calculerInventoryDaysOfSupply()`
+filtrait les postes via `p.typePoste == TypePoste.STOCKAGE`. Vérification
+directe des 3 scénarios JSON fournis (ZENER, vélo urbain, automobile GX5) :
+**tous les postes de stockage, y compris le poste produit fini
+(`sM1.5.1`, "Transfert vers magasin produits finis"), sont typés `DELAI`,
+jamais `STOCKAGE`.** Le filtre ne matchait donc structurellement AUCUN
+poste dans ces scénarios ; `aDesStocks` restait faux et la fonction
+retournait 0 avant même de lire un stock ou un débit. Ce n'était ni une
+sentinelle "aucune donnée" ni une vraie rupture de stock : une mauvaise
+source de lecture, confirmée par lecture directe des scénarios.
+
+**Équation documentée** : `Inventory Days of Supply = stock fini pertinent
+/ débit journalier pertinent` (jours). Stock : `stockProduitFiniDisponibleTotal()`
+(Bloc M, déjà mono/multi-produit-safe). Débit : `nbTermines`/
+`board.totalTerminees` ramené à un débit journalier (`× 86400 / time()`) —
+**non modifié**, la cause démontrée du bug est uniquement le filtre de
+stock, pas le débit.
+
+**Correctif** : remplace le filtre `p.typePoste == TypePoste.STOCKAGE` par
+`estPosteStockFini(p)` (même prédicat que le Bloc M : `TypePoste.STOCKAGE`
+EN PLUS d'un repli codeSCOR/nom pour les postes `DELAI` comme M1.5) pour
+détecter la présence d'un poste produit fini, et
+`stockProduitFiniDisponibleTotal()` pour la valeur elle-même — au lieu de
+resommer manuellement `p.niveauStock`, ce qui aurait pu réintroduire un
+risque de double comptage multi-produit déjà corrigé ailleurs (Bloc M).
+Aucune source de vérité du Bloc M n'est modifiée : uniquement son lecteur
+côté AM.
+
+### 3. Warm-up : premiers snapshots Historique Dashboard à PI=0 au lieu de PI=cible
+
+**Audit de la cause** : `capturerPointHistoriqueDashboard()` (Bloc A.4) lit
+`strategic.piGlobalCourant` **directement**, sans jamais appeler
+`calculerPIGlobal()`. Ce champ démarre à `0` (valeur d'initialisation de la
+`Variable`) et `demarrerSimulation()` ne le réinitialisait pas à
+`ciblePIGlobal` au démarrage du run (contrairement aux 8 autres champs
+PI/SCOR du Bloc B.1, qui le sont). La logique de warm-up de
+`calculerPIGlobal()` elle-même (Bloc B.2, `pi = ciblePIGlobal` tant que le
+périmètre est incomplet) n'a donc aucun effet sur ces tout premiers
+snapshots, puisqu'elle n'a pas encore été exécutée à cet instant — pas un
+défaut de la logique de warm-up elle-même, mais un champ affiché qui n'était
+pas encore aligné dessus.
+
+**Correctif** : `strategic.piGlobalCourant = strategic.ciblePIGlobal;`
+ajouté au même bloc de remise à zéro par run que les 8 champs du Bloc B.1,
+dans `demarrerSimulation()`. Aucun calcul prématuré de `calculerPIGlobal()`
+n'est forcé — uniquement l'état affiché avant le premier calcul réel.
+
+### Point documenté, non corrigé (dette assumée, hors périmètre de ce fix)
+
+Run mono : un log stratégique à T=1740 montre `stock=185` alors que le
+Finished Stock Dashboard ≈37 (le run multi, lui, est exact : T=1320
+stock=41=Dashboard 41). Semble provenir de la logique legacy mono qui
+parcourt plusieurs `ScenarioFlux` en lisant le même stock global — mais
+l'invariant B.2 explicite est "mono = comportement legacy préservé", donc
+**non corrigé dans ce fix sans audit architectural plus large**. Documenté
+ici comme dette/point de revue future (Bloc D ou post-merge), pas comme
+régression B.2.
+
+### Ce qui n'a PAS été modifié
+
+`prevoirDemande()`, la logique REAPPRO, la fixture A/B, le JSON ZENER, les
+Blocs A/M (`estPosteStockFini()` réutilisée telle quelle, jamais modifiée),
+les mappings d'export SCOR (différés à B.3 sauf les 2 lignes d'ajout de
+profil strictement nécessaires à la calibration des proxies), les Blocs
+C/D/E.
+
+### Validations statiques
+
+- XML bien formé : OK
+- IDs AnyLogic uniques : 1680/1680 (inchangé)
+- `git diff --check` : aucune erreur (bruit de sauvegarde automatique
+  AnyLogic pré-existant sur une ligne `<EmbeddedIcon>`, hors périmètre de ce
+  correctif, revenu à l'identique avant commit — même motif déjà rencontré
+  et documenté dans les blocs précédents)
+- Grep DataCo : 6 occurrences, toutes pré-existantes (inchangé depuis B.2)
+- Blocs A/M non touchés (vérifié par grep des noms de fonctions listés
+  ci-dessus)
+- Fixture A/B et ZENER inchangés
+
+**Commit** : `fix(generic): preserve proxy calibration and PI warmup semantics`
+
+**PR reste DRAFT. Aucun merge vers `main`. B.3 non commencé.**
+
 - [ ] B.3 — mappings/export SCOR (`codesProcessusPourMetriqueSCOR()`, `valeurRuntimeMetriqueSCOR()`, `uniteMetriqueSCOR()`, `sourceFormuleMetriqueSCOR()`), correction/clarification `tauxCommandesLivreesCloses()`, cohérence finale des libellés métrique vs PROXY
-- [ ] Build AnyLogic utilisateur (B.2)
-- [ ] Run court ZENER utilisateur (B.2)
-- [ ] Run fixture A/B utilisateur (B.2, prévision/ajustement multi-produit)
+- [ ] Build AnyLogic utilisateur (B.2-FIX)
+- [ ] Run court ZENER utilisateur (B.2-FIX)
+- [ ] Run fixture A/B utilisateur (B.2-FIX)
+- [ ] Dette documentée : incohérence stock stratégique mono (log T=1740 stock=185 vs Dashboard ≈37) — audit architectural futur, hors Bloc B
 
 ## Bloc C — retards
 - [ ] Détection continue

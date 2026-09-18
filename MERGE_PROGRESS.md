@@ -2354,6 +2354,40 @@ PI/SCOR, Blocs B/C/D/E.
 
 **PR reste DRAFT. Aucun merge vers `main`. Bloc B non commencé.**
 
+## VALIDATION UTILISATEUR RUNTIME — M.3 MULTI (2026-09-18)
+
+Rejeu réel de `scenario_M2_multiproduit_AB.json` après `f125bce`.
+
+**Anti-blocage inter-produit** : `REAPPRO_1`/PRODUIT_A (origine
+STOCK_AUTONOMOUS, qté=50, créé t=60, statut EN_COURS au snapshot) toujours
+ouvert quand `REAPPRO_2`/PRODUIT_B est créé (STOCK_AUTONOMOUS, qté=50,
+t=270, EN_COURS) — confirme qu'un REAPPRO actif sur A ne bloque plus le
+déclenchement sur B.
+
+**Anti-doublon par produit** : `REAPPRO_2` atteint P3.4/M1.1 à t=272 (qté
+50) ; aucun `REAPPRO_3` observé sur ce run — aucun doublon créé tant que le
+REAPPRO du même produit reste ouvert.
+
+**Bilan quantitatif** : stock initial A=60/B=40, 3 commandes A×10 + 3
+commandes B×10, M1.5 count=13 (crédits confirmés sur A uniquement à ce
+stade — REAPPRO_2/B encore en cours dans Make à l'arrêt du run, donc son
+crédit n'est pas encore attendu). Stock final A=43/B=10, total=53.
+Bilan exact : `A = 60 − 30 + 13 = 43`, `B = 40 − 30 = 10`. Match exact.
+
+**Tests M.3** : M3-2 ✅, M3-3 ✅, M3-4 ✅, M3-5 ✅, M3-7 ✅, M3-9 ✅, M3-10 ✅.
+M3-6 (nouveau REAPPRO après clôture complète) non exercé par cette
+campagne — limite de couverture de ce run, pas un blocage : le code de
+`declencherProductionAutonome()`/`reapproActifPourProduit()` autorise par
+construction un nouveau REAPPRO dès que le précédent atteint un statut
+clos (`SERVIE`/`EN_RETARD`), mais aucun run n'a encore observé ce cas
+précis en conditions réelles.
+
+**M.3 MULTI = VALIDÉ.**
+
+**Bloc M dans son ensemble reste EN ATTENTE** de la confirmation
+utilisateur du run ZENER mono court (non-régression du comportement
+legacy) avant d'être marqué TERMINÉ / FIGÉ. Bloc B non commencé.
+
 ## Bloc B — PI / SCOR
 - [ ] Warm-up / amorçage
 - [ ] Poids effectifs et données disponibles

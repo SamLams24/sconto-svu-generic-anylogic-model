@@ -2388,6 +2388,39 @@ précis en conditions réelles.
 utilisateur du run ZENER mono court (non-régression du comportement
 legacy) avant d'être marqué TERMINÉ / FIGÉ. Bloc B non commencé.
 
+## CONFIRMATION UTILISATEUR FINALE — CLÔTURE DU BLOC M (2026-09-18)
+
+Run ZENER mono après `f125bce` : Build AnyLogic OK (0 erreur), scénario
+ZENER mono OK, commandes OK, politique stock/REAPPRO OK, Make/Deliver OK,
+comportement nominal OK, aucune exception, aucune régression constatée par
+rapport au comportement legacy pré-Bloc M.
+
+Combiné à la validation runtime M.3 multi-produit déjà enregistrée
+ci-dessus (coexistence REAPPRO_1/PRODUIT_A et REAPPRO_2/PRODUIT_B,
+anti-blocage inter-produit, anti-doublon, identité produit, agrégat
+cohérent, chaîne Make fonctionnelle, aucune exception) :
+
+**BLOC M = TERMINÉ / VALIDÉ / FIGÉ.**
+- **M.1 = TERMINÉ / FIGÉ**
+- **M.2 = TERMINÉ / FIGÉ**
+- **M.3 = TERMINÉ / FIGÉ**
+
+Ne plus modifier les mécanismes du Bloc M
+(`initialiserStocksProduits()`, `appliquerStocksInitiauxConfig()`,
+`consommerStockFiniProduit()`, `crediterStockFiniProduit()`,
+`stockProduitFiniDisponibleTotal()`, `verifierPolitiqueStockProduit()`/
+`verifierPolitiqueStockPourUnProduit()`, `declencherProductionAutonome()`,
+`reapproActifPourProduit()`/`existeReapproOuvert()`) sauf bug runtime
+réellement démontré.
+
+**Limite de couverture documentée, non bloquante** : M3-6 (nouveau REAPPRO
+du même produit après clôture complète du précédent) n'a pas été exercé
+par un run réel à ce jour ; sa logique a été auditée statiquement
+(`declencherProductionAutonome()`/`reapproActifPourProduit()` autorisent
+par construction un nouveau REAPPRO dès que le précédent atteint un statut
+clos `SERVIE`/`EN_RETARD`), mais reste à confirmer par un run futur si
+l'occasion se présente.
+
 ## Bloc B — PI / SCOR
 - [ ] Warm-up / amorçage
 - [ ] Poids effectifs et données disponibles

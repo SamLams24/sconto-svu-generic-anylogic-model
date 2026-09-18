@@ -20622,22 +20622,33 @@ return "";]]></Body>
 					<PublicFlag>false</PublicFlag>
 					<PresentationFlag>true</PresentationFlag>
 					<ShowLabel>true</ShowLabel>
-					<Body><![CDATA[int closes = 0, livrees = 0;
+					<Body><![CDATA[// Bloc B.3-FIX -- BUG CONFIRME (audit B.1) : cette fonction incrementait
+// closes++ ET livrees++ pour EXACTEMENT les memes statuts (SERVIE/EN_RETARD),
+// donc livrees/closes valait TOUJOURS 1.0 des qu'une commande avait clos --
+// aucun pouvoir discriminant, malgre son usage direct dans le mapping export
+// RL.2.1 (valeurRuntimeMetriqueSCOR()).
+// Semantique corrigee : RL.2.1 mesure la COMPLETUDE d'une livraison (une
+// commande terminale a-t-elle ete livree, en totalite -- ce modele ne simule
+// aucune livraison partielle -- ou jamais livree ?), PAS la ponctualite
+// (RL.2.2 = verifierFillRate(), inchangee, seule metrique RL reellement
+// ponderee dans le PI depuis le Bloc B.2 -- voir calculerPIGlobal()).
+//   numerateur   = SERVIE + EN_RETARD (livrees, quelle que soit la ponctualite)
+//   denominateur = SERVIE + EN_RETARD + REFUSEE + BLOQUE_* (tout etat TERMINAL,
+//                  y compris les echecs de service -- meme population que
+//                  nombreCommandesClosesFiabilite(), Bloc B.1, reutilisee ici
+//                  plutot que redupliquee)
+// REAPPRO_* toujours exclus (ce ne sont pas des commandes clientes).
+// Aucun etat terminal observe -> NaN (absence de donnee), jamais un faux 100%.
+int closesTerminales = nombreCommandesClosesFiabilite();
+if (closesTerminales == 0) return Double.NaN;
+int livreesCompletes = 0;
 try {
     for (CommandeAgent cmd : commandes) {
-        if (cmd == null) continue;
-        // C14.60 -- exclut les ordres de reapprovisionnement autonomes : ce ne
-        // sont pas des commandes clientes, ils ne doivent pas gonfler le taux
-        // de commandes livrees (SCOR RL.2.1) ni les indicateurs derives.
-        if (cmd.idCommande != null && cmd.idCommande.startsWith("REAPPRO_")) continue;
-        if ("SERVIE".equals(cmd.statut) || "EN_RETARD".equals(cmd.statut)) {
-            closes++;
-            livrees++;
-        }
+        if (cmd == null || estOrdreStockAutonome(cmd)) continue;
+        if ("SERVIE".equals(cmd.statut) || "EN_RETARD".equals(cmd.statut)) livreesCompletes++;
     }
 } catch (Throwable ignored) {}
-if (closes == 0) return Double.NaN;
-return (double) livrees / closes;]]></Body>
+return (double) livreesCompletes / closesTerminales;]]></Body>
 				</Function>
 				<Function AccessType="default" StaticFunction="false">
 					<ReturnModificator>RETURNS_VALUE</ReturnModificator>
@@ -20673,8 +20684,16 @@ try {
 
     if (c.equals("AG.3.38")) return (double) countCycleTimeCodes("M1.2,M1.3,M1.4,M1.5,M1.6");
     if (c.equals("AG.3.32")) {
+        // Bloc B.3-FIX -- alignee sur EXACTEMENT le meme calcul que
+        // calculerPIGlobal() (StrategicAgent) : celui-ci retient en plus
+        // board.kpiGlobal.count comme 3e candidat, absent ici avant ce
+        // correctif -- l'export pouvait donc afficher un debit legerement
+        // different de celui reellement utilise par le PI.
         double done = nbTermines;
-        try { if(board!=null && board.totalTerminees>done) done=board.totalTerminees; } catch(Throwable ignored){}
+        try {
+            if (board != null && board.totalTerminees > done) done = board.totalTerminees;
+            if (board != null && board.kpiGlobal != null && board.kpiGlobal.count > done) done = board.kpiGlobal.count;
+        } catch (Throwable ignored) {}
         return time()>0 ? done*3600.0/time() : 0.0;
     }
     if (c.equals("AG.3.1")) return 100.0 - (pceCodes("D1.") * 100.0);
@@ -20701,12 +20720,23 @@ try {
     if (c.equals("CO.3.1") || c.equals("CO.3.2") || c.equals("CO.3.3") || c.equals("CO.3.4") || c.equals("CO.3.5") || c.equals("CO.3.7") || c.equals("CO.3.8") || c.equals("CO.3.9") || c.equals("CO.3.10") || c.equals("CO.3.14") || c.equals("CO.3.15")) return couts[2];
     if (c.startsWith("CO.")) return Double.NaN;
 
+    // Bloc B.3-FIX -- AG.1.1 est le code LEGACY pre-Bloc B.2 (conserve pour
+    // compatibilite du catalogue SCOR officiel/des profils historiques,
+    // jamais utilise comme code actif par calculerPIGlobal() depuis le
+    // Bloc B.2). PROXY.AG.STABILITE_DEBIT est le code REELLEMENT actif dans
+    // le PI, meme valeur exacte (alias explicite) -- meme grandeur,
+    // etiquetage honnete en PROXY au lieu d'un code SCOR normatif.
     if (c.equals("AG.1.1")) return strategic!=null ? strategic.coefficientAdaptabilite() : Double.NaN;
+    if (c.equals("PROXY.AG.STABILITE_DEBIT")) return strategic!=null ? strategic.coefficientAdaptabilite() : Double.NaN;
     if (c.equals("PROXY.AG.SYSTEM_UTILIZATION")) {
         double cap=0.0; for(PosteGenericAgent p:postes) cap+=p.capaciteSimultanee;
         return cap>0 && board!=null ? board.avgWIP()/cap : Double.NaN;
     }
+    // Bloc B.3-FIX -- meme principe : AM.3.9 = code LEGACY (catalogue/profils
+    // historiques), PROXY.AM.DISPONIBILITE_MACHINE = code actif du PI depuis
+    // le Bloc B.2, alias exact de la meme valeur.
     if (c.equals("AM.3.9")) return calculerDisponibiliteMachinesMoyenne();
+    if (c.equals("PROXY.AM.DISPONIBILITE_MACHINE")) return calculerDisponibiliteMachinesMoyenne();
     if (c.equals("AM.3.16")) return stockMatiereDisponibleTotal();
     if (c.equals("AM.3.17")) return 0.0; // WIP : non stocké en valeur de jours, WIP courant approximé nul après clôture
     if (c.equals("AM.3.45")) return stockProduitFiniDisponibleTotal();
@@ -20737,6 +20767,12 @@ return Double.NaN;]]></Body>
 String c = code.trim().toUpperCase(java.util.Locale.ROOT);
 if (c.startsWith("RS.")) return "s";
 if (c.startsWith("RL.")) return "ratio 0-1";
+// Bloc B.3-FIX -- les codes PROXY.* (PROXY.AG.SYSTEM_UTILIZATION,
+// PROXY.AG.STABILITE_DEBIT, PROXY.AM.DISPONIBILITE_MACHINE) ne commencent
+// jamais par "AG."/"AM." : sans cette regle, ils tombaient dans le repli
+// generique "-" au lieu de leur vraie unite (les 3 proxies actuels sont
+// tous des ratios 0-1).
+if (c.startsWith("PROXY.")) return "ratio 0-1";
 if (c.equals("AG.3.38")) return "entités";
 if (c.equals("AG.3.32")) return "entités/h";
 if (c.startsWith("AG.")) return "ratio / estimation";
@@ -20799,11 +20835,15 @@ return "Non calculable actuellement";]]></Body>
 // C14.2.1 — Les formules spécifiques doivent être résolues AVANT le fallback
 // générique par processus. Sinon l'Excel et l'ABox décrivent à tort certaines
 // métriques RL/AG/AM comme des moyennes de temps de traitement.
-if (c.equals("RL.2.1")) return "Commandes closes livrées en totalité / commandes closes (statuts commande)";
-if (c.equals("RL.2.2") || c.equals("RL.3.32")) return "verifierFillRate() : commandes CLIENTES livrées à temps / commandes CLIENTES closes";
-if (c.equals("RL.3.33")) return "Approximation nominale mono-produit : exactitude article = taux de commandes closes livrées en totalité";
-if (c.equals("RL.3.35")) return "Approximation nominale : exactitude quantité = taux de commandes closes livrées en totalité";
-if (c.equals("RL.1.1")) return "Minimum entre livraison complète et livraison à temps ; approximation de la commande parfaite";
+// Bloc B.3-FIX -- RL.2.1 mesure la COMPLETUDE (une commande terminale a-t-elle
+// ete livree en totalite, ou jamais livree), PAS la ponctualite (RL.2.2,
+// ligne suivante) : tauxCommandesLivreesCloses() a ete corrigee pour ne plus
+// confondre les deux (voir son propre commentaire).
+if (c.equals("RL.2.1")) return "tauxCommandesLivreesCloses() : COMPLETUDE (pas la ponctualite) = commandes clientes livrees en totalite (SERVIE+EN_RETARD) / commandes clientes terminales (SERVIE+EN_RETARD+REFUSEE+BLOQUE_*), REAPPRO_ exclus";
+if (c.equals("RL.2.2") || c.equals("RL.3.32")) return "verifierFillRate() : PONCTUALITE = commandes CLIENTES livrees a temps (SERVIE) / commandes CLIENTES closes (SERVIE+EN_RETARD) -- seule metrique RL reellement ponderee dans le PI (calculerPIGlobal(), Bloc B.2)";
+if (c.equals("RL.3.33")) return "Proxy, aucune source de mesure independante disponible (pas de simulation d'erreur d'article) : exactitude article approximee par tauxCommandesLivreesCloses() (completude)";
+if (c.equals("RL.3.35")) return "Proxy, aucune source de mesure independante disponible (pas de simulation d'erreur de quantite) : exactitude quantite approximee par tauxCommandesLivreesCloses() (completude)";
+if (c.equals("RL.1.1")) return "Minimum entre completude (tauxCommandesLivreesCloses()) et ponctualite (verifierFillRate()) ; approximation de la commande parfaite";
 if (c.equals("RL.2.3") || c.equals("RL.3.31") || c.equals("RL.3.43") || c.equals("RL.3.45") || c.equals("RL.3.50")) return "Donnée documentaire non collectée : documents conformité/paiement/expédition à ajouter";
 if (c.equals("RL.3.12")) return "Installation produit hors périmètre ZENER actuel";
 if (c.equals("RL.2.4") || c.equals("RL.3.24") || c.equals("RL.3.41") || c.equals("RL.3.42")) return "Dommage/défaut réel non mesuré ; nécessite contrôle qualité livraison/retour";
@@ -20812,14 +20852,24 @@ if (c.equals("RS.1.1")) return "Order Fulfillment Lead Time issu du registre met
 if (c.equals("RS.3.94")) return "Order Waiting / Dwell Time issu de l'attente de stock explicite imputee depuis REAPPRO.";
 
 if (c.equals("AG.3.38")) return "Nombre de passages Make : codes M1.2 à M1.6";
-if (c.equals("AG.3.32")) return "Débit de sortie observé = entités terminées × 3600 / temps de simulation";
-if (c.equals("AG.1.1")) return "Coefficient d'adaptabilité = stabilité du débit observé (1 - coefficient de variation)";
-if (c.equals("PROXY.AG.SYSTEM_UTILIZATION")) return "Proxy explicite = WIP courant moyen / capacité simultanée totale déclarée";
+if (c.equals("AG.3.32")) return "Débit de sortie observé = entités terminées × 3600 / temps de simulation ; même calcul exact que calculerPIGlobal() (Bloc B.3-FIX)";
+// Bloc B.3-FIX -- AG.1.1 = code SCOR officiel LEGACY (pre-Bloc B.2), conserve
+// pour compatibilite du catalogue/des profils historiques, jamais utilise
+// comme code actif par calculerPIGlobal() depuis le Bloc B.2.
+// PROXY.AG.STABILITE_DEBIT = code REELLEMENT actif dans le PI, alias exact
+// de la meme valeur (coefficientAdaptabilite()) -- etiquetage honnete en
+// PROXY, jamais presente comme une metrique SCOR normative.
+if (c.equals("AG.1.1")) return "[CODE LEGACY, non actif dans le PI depuis le Bloc B.2 -- voir PROXY.AG.STABILITE_DEBIT] Coefficient d'adaptabilité = stabilité du débit observé (1 - coefficient de variation)";
+if (c.equals("PROXY.AG.STABILITE_DEBIT")) return "Proxy explicite, hors référentiel SCOR normatif = coefficientAdaptabilite() : 1 - coefficient de variation du débit observé sur les derniers cycles (historiqueDebit) ; alias exact de l'ancien code legacy AG.1.1";
+if (c.equals("PROXY.AG.SYSTEM_UTILIZATION")) return "Proxy explicite, hors référentiel SCOR normatif = WIP courant moyen / capacité simultanée totale déclarée";
 
-if (c.equals("CO.1.1")) return "Ratio coût total cumulé / chiffre d'affaire estimé ; nécessite chiffreAffaireParUnite > 0";
+if (c.equals("CO.1.1")) return "Ratio coût total cumulé / chiffre d'affaire estimé (assiette unitesLivreesClients(), Bloc B.2) ; nécessite chiffreAffaireParUnite > 0";
 
-if (c.equals("AM.3.9")) return "Disponibilité machine = MTBF/(MTBF+MTTR) dans le profil actuel ; états panne tracés séparément";
-if (c.equals("AM.2.2")) return "Inventory Days of Supply = stock observé / débit journalier observé";
+// Bloc B.3-FIX -- meme principe que AG.1.1/PROXY.AG.STABILITE_DEBIT ci-dessus :
+// AM.3.9 = code LEGACY, PROXY.AM.DISPONIBILITE_MACHINE = code actif du PI.
+if (c.equals("AM.3.9")) return "[CODE LEGACY, non actif dans le PI depuis le Bloc B.2 -- voir PROXY.AM.DISPONIBILITE_MACHINE] Disponibilité machine = MTBF/(MTBF+MTTR) dans le profil actuel ; états panne tracés séparément";
+if (c.equals("PROXY.AM.DISPONIBILITE_MACHINE")) return "Proxy explicite, hors référentiel SCOR normatif = calculerDisponibiliteMachinesMoyenne() : disponibilité machine moyenne MTBF/(MTBF+MTTR) ; alias exact de l'ancien code legacy AM.3.9";
+if (c.equals("AM.2.2")) return "Inventory Days of Supply = stockProduitFiniDisponibleTotal() (Bloc M, mono/multi-produit-safe) / débit journalier observé (débit horaire × 24) ; corrigé au Bloc B.2-FIX";
 
 String codes = codesProcessusPourMetriqueSCOR(c);
 if (!codes.isEmpty()) return "Moyenne des temps de traitement des postes SCOR " + codes + " à partir des KPI de simulation et des traces brutes";

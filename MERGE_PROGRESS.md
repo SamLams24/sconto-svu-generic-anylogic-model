@@ -2901,10 +2901,198 @@ C/D/E.
 
 **PR reste DRAFT. Aucun merge vers `main`. B.3 non commencé.**
 
-- [ ] B.3 — mappings/export SCOR (`codesProcessusPourMetriqueSCOR()`, `valeurRuntimeMetriqueSCOR()`, `uniteMetriqueSCOR()`, `sourceFormuleMetriqueSCOR()`), correction/clarification `tauxCommandesLivreesCloses()`, cohérence finale des libellés métrique vs PROXY
-- [ ] Build AnyLogic utilisateur (B.2-FIX)
-- [ ] Run court ZENER utilisateur (B.2-FIX)
-- [ ] Run fixture A/B utilisateur (B.2-FIX)
+## VALIDATION UTILISATEUR RUNTIME — B.2/B.2-FIX (2026-09-18)
+
+Deux nouveaux runs confirment les 3 corrections B.2-FIX : warm-up affiché
+correctement (PI courant=cible=7.5 aux premiers snapshots) ; proxies
+calibrés (`PROXY.AG.STABILITE_DEBIT` profil 0.000→1.000, score≈9.31-9.64 ;
+`PROXY.AM.DISPONIBILITE_MACHINE` profil 0.000→1.000, score≈9.41) ; AM.2.2
+quantitativement vérifié (mono : 40/(14.858×24)≈0.1122j match exact ;
+multi : 30/(14.890×24)≈0.08395j match exact). PI final mono≈9.179, multi
+9 commandes closes, aucune erreur Excel, aucune régression Bloc M.
+**B.2 = VALIDÉ RUNTIME. B.2-FIX = VALIDÉ RUNTIME. Mécanismes B.2 FIGÉS**
+sauf bug démontré.
+
+## Bloc B.3 — alignement final PI / SCOR / exports (2026-09-18)
+
+Dernier sous-bloc du Bloc B : aligne le catalogue/mappings d'export SCOR
+(`codesProcessusPourMetriqueSCOR()`, `valeurRuntimeMetriqueSCOR()`,
+`uniteMetriqueSCOR()`, `sourceFormuleMetriqueSCOR()`) et
+`tauxCommandesLivreesCloses()` sur la sémantique déjà validée en runtime
+par B.2/B.2-FIX. **`calculerPIGlobal()` n'a pas été modifiée** — audit
+préalable a confirmé qu'aucune incohérence ne le nécessitait (voir
+ci-dessous).
+
+### Audit préalable — Pipeline SCOR vs Traçabilité performance
+
+Vérifié par lecture de code que `n3ToN1Rows()` ("Pipeline SCOR vers PI")
+et `piTraceabilityRows()` ("Traçabilité performance") lisent TOUTES LES
+DEUX directement `strategic.detailN3` — la liste de `MetriqueN3` peuplée
+par `calculerPIGlobal()` lui-même (valeur, unité, poids, score déjà
+calculés). Elles ne recalculent JAMAIS ces valeurs indépendamment ; les
+seuls appels externes par code qu'elles font sont
+`normalizationProfiles.get(code)` (Bottom→Perfect, déjà corrigé en
+B.2-FIX) et `sourceFormuleMetriqueSCOR(code)` (texte de preuve). **Ces deux
+feuilles sont donc automatiquement cohérentes entre elles et avec le PI
+par construction** — aucun risque de divergence introduit par ce bloc, et
+c'est exactement pourquoi `calculerPIGlobal()` n'a pas besoin d'être
+touchée pour corriger l'alignement.
+
+Seule `catalogueMetriquesAHPRows()` (feuille séparée, catalogue des ~139
+métriques SCOR officielles) appelle `valeurRuntimeMetriqueSCOR()`/
+`uniteMetriqueSCOR()`/`sourceFormuleMetriqueSCOR()`/`statutMetriqueSCOR()`
+indépendamment — c'est un audit de couverture SCOR générale (que peut-on
+calculer pour CHAQUE code officiel), pas le pipeline live du PI ; les
+codes legacy `AG.1.1`/`AM.3.9` y restent légitimement visibles comme codes
+SCOR officiels, séparément des codes `PROXY.*` réellement actifs dans le
+PI (voir point 8 ci-dessous).
+
+### 1. `tauxCommandesLivreesCloses()` — corrigée, plus dégénérée
+
+Ancienne implémentation : `closes++` et `livrees++` incrémentés pour
+exactement les mêmes statuts → ratio toujours 1.0. Nouvelle sémantique,
+conforme à la spécification donnée : mesure la **COMPLÉTUDE** (une
+commande terminale a-t-elle été livrée en totalité, ce modèle ne simulant
+aucune livraison partielle), **pas la ponctualité** (RL.2.2). Numérateur =
+`SERVIE+EN_RETARD` ; dénominateur = `SERVIE+EN_RETARD+REFUSEE+BLOQUE_*`
+(même population que `nombreCommandesClosesFiabilite()`, Bloc B.1,
+réutilisée plutôt que redupliquée) ; `REAPPRO_*` exclus ; `NaN` si aucun
+état terminal. **Non appelée depuis `calculerPIGlobal()`** (qui utilise
+`verifierFillRate()` pour RL.2.2, décision B.2 déjà validée runtime,
+inchangée) — cette correction n'affecte que les exports (RL.2.1, RL.3.33,
+RL.3.35, RL.1.1 dans `valeurRuntimeMetriqueSCOR()`).
+
+### 2. RL.2.1 vs RL.2.2 — sémantiques désormais distinctes et documentées
+
+`sourceFormuleMetriqueSCOR("RL.2.1")` et `("RL.2.2")` documentent
+explicitement la distinction complétude/ponctualité. RL.2.2 reste inchangé
+(`verifierFillRate()`), confirmé comme "seule métrique RL réellement
+pondérée dans le PI" dans son propre texte source — l'export reflète donc
+exactement la source utilisée par le PI.
+
+### 3. RL.3.33 / RL.3.35 — explicitement proxy, jamais présentées comme indépendantes
+
+Textes mis à jour : "Proxy, aucune source de mesure indépendante
+disponible... approximée par tauxCommandesLivreesCloses() (complétude)" —
+jamais présentées comme des observations réelles indépendantes.
+
+### 4/5. Proxies AG/AM — mappings corrigés (valeur, unité, source)
+
+`valeurRuntimeMetriqueSCOR()` n'avait **aucune branche explicite** pour
+`PROXY.AG.STABILITE_DEBIT`/`PROXY.AM.DISPONIBILITE_MACHINE` — confirmé par
+lecture de code qu'un appel direct serait tombé au travers de tous les
+`if` jusqu'au `return Double.NaN;` final. Ajoutées comme alias exacts des
+codes legacy (`AG.1.1`→`coefficientAdaptabilite()`,
+`AM.3.9`→`calculerDisponibiliteMachinesMoyenne()`, formules lues
+directement dans le code, pas inventées). `uniteMetriqueSCOR()` avait le
+même trou (aucun préfixe `AG.`/`AM.` ne matchant `PROXY.AG.`/`PROXY.AM.` →
+repli sur `"-"` au lieu de `"ratio 0-1"`) — corrigé par une règle générique
+`c.startsWith("PROXY.")` couvrant aussi `PROXY.AG.SYSTEM_UTILIZATION`
+(même bug préexistant, corrigé au passage pour cohérence). Sources
+détaillées ajoutées dans `sourceFormuleMetriqueSCOR()`, formules
+reproduites exactement depuis le code des deux helpers, préfixe PROXY
+conservé partout.
+
+### 5bis. AG.3.32 — désalignement réel trouvé et corrigé
+
+Audit demandé (point 5) a révélé une divergence réelle : `calculerPIGlobal()`
+retient le max de 3 candidats (`board.totalTerminees`, `main.nbTermines`,
+`board.kpiGlobal.count`) pour le débit, tandis que l'export
+`valeurRuntimeMetriqueSCOR("AG.3.32")` n'en comparait que 2 (omettait
+`board.kpiGlobal.count`). Corrigé pour utiliser exactement le même calcul
+à 3 candidats.
+
+### 6. AM.2.2 — source export alignée sur la vraie équation (B.2-FIX)
+
+`sourceFormuleMetriqueSCOR("AM.2.2")` ne décrit plus une somme générique
+de postes `STOCKAGE` (n'existe plus depuis B.2-FIX) : texte mis à jour sur
+`stockProduitFiniDisponibleTotal() / débit journalier observé`, mention
+explicite mono/multi-produit-safe. La valeur elle-même
+(`valeurRuntimeMetriqueSCOR("AM.2.2")` → `calculerInventoryDaysOfSupply()`)
+était déjà correcte (aucun changement de code nécessaire, seule la
+documentation était obsolète).
+
+### 7. Codes processus (`codesProcessusPourMetriqueSCOR()`) — non modifiée
+
+Audité : les codes `PROXY.*` tombent déjà dans le repli `return "";`
+(aucun rattachement processus), ce qui est le comportement correct et
+sûr — un proxy système n'est pas rattaché à une étape SCOR précise, et
+cette chaîne vide ne fait jamais dévier `valeurRuntimeMetriqueSCOR()` vers
+le fallback générique `avgCycleTimeCodes(codes)` puisque les codes PROXY
+ont désormais leurs propres branches explicites (point 4/5). Aucune
+modification nécessaire.
+
+### 8. Anciens codes legacy AG.1.1/AM.3.9 — jamais actifs dans le PI, clarifiés
+
+Audité tous leurs usages (`valeurRuntimeMetriqueSCOR()`,
+`sourceFormuleMetriqueSCOR()`, `initialiserProfilsNormalisationDefaut()`,
+`codesProcessusPourMetriqueSCOR()`) : confirmé qu'aucun n'est utilisé par
+`calculerPIGlobal()` depuis le Bloc B.2 (qui n'utilise que les codes
+`PROXY.*`). Conservés explicitement comme **codes SCOR officiels legacy**
+pour le catalogue des ~139 métriques et la compatibilité des profils de
+normalisation historiques, avec un préfixe `[CODE LEGACY, non actif dans
+le PI depuis le Bloc B.2 -- voir PROXY.*]` ajouté dans
+`sourceFormuleMetriqueSCOR()` pour lever toute ambiguïté SCOR
+normatif/PROXY/LEGACY.
+
+### 9/10. Pipeline SCOR vers PI / Traçabilité performance
+
+Confirmées cohérentes entre elles par construction (audit préalable
+ci-dessus, source commune `strategic.detailN3`). Les corrections de ce
+bloc (profils de normalisation B.2-FIX + `sourceFormuleMetriqueSCOR()`
+B.3) améliorent leurs colonnes "Bottom→Perfect" et "Source / preuve" sans
+changer leur mécanisme de lecture.
+
+### 11. Dette mono — non touchée
+
+Incohérence stock stratégique mono (log T=1740 stock=185 vs Dashboard
+≈37) : toujours documentée, non corrigée, conformément à l'instruction
+explicite. Reste une dette pour Bloc D / revue architecturale post-merge.
+
+### Ce qui n'a PAS été modifié
+
+`calculerPIGlobal()`, `prevoirDemande()`, `ajusterDebits()`,
+`calculerInventoryDaysOfSupply()`, la logique warm-up, la logique REAPPRO,
+le JSON/scénarios, la fixture A/B, ZENER, les Blocs A/M, `verifierFillRate()`
+(réutilisée telle quelle), `codesProcessusPourMetriqueSCOR()` (auditée,
+aucun changement nécessaire), les Blocs C/D/E.
+
+### Tests statiques B.3 (raisonnement sur le code)
+
+| Test | Vérification |
+|---|---|
+| B3-1 | `tauxCommandesLivreesCloses()` réécrite, ne peut plus retourner 1.0 systématiquement (numérateur ≠ dénominateur par construction dès qu'un REFUSEE/BLOQUE_* existe) |
+| B3-2 | RL.2.1 (complétude) et RL.2.2 (ponctualité) ont des formules et des textes source distincts |
+| B3-3 | RL.2.2 export = `verifierFillRate()`, identique à la source utilisée par `calculerPIGlobal()` (non modifiée) |
+| B3-4 | RL.3.33/RL.3.35 explicitement qualifiées "Proxy, aucune source de mesure indépendante disponible" |
+| B3-5 | `PROXY.AG.STABILITE_DEBIT` : branches ajoutées dans `valeurRuntimeMetriqueSCOR()`/`uniteMetriqueSCOR()`/`sourceFormuleMetriqueSCOR()`, formule reproduite exactement (`coefficientAdaptabilite()`) |
+| B3-6 | `PROXY.AM.DISPONIBILITE_MACHINE` : idem (`calculerDisponibiliteMachinesMoyenne()`) |
+| B3-7 | `sourceFormuleMetriqueSCOR("AM.2.2")` décrit désormais `stockProduitFiniDisponibleTotal() / débit journalier`, mono/multi-safe |
+| B3-8 | Aucun code `PROXY.*` n'est présenté comme métrique SCOR normative (préfixe conservé partout, textes "Proxy explicite, hors référentiel SCOR normatif") |
+| B3-9 | `AG.1.1`/`AM.3.9` marqués `[CODE LEGACY, non actif dans le PI depuis le Bloc B.2]`, jamais utilisés par `calculerPIGlobal()` (vérifié par grep) |
+| B3-10 | Pipeline SCOR et Traçabilité performance confirmées cohérentes par construction (source commune `detailN3`, audit préalable) |
+
+### Validations statiques
+
+- XML bien formé : OK
+- IDs AnyLogic uniques : 1680/1680 (inchangé — uniquement des corps de
+  `<Function>` existantes réécrits, aucun nouvel élément XML)
+- `git diff --check` : aucune erreur (même bruit `<EmbeddedIcon>`
+  pré-existant reverté avant commit, motif déjà documenté dans les blocs
+  précédents)
+- Grep DataCo : 6 occurrences, toutes pré-existantes (inchangé depuis B.2)
+- JSON/scénarios inchangés (fixture A/B, ZENER)
+- Blocs A/M inchangés (vérifié par grep des noms de fonctions)
+- B.2 inchangé (`calculerPIGlobal()`, `prevoirDemande()`, `ajusterDebits()`,
+  `calculerInventoryDaysOfSupply()` non modifiées — seuls les 4 exports +
+  `tauxCommandesLivreesCloses()` touchés)
+- Blocs C/D/E non commencés
+
+**Commit** : `feat(generic): align SCOR exports with PI semantics`
+
+**PR reste DRAFT. Aucun merge vers `main`.**
+
+- [ ] Run export court utilisateur (B.3) — si Pipeline SCOR / Traçabilité performance cohérents : **BLOC B = TERMINÉ / VALIDÉ / FIGÉ**
 - [ ] Dette documentée : incohérence stock stratégique mono (log T=1740 stock=185 vs Dashboard ≈37) — audit architectural futur, hors Bloc B
 
 ## Bloc C — retards

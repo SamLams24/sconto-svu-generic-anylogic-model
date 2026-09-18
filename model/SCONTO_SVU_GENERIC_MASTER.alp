@@ -2226,6 +2226,49 @@ boolean estOrdreReappro(CommandeAgent cmd) {
     return cmd != null && cmd.idCommande != null && cmd.idCommande.startsWith("REAPPRO_");
 }
 
+// Bloc M.3 -- anti-doublon REAPPRO PAR PRODUIT. Remplace, pour la decision de
+// declenchement en mode multi-produit, le simple flag global
+// productionAutonomeEnCours (voir verifierPolitiqueStockPourUnProduit() et
+// declencherProductionAutonome() plus bas) : un REAPPRO actif sur un produit
+// ne doit plus bloquer le declenchement d'un REAPPRO sur un AUTRE produit.
+// "Actif" = statut reellement encore ouvert (ni SERVIE, ni EN_RETARD -- meme
+// predicat de cloture que lierCommandeAuReapproActif()/finaliserDependanceReappro()
+// ci-dessus, jamais EXPIRED/CLOSE/TERMINEE qui n'existent pas comme statuts
+// dans ce master). En mono, cette fonction n'est jamais appelee : la garde
+// legacy productionAutonomeEnCours reste seule utilisee, comportement
+// strictement inchange.
+boolean reapproActifPourProduit(String typeProduit) {
+    if (typeProduit == null || commandes == null) return false;
+    for (CommandeAgent c : commandes) {
+        if (c == null || !estOrdreReappro(c)) continue;
+        if (!typeProduit.equals(c.idScenario)) continue;
+        if ("SERVIE".equals(c.statut) || "EN_RETARD".equals(c.statut)) continue;
+        return true;
+    }
+    return false;
+}
+
+// Bloc M.3 -- vrai tant qu'AU MOINS UN ordre REAPPRO_x (tous produits
+// confondus) reste ouvert. Utilisee UNIQUEMENT pour recalculer
+// productionAutonomeEnCours a la cloture d'un REAPPRO (voir le traitement de
+// fin de Make plus bas) : en multi-produit, clore le REAPPRO du produit A ne
+// doit plus lever a tort la garde globale si le REAPPRO du produit B est
+// toujours en cours. calculerBesoinsNets() (politique matiere autonome, hors
+// perimetre de ce bloc) continue de s'appuyer sur productionAutonomeEnCours
+// pour eviter un approvisionnement matiere concurrent pendant qu'un REAPPRO
+// gere deja sa propre analyse matiere -- ce comportement est preserve a
+// l'identique par cette fonction, qui ne fait que rendre le calcul exact en
+// presence de plusieurs REAPPRO simultanes au lieu de le figer a false.
+boolean existeReapproOuvert() {
+    if (commandes == null) return false;
+    for (CommandeAgent c : commandes) {
+        if (c == null || !estOrdreReappro(c)) continue;
+        if ("SERVIE".equals(c.statut) || "EN_RETARD".equals(c.statut)) continue;
+        return true;
+    }
+    return false;
+}
+
 void ouvrirAttenteStockCommande(CommandeAgent client) {
     if (client == null || estOrdreReappro(client) || client.attenteStockOuverte || client.tDebutAttenteStock >= 0) return;
     client.attenteStockOuverte = true;
@@ -2584,7 +2627,28 @@ double demandeHoraireReelleProduit(String typeProduitScenario) {
 }
 
 void verifierPolitiqueStockProduit() {
-    if (!modeExecution || productionAutonomeEnCours) return;
+    if (!modeExecution) return;
+
+    // Bloc M.3 -- en mode multi-produit, la politique doit etre evaluee
+    // INDEPENDAMMENT pour chaque produit catalogue (jamais sur le stock
+    // agrege) : voir verifierPolitiqueStockPourUnProduit() ci-dessous. La
+    // branche MONO qui suit reste, elle, STRICTEMENT inchangee -- aucune
+    // ligne modifiee par rapport au comportement legacy ZENER.
+    if (modeMultiProduitActif) {
+        // Snapshot stable AVANT la boucle (cf. bug ConcurrentModificationException
+        // deja rencontre sur la lignee DataCo) : on ne parcourt jamais
+        // listeProduits directement, au cas ou une fonction appelee depuis la
+        // boucle resynchroniserait/reconstruirait le catalogue.
+        synchroniserListeProduits();
+        java.util.ArrayList<ScenarioFlux> produitsSnapshot =
+            new java.util.ArrayList<ScenarioFlux>(listeProduits);
+        for (ScenarioFlux scProduit : produitsSnapshot) {
+            verifierPolitiqueStockPourUnProduit(scProduit);
+        }
+        return;
+    }
+
+    if (productionAutonomeEnCours) return;
 
     ScenarioFlux scRef = null;
     int idxNominal = indexScenarioNominal();
@@ -2699,6 +2763,124 @@ void verifierPolitiqueStockProduit() {
     }
 }
 
+// Bloc M.3 -- politique (s, Q) autonome MTS evaluee pour UN SEUL produit
+// catalogue, en mode multi-produit. Meme logique que la branche MONO
+// ci-dessus (delai de reconstitution, formule de Wilson bornee, garde
+// anti-REAPPRO_2 parasite, garde de fin de campagne), adaptee sur 3 points
+// seulement :
+//   1. stock lu via stockFiniDisponiblePourScenario() -- source de verite en
+//      mode multi -- JAMAIS stockFini.niveauStock, qui n'est plus que
+//      l'agregat de compatibilite (cf. bug M.2-TEST-FIX) ;
+//   2. Q* cache PAR PRODUIT (quantiteEconomiqueParProduit) au lieu du champ
+//      global quantiteEconomiqueProduit -- gele au premier calcul comme en
+//      mono (C14.58/C14.66), mais independamment pour chaque reference ;
+//   3. anti-doublon via reapproActifPourProduit(sc.typeProduit), PAS le
+//      flag global productionAutonomeEnCours -- qui bloquerait a tort le
+//      declenchement de B pendant que A est encore en cours (cas explicite
+//      M.3 : A sous seuil et deja en reappro, B sous seuil => B doit quand
+//      meme pouvoir demarrer).
+// Le point de commande n'est PAS mis en cache : comme en mono, il est
+// recalcule a chaque appel (jamais fige d'un cycle a l'autre).
+// Seuil (champStockSecuriteProduit) et couts (champCoutLancementProduction/
+// champCoutPossessionProduitAnnuel) restent les parametres GENERIQUES
+// existants, appliques ici identiquement a chaque produit catalogue --
+// aucun champ JSON par produit n'est introduit dans ce bloc (cf. audit M.3 :
+// aucune configuration par produit n'existe deja pour ces 3 parametres).
+void verifierPolitiqueStockPourUnProduit(ScenarioFlux scRef) {
+    if (scRef == null || scRef.typeProduit == null) return;
+    if (reapproActifPourProduit(scRef.typeProduit)) return;
+
+    PosteGenericAgent stockFini = trouverStockFiniPourScenario(scRef);
+    if (stockFini == null) return;
+    double niveauActuel = stockFiniDisponiblePourScenario(scRef, stockFini);
+
+    String cle = cleProduit(scRef.typeProduit);
+    double previsionHoraireProduit = demandeHoraireReelleProduit(scRef.typeProduit);
+    double capaciteHoraireEstimee = 554.0;
+
+    Double qEcoCache = quantiteEconomiqueParProduit.get(cle);
+    double qEco = (qEcoCache != null) ? qEcoCache.doubleValue() : 0.0;
+
+    double delaiReconstitutionHeures = (qEco > 0 && capaciteHoraireEstimee > 0)
+        ? qEco / capaciteHoraireEstimee : 1.0;
+
+    double ptCommande = champStockSecuriteProduit + previsionHoraireProduit * delaiReconstitutionHeures;
+
+    if (qEco <= 0.0001) {
+        double demandeAnnuelle = previsionHoraireProduit * 8760.0;
+        double qBrut = calculerQuantiteEconomique(
+            demandeAnnuelle, champCoutLancementProduction, champCoutPossessionProduitAnnuel);
+        double tailleCmdMoyenne = 0; int nbCmd = 0;
+        for (CommandeAgent c : commandes) {
+            if (c != null && c.idCommande != null && !c.idCommande.startsWith("REAPPRO_")
+                    && scRef.typeProduit.equals(c.idScenario)) {
+                tailleCmdMoyenne += c.qte; nbCmd++;
+            }
+        }
+        tailleCmdMoyenne = (nbCmd > 0) ? tailleCmdMoyenne / nbCmd : 30.0;
+
+        double besoinClientOuvert = 0.0;
+        for (CommandeAgent c : commandes) {
+            if (c == null || c.idCommande == null || c.idCommande.startsWith("REAPPRO_")) continue;
+            if (!scRef.typeProduit.equals(c.idScenario)) continue;
+            boolean cloturee = "SERVIE".equals(c.statut) || "EN_RETARD".equals(c.statut);
+            if (!cloturee) besoinClientOuvert += Math.max(0, c.qte);
+        }
+        double besoinNetClientOuvert = Math.max(0.0, besoinClientOuvert - Math.max(0.0, niveauActuel));
+        double plafondProduit = Math.max(1.0, tailleCmdMoyenne * 5.0);
+        double qRetenue = bornerQuantiteLot(qBrut, plafondProduit);
+        if (besoinNetClientOuvert > 0.0001) {
+            qRetenue = Math.min(qRetenue, besoinNetClientOuvert);
+            qRetenue = Math.max(1.0, qRetenue);
+        }
+        qEco = qRetenue;
+        quantiteEconomiqueParProduit.put(cle, qEco);
+        if (board != null) board.logEvent("[STOCK][" + scRef.typeProduit + "] Q* produit fini : brut=" + String.format("%.0f", qBrut)
+            + " -> retenu=" + String.format("%.0f", qEco)
+            + " ; backlog=" + String.format("%.0f", besoinClientOuvert)
+            + " ; besoinNet=" + String.format("%.0f", besoinNetClientOuvert)
+            + " (point de commande=" + String.format("%.0f", ptCommande) + ")");
+    }
+
+    // C14.68 (adapte par produit) -- anti-REAPPRO parasite : si le stock
+    // present suffit deja a couvrir les commandes clientes de CE produit
+    // encore ouvertes, on laisse d'abord Deliver les reserver.
+    double demandeClienteOuverte = 0.0;
+    for (CommandeAgent c : commandes) {
+        if (c == null || c.idCommande == null || c.idCommande.startsWith("REAPPRO_")) continue;
+        if (!scRef.typeProduit.equals(c.idScenario)) continue;
+        boolean cloturee = "SERVIE".equals(c.statut) || "EN_RETARD".equals(c.statut);
+        if (!cloturee && !"EN_LIVRAISON".equals(c.statut)) demandeClienteOuverte += Math.max(0, c.qte);
+    }
+    if (demandeClienteOuverte > 0.0001 && niveauActuel + 1e-9 >= demandeClienteOuverte) {
+        return;
+    }
+
+    // Garde de fin de campagne -- IDENTIQUE a la branche mono, volontairement
+    // NON filtree par produit : nombreCommandesATester est un parametre de
+    // run GLOBAL (aucune configuration par produit n'existe), donc la fin de
+    // campagne reste une notion globale, tous produits confondus.
+    if (modePilotageParCommande && limiterNombreCommandes
+            && commandesGenereesDepuisDemarrage >= Math.max(1, nombreCommandesATester)) {
+        int clients = 0;
+        boolean tousClotures = true;
+        boolean livraisonEnCours = false;
+        for (CommandeAgent c : commandes) {
+            if (c == null || c.idCommande == null || c.idCommande.startsWith("REAPPRO_")) continue;
+            clients++;
+            if ("EN_LIVRAISON".equals(c.statut)) livraisonEnCours = true;
+            if (!("SERVIE".equals(c.statut) || "EN_RETARD".equals(c.statut))) tousClotures = false;
+        }
+        if (livraisonEnCours || (clients >= Math.max(1, nombreCommandesATester) && tousClotures)) return;
+    }
+
+    if (niveauActuel <= ptCommande && qEco > 0.0001) {
+        if (board != null) board.logEvent("[STOCK][" + scRef.typeProduit + "] sous seuil : stock="
+            + String.format("%.0f", niveauActuel) + " seuil=" + String.format("%.0f", ptCommande));
+        declencherProductionAutonome(scRef, (int) Math.ceil(qEco));
+    }
+}
+
 // Lance un ordre de fabrication interne, non rattache a un client : la
 // commande synthetique creee ici ne sert qu'a reutiliser le pipeline Make
 // existant (routage, KPI, cloture). Sa cloture est interceptee plus loin
@@ -2706,7 +2888,13 @@ void verifierPolitiqueStockProduit() {
 // un client -- le credit de stock a lieu deja naturellement au poste de
 // stockage (sM1.5.1), comme pour toute production.
 void declencherProductionAutonome(ScenarioFlux sc, int quantite) {
-    if (sc == null || quantite <= 0 || productionAutonomeEnCours) return;
+    if (sc == null || quantite <= 0) return;
+    // Bloc M.3 -- en mono, garde legacy inchangee (flag global : un seul
+    // produit ne peut jamais avoir 2 REAPPRO actifs en meme temps). En
+    // multi, la garde devient PAR PRODUIT (reapproActifPourProduit()) : un
+    // REAPPRO actif sur A ne bloque plus un declenchement sur B.
+    if (!modeMultiProduitActif && productionAutonomeEnCours) return;
+    if (modeMultiProduitActif && reapproActifPourProduit(sc.typeProduit)) return;
     productionAutonomeEnCours = true;
 
     CommandeAgent cmd = add_commandes();
@@ -3737,6 +3925,9 @@ void reinitialiserPolitiquesStockPourRun() {
     productionAutonomeEnCours = false;
     seqCommandeAutonome = 0;
     dernierCalculBesoinNet = -1;
+    // Bloc M.3 -- cache par produit de la politique multi-produit, meme
+    // remise a zero par run que son equivalent mono ci-dessus.
+    quantiteEconomiqueParProduit.clear();
 
     for (FicheMatiere f : fichesMatiere) {
         if (f == null) continue;
@@ -6796,6 +6987,20 @@ public java.util.LinkedHashMap<String, Double> stockInitialParProduit =
     new java.util.LinkedHashMap<String, Double>();
 public java.util.LinkedHashMap<String, java.util.ArrayList<LigneCommandeProduit>> lignesProduitParCommande =
     new java.util.LinkedHashMap<String, java.util.ArrayList<LigneCommandeProduit>>();
+
+// Bloc M.3 -- cache PAR PRODUIT de la quantite economique (Q*) de la
+// politique (s,Q) autonome produit fini, pour verifierPolitiqueStockPourUnProduit()
+// ci-dessous. Meme principe que stockFiniParProduit : chaque produit
+// catalogue a son propre etat, jamais partage/agrege. Reproduit pour chaque
+// produit le comportement de gel du Q* une fois calcule (C14.58/C14.66,
+// voir le champ historique quantiteEconomiqueProduit, qui reste la variable
+// utilisee telle quelle par la branche MONO, strictement inchangee). Vide au
+// demarrage, remis a zero par reinitialiserPolitiquesStockPourRun(). Il n'y
+// a pas d'equivalent pour le point de commande : contrairement au Q*, il
+// n'a jamais ete fige d'un cycle a l'autre (recalcule a chaque appel, en
+// mono comme en multi), donc aucun cache n'est necessaire pour lui.
+public java.util.LinkedHashMap<String, Double> quantiteEconomiqueParProduit =
+    new java.util.LinkedHashMap<String, Double>();
 
 String cleProduit(String nom) {
     return nom == null ? "" : nom.trim().toUpperCase(java.util.Locale.ROOT);
@@ -12474,7 +12679,13 @@ if (refCommandeFlux.contains("CMD_") || refCommandeFlux.contains("REAPPRO_")) {
                 } catch (Throwable ignored) {}
                 board.logEvent("[STOCK] " + cmd.idCommande + " : production autonome terminee ("
                     + cmd.qte + " unites), stock PF disponible=" + String.format("%.0f", stockApresProduction) + ".");
-                productionAutonomeEnCours = false;
+                // Bloc M.3 -- cmd.statut vient d'etre mis a "SERVIE" ci-dessus :
+                // existeReapproOuvert() l'exclut donc deja de son propre calcul.
+                // En mono, resultat strictement identique a l'ancien "= false"
+                // (un seul REAPPRO possible a la fois). En multi, preserve la
+                // garde pour calculerBesoinsNets() si un AUTRE produit a encore
+                // un REAPPRO ouvert, au lieu de la lever a tort.
+                productionAutonomeEnCours = existeReapproOuvert();
 
                 // ETAPE 3.3 -- reveil immediat des commandes clientes en
                 // attente sur le meme produit. Sans cela elles pouvaient

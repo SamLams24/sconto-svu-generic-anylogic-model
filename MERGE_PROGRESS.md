@@ -2190,6 +2190,170 @@ n'affecte le correctif métier 60/40, qui reste exactement tel quel.
 
 **PR reste DRAFT. Aucun merge vers `main`. M.3 non commencé.**
 
+## VALIDATION UTILISATEUR DÉFINITIVE — M.1 + M.2 (2026-09-18)
+
+Rejeu réel de `scenario_M2_multiproduit_AB.json` après `e41c4b5` + `596143a`.
+
+**Initialisation** (t≈41,3 s) : `Finished Stock=100`, `PRODUIT_A=60`,
+`PRODUIT_B=40`. **Consommation** isolée par référence confirmée sur les 2
+premières commandes. **Bilan complet** : A (5 cmd, 50 livrées, stock final=13)
+et B (4 cmd, 40 livrées, stock final=0) correspondent EXACTEMENT à
+`A=60−50+3=13` / `B=40−40=0` avec 3 unités REAPPRO_1 (M1.5 count=3, toutes
+créditées à PRODUIT_A). 9 commandes closes, PI_GLOBAL≈8.6237, aucune
+exception, aucune erreur Excel.
+
+**M.1 = TERMINÉ / FIGÉ. M.2 = TERMINÉ / FIGÉ.** Ne plus modifier
+`initialiserStocksProduits()`, `appliquerStocksInitiauxConfig()`,
+`consommerStockFiniProduit()`, `crediterStockFiniProduit()`,
+`stockProduitFiniDisponibleTotal()` sauf bug runtime démontré.
+
+## Bloc M.3 — réapprovisionnement autonome par produit (2026-09-18)
+
+**Objectif** : `verifierPolitiqueStockProduit()` restait mono-scénario
+(un seul `scRef` = `indexScenarioNominal()`, généralement le premier produit
+catalogué) et son anti-doublon (`productionAutonomeEnCours`) était un flag
+GLOBAL — un REAPPRO actif sur A bloquait à tort le déclenchement d'un REAPPRO
+sur B, même si B était sous son propre seuil.
+
+### Audit avant modification
+
+| Mécanisme | Mono actuel | Risque multi | Décision M.3 |
+|---|---|---|---|
+| `verifierPolitiqueStockProduit()` | Sélectionne un seul `scRef` via `indexScenarioNominal()` (le scénario "DISTRIBUTION"/"ZENER", sinon le 1er non-test) | En multi, seul ce produit est jamais évalué — B n'est jamais réapprovisionné | Nouvelle branche multi : boucle sur `listeProduits` (snapshot), un appel par produit à une nouvelle fonction dédiée |
+| `declencherProductionAutonome(sc, qte)` | Garde `productionAutonomeEnCours` (flag global) | Bloque un 2e produit tant qu'un 1er REAPPRO est ouvert, même sur un produit différent | Garde par produit en multi (`reapproActifPourProduit`), garde legacy inchangée en mono |
+| `indexScenarioNominal()` | Retourne l'index d'UN SEUL scénario | Non réutilisable pour un déclenchement multi-produit | Non modifiée ; utilisée uniquement par la branche mono (inchangée) et par les fonctions hors périmètre M.3 (`scenarioPourCommande`, profils de test) |
+| `stockFiniDisponiblePourScenario(sc, poste)` | Déjà correcte (branche mono/multi existante depuis M.1/M.2) | Aucun — déjà la bonne source de vérité en multi | Réutilisée telle quelle dans la nouvelle fonction par-produit (jamais `poste.niveauStock` directement) |
+| `listeProduits`/`catalogueProduits` | Reconstruits par `synchroniserListeProduits()` | Boucler dessus pendant qu'une fonction interne les reconstruit = `ConcurrentModificationException` (déjà rencontré côté DataCo) ; confirmé que `stockFiniDisponiblePourScenario()` appelle elle-même `synchroniserListeProduits()` | Un seul appel à `synchroniserListeProduits()` avant la boucle, puis copie défensive (`produitsSnapshot`) jamais reconstruite pendant l'itération |
+| `commandes` / statuts `CommandeAgent` | `SERVIE`/`EN_RETARD` = seuls statuts de clôture réellement utilisés (`EN_LIVRAISON`, `EN_COURS`, etc. = ouverts) ; confirmé par grep exhaustif de tous les `cmd.statut = "..."` du master — aucun `EXPIRED`/`CLOSE`/`TERMINEE` n'existe dans ce master | — | Anti-doublon fondé sur ces 2 seuls statuts de clôture, comme le fait déjà `lierCommandeAuReapproActif()` |
+| `idScenario` | Déjà propagé correctement (`cmd.idScenario = sc.typeProduit`, Bloc A.1/M.2) | Aucun | Réutilisé tel quel comme identité produit du REAPPRO |
+| Ordres `REAPPRO_*` | Prédicat `estOrdreReappro()` déjà existant (préfixe `"REAPPRO_"`) | Aucun | Réutilisé tel quel |
+| `productionAutonomeEnCours` | Unique flag global, remis à `false` (a) au démarrage du run et (b) à la clôture Make d'un REAPPRO | Utilisé AUSSI par `calculerBesoinsNets()` (politique matière autonome, hors périmètre M.3) pour éviter un approvisionnement matière concurrent pendant qu'un REAPPRO gère sa propre analyse matière — ne peut pas être supprimé ni changé de type sans risquer de régresser ce mécanisme matière | Conservé tel quel comme signal global "au moins un REAPPRO ouvert" ; sa valeur à la clôture est recalculée exactement (`existeReapproOuvert()`) au lieu d'être figée à `false`, pour rester correcte quand un autre produit a encore un REAPPRO ouvert |
+| Seuil / quantité de réappro | `champStockSecuriteProduit`, `champCoutLancementProduction`, `champCoutPossessionProduitAnnuel` : 3 scalaires GLOBAUX, sans aucun binding JSON (confirmé par grep) | — | Réutilisés identiquement pour CHAQUE produit (valeurs par défaut partagées) ; aucun champ JSON par produit inventé, conformément à l'instruction |
+| Fréquence d'appel depuis `TacticalAgent` | `main.verifierPolitiqueStockProduit()` appelé au cycle tactique périodique + immédiatement après une commande MTS en attente (`analyserStockCommandeOrchestree()`) | Aucun changement de fréquence nécessaire | Les 2 call sites restent inchangés ; la boucle multi-produit s'exécute à chaque appel existant |
+
+### Invariant MONO — vérifié par relecture ligne à ligne
+
+`verifierPolitiqueStockProduit()` conserve sa branche originale **intacte,
+caractère pour caractère** (seule différence : un `if (modeMultiProduitActif) { ...; return; }`
+ajouté en tête de fonction, avant tout le code legacy). `declencherProductionAutonome()`
+conserve sa garde `productionAutonomeEnCours` en mono ; le calcul de clôture
+`existeReapproOuvert()` est mathématiquement identique à l'ancien `= false`
+tant qu'un seul REAPPRO peut jamais être ouvert à la fois (garanti par la
+garde mono elle-même). Confirmé par diff : les seules lignes **supprimées**
+dans tout le commit sont les 3 gardes remplacées (`if (!modeExecution ||
+productionAutonomeEnCours) return;`, `if (sc == null || quantite <= 0 ||
+productionAutonomeEnCours) return;`, `productionAutonomeEnCours = false;`) —
+aucune autre ligne de la branche mono n'a été touchée.
+
+### Invariant MULTI
+
+Nouvelle fonction `verifierPolitiqueStockPourUnProduit(ScenarioFlux scRef)`,
+appelée une fois par produit catalogué (snapshot stable). Reproduit la
+logique mono (délai de reconstitution, formule de Wilson bornée, garde
+anti-REAPPRO parasite, garde de fin de campagne) avec 3 adaptations :
+1. stock lu via `stockFiniDisponiblePourScenario(scRef, stockFini)` —
+   jamais `stockFini.niveauStock` (agrégat de compatibilité uniquement).
+2. Q* mis en cache PAR PRODUIT (`quantiteEconomiqueParProduit`, nouvelle
+   map, même principe que `stockFiniParProduit`) au lieu du champ global
+   `quantiteEconomiqueProduit` — gelé au premier calcul par produit
+   (comportement C14.58/C14.66 reproduit indépendamment pour chaque
+   référence). Le point de commande n'est pas mis en cache (il ne l'était
+   déjà pas en mono : recalculé à chaque appel).
+3. Anti-doublon via `reapproActifPourProduit(scRef.typeProduit)` — jamais
+   le flag global.
+
+Exemple validé par raisonnement (A stock=10, B stock=80, seuil=20) : A sous
+le point de commande déclenche un REAPPRO ; B, au-dessus, ne déclenche rien.
+Le stock agrégé A+B n'intervient à aucun moment dans la décision.
+
+### Anti-doublon par produit
+
+Nouvelles fonctions, strictement en lecture sur `commandes` (aucun nouveau
+champ sur `CommandeAgent`) :
+- `reapproActifPourProduit(String typeProduit)` : vrai si un ordre
+  `REAPPRO_*` de ce produit (`idScenario`) est encore ouvert (statut ≠
+  `SERVIE`/`EN_RETARD`). Utilisée par `declencherProductionAutonome()` en
+  mode multi pour bloquer un doublon SUR LE MÊME produit tout en laissant
+  passer un autre produit.
+- `existeReapproOuvert()` : vrai si au moins un `REAPPRO_*` (tous produits
+  confondus) est encore ouvert. Utilisée uniquement pour recalculer
+  `productionAutonomeEnCours` à la clôture d'un REAPPRO, afin de ne jamais
+  lever la garde à tort si un autre produit a encore un REAPPRO en cours
+  (préservation du comportement `calculerBesoinsNets()`, hors périmètre).
+
+Scénario validé par raisonnement : REAPPRO A en cours, A et B sous seuil →
+A n'est pas redéclenché (déjà actif), B est déclenché (aucun REAPPRO B
+actif). Une commande cliente réelle n'est jamais confondue avec un REAPPRO
+autonome : `estOrdreReappro()` (préfixe `"REAPPRO_"`) reste le seul
+prédicat de distinction, inchangé, utilisé partout où l'anti-doublon
+s'applique.
+
+### Déclenchement, identité, crédit
+
+Chaîne inchangée et FIGÉE (M.2) : `declencherProductionAutonome(sc, qte)`
+crée `cmd.idScenario = sc.typeProduit` (ligne déjà existante, non
+modifiée) → unités `REAPPRO_x_F_n` → M1.5 → `crediterStockFiniProduit(cmd.idScenario, ...)`.
+M.3 ne fait que décider QUAND et POUR QUEL produit déclencher ; le crédit
+lui-même n'a pas été touché.
+
+### Observabilité
+
+Logs ajoutés, tous préfixés `[STOCK][<typeProduit>]`, uniquement sur les
+2 événements réels (pas de log répété à chaque cycle si rien ne change) :
+- `[STOCK][PRODUIT_A] Q* produit fini : ...` (une fois, au premier calcul
+  du Q* de ce produit)
+- `[STOCK][PRODUIT_A] sous seuil : stock=... seuil=...` (au moment du
+  déclenchement effectif, juste avant `declencherProductionAutonome()`)
+
+Le log "politique OK" suggéré en exemple par la consigne n'a volontairement
+PAS été ajouté : il aurait fallu le logger à chaque cycle tactique pour
+chaque produit au-dessus du seuil, ce qui contredit directement la consigne
+« éviter un log à chaque cycle si rien ne change ». Aucune UI nouvelle.
+
+### Tests M.3 à préparer (exécution utilisateur)
+
+| Test | Attendu |
+|---|---|
+| M3-1 MONO | ZENER legacy, comportement strictement inchangé |
+| M3-2 | A sous seuil / B OK → A seulement |
+| M3-3 | B sous seuil / A OK → B seulement |
+| M3-4 | A et B sous seuil → un REAPPRO A + un REAPPRO B |
+| M3-5 | Cycle tactique suivant avant fin de production → aucun second REAPPRO A/B |
+| M3-6 | Ordre produit clos et toujours sous seuil → nouveau REAPPRO autorisé |
+| M3-7 | Chaque REAPPRO a `cmd.idScenario` exact |
+| M3-8 | Sortie M1.5 d'un REAPPRO A → crédit A uniquement (idem B) |
+| M3-9 | Somme map == Finished Stock |
+| M3-10 | Aucune `ConcurrentModificationException` |
+
+### Ce qui n'a PAS été modifié
+
+`initialiserStocksProduits()`, `appliquerStocksInitiauxConfig()`,
+`consommerStockFiniProduit()`, `crediterStockFiniProduit()`,
+`stockProduitFiniDisponibleTotal()`, `indexScenarioNominal()`,
+`estOrdreReappro()`, `lierCommandeEtReappro()`/`lierCommandeAuReapproActif()`/
+`lierReapproAuxCommandesClientesEnAttente()`/`finaliserDependanceReappro()`,
+`calculerBesoinsNets()` (politique matière), la fixture A/B, ZENER,
+PI/SCOR, Blocs B/C/D/E.
+
+### Validations statiques
+
+- XML bien formé : OK
+- IDs AnyLogic uniques : 1680/1680 (inchangé — uniquement du texte
+  `AdditionalClassCode` modifié/ajouté)
+- `git diff --check` : aucune erreur
+- Grep DataCo : 6 occurrences (5 pré-existantes + 1 nouvelle, ma propre
+  note de commentaire citant "la lignée DataCo" comme précédent du bug
+  ConcurrentModification, exactement comme formulé par l'utilisateur) —
+  toutes des commentaires de méthodologie, 0 logique/donnée DataCo importée
+- Diff vérifié ligne par ligne : les 3 seules suppressions du commit sont
+  les 3 gardes remplacées ; aucune autre ligne mono touchée
+- `scenario_M2_multiproduit_AB.json` et `scenario_ZENER_SA_Togo_v39.json`
+  inchangés
+
+**Commit** : `feat(generic): make autonomous replenishment product-aware`
+
+**PR reste DRAFT. Aucun merge vers `main`. Bloc B non commencé.**
+
 ## Bloc B — PI / SCOR
 - [ ] Warm-up / amorçage
 - [ ] Poids effectifs et données disponibles

@@ -2422,12 +2422,195 @@ clos `SERVIE`/`EN_RETARD`), mais reste à confirmer par un run futur si
 l'occasion se présente.
 
 ## Bloc B — PI / SCOR
-- [ ] Warm-up / amorçage
-- [ ] Poids effectifs et données disponibles
-- [ ] RL petits échantillons
-- [ ] RS hyperbolique
-- [ ] Proxies SCOR explicites
-- [ ] Périmètre entreprise focale
+
+### Bloc B.1 — audit complet + fondations sûres (2026-09-18)
+
+**Méthode** : lecture directe et comparaison ligne à ligne de `StrategicAgent.calculerPIGlobal()`,
+`StrategicAgent.prevoirDemande()`, `Main.ajusterDebits()` entre `model/SCONTO_SVU_GENERIC_MASTER.alp`
+(HEAD `85dfdfa`) et `reference/colleague/SCONTO_SVU_GENERIC10-4_COLLEAGUE.alp` — jamais les documents
+`docs/merge/PHASE2_PI_SCOR_MERGE_NOTES.md`/`ANALYSE_FUSION_COLLEGUE_VS_MASTER.md`, conformément à la
+consigne (le code final du collègue est la seule source technique prioritaire).
+
+#### Tableau d'audit
+
+| Élément | Master actuel | Collègue | Différence sémantique | Dépendances | Risque | Décision |
+|---|---|---|---|---|---|---|
+| `calculerPIGlobal()` | Périmètre = `board.kpiParMacro` (TOUTE la chaîne, y compris postes CLIENT/FOURNISSEUR) ; RL sur 4 métriques pondérées égales, jamais de garde d'échantillon ; RS sans focalisation entreprise ni décroissance lente ; CO utilise `nbTermines` (hybride) ; pas de warm-up ; agrégation finale sur poids bruts `w_RL..w_AM` (jamais de poids effectifs) | Périmètre reconstruit par entreprise focale (`ActeurSC.ENTREPRISE_FOCALE`) ; RL réduit à 1 métrique notée (RL.2.2) + garde `seuilMinEchantillonRL`, 3 autres en informatif poids 0 ; RS pondéré par passages réels (`unitesParMacro`/`nominalPondereParMacro`) + attente incluse ; CO utilise `unitesLivreesClients()` ; warm-up (`phaseAmorcagePI`) fige le PI à `ciblePIGlobal` tant que le périmètre n'est pas complet ; poids effectifs `wEff*` (famille sans donnée exclue de l'agrégation) | Réécriture profonde des 5 familles + de la boucle d'agrégation finale | `ActeurSC.ENTREPRISE_FOCALE`/`normaliserCategorieActeur()` (déjà présents), `dureeTraitementNominale()`/`majBorneCycleMacro()` (nouveaux), `nombreCommandesClosesFiabilite()`/`unitesLivreesClients()` (nouveaux), les 8 variables PI (nouvelles) | Élevé — fonction centrale, tout consommateur du PI est affecté | **REJET pour ce tour** ; **B.2** (RL/warm-up/poids effectifs) puis **B.3** (RS/périmètre focal, plus couplé à `majBorneCycleMacro()`) |
+| `prevoirDemande()` | `debitActuel = main.nbTermines * 3600/time()` — **la PRÉVISION est calculée à partir de la PRODUCTION**, idem par produit via `nbTerminesParProduit` | `debitActuel` calculé depuis les **commandes CLIENTES créées** (`qteClientCreeeTotale`, exclut `REAPPRO_`), idem par produit via `idScenario`, garde de 2 commandes minimum + mesure depuis la 1re commande (pas depuis T=0) | **Boucle de rétroaction positive confirmée dans le master actuel** : plus `verifierPolitiqueStockProduit()`/`declencherProductionAutonome()` produisent (Bloc M.3), plus `nbTermines` monte, plus la prévision monte, plus `ajusterDebits()` vise un stock cible élevé, plus on produit — indépendamment du rythme réel des commandes clientes | Aucune (fonction autonome, ne lit que `commandes`/`scenarios`) | Confirmé, mais correction non triviale (garde d'échantillon, filtrage par produit) | **B.2** — priorité haute, cause racine identifiée et prouvée par lecture directe, mais nécessite un choix architectural (garde de démarrage, lissage) donc explicitement hors B.1 |
+| `ajusterDebits()` | Boucle `for (ScenarioFlux sc : main.scenarios) { ... stockObserve = stockFini.niveauStock; ... }` — **lit l'agrégat `niveauStock` directement**, aucun plafond de sécurité sur `debitFinal` | Même structure, **plus un plafond** `plafond = sc.debitParHeureBase * plafondMultipleDebitBase; debitFinal = Math.min(debitFinal, plafond);` | **Bug multi-produit CONFIRMÉ par lecture de code (pas hypothétique)** : `trouverStockFiniPourScenario(sc)` renvoie le MÊME poste physique pour tous les scénarios dans les 3 scénarios groupés actuels (1 seul poste stock-fini par scénario) ; `stockFini.niveauStock` est l'AGRÉGAT de compatibilité (Bloc M, `synchroniserStockFiniAgrege()`) — en mode multi-produit à N produits, la boucle lit et somme ce MÊME agrégat N fois dans `totalStockObserve`, gonflant `stockFiniObserve` d'un facteur N ; `debitSouhaite`/`rattrapage` par produit utilisent aussi la mauvaise valeur (l'agrégat au lieu du stock du SEUL produit courant) | `stockFiniDisponiblePourScenario(sc, stockFini)` (Bloc M, déjà correcte et déjà utilisée ailleurs) | Confirmé et isolé (un seul point de lecture à corriger, ne touche à aucun mécanisme du Bloc M lui-même) mais modifie une fonction risquée/partagée | **B.2** — correctif ciblé et de faible ampleur (remplacer `stockFini.niveauStock` par `stockFiniDisponiblePourScenario(sc, stockFini)` dans la boucle), mais explicitement hors périmètre B.1 (B.1 n'autorise pas la modification de `ajusterDebits()`) |
+| `codesProcessusPourMetriqueSCOR()`/`valeurRuntimeMetriqueSCOR()`/`sourceFormuleMetriqueSCOR()` | RL.2.1 → `tauxCommandesLivreesCloses()` (voir ligne suivante, fonction **dégénérée**) ; RL.2.2 → `verifierFillRate()` (fonction réellement correcte, malgré son nom) ; RL.3.32 → `verifierFillRate()` | RL.2.1/RL.2.2/RL.3.33/RL.3.35/RL.3.32 → tous `tauxCommandesLivreesCloses()` (sauf RL.3.32 → `verifierFillRate()` legacy, gardée pour compat) | **Collision de nommage entre master et collègue** (voir 2 lignes suivantes) — audité, non modifié | — | — | **Audité pour préparer B.3** (export SCOR), non modifié en B.1 comme demandé |
+| `verifierFillRate()` | Renommée en interne ("ETAPE 3.1") : mesure en réalité RL.2.2 (ponctualité client), filtre `estCommandeClient()`, dénominateur = commandes CLIENTES **closes** (SERVIE+EN_RETARD) uniquement | Fonction legacy inchangée : `servies/commandes.size()` — dénominateur = **TOUTES** les commandes jamais créées (y compris en transit et REAPPRO_), bug déjà documenté par le collègue (C15.8) | **Le master a DÉJÀ corrigé indépendamment le bug que le collègue corrige aussi, mais sous un nom différent.** Master : `verifierFillRate()` = version corrigée. Collègue : `tauxCommandesLivreesCloses()` = version corrigée (nom différent) ; le `verifierFillRate()` du collègue reste l'ancienne version buguée, gardée uniquement pour RL.3.32 (legacy display) | — | Aucun changement de comportement requis ici : le master a déjà la bonne valeur, juste sous un nom qui ne correspond pas à celui du collègue | **REJET** (rien à porter — le master est déjà à parité fonctionnelle sur ce point précis, juste nommé différemment) |
+| `tauxCommandesLivreesCloses()` | **Fonction dégénérée confirmée par lecture de code** : `if (SERVIE ou EN_RETARD) { closes++; livrees++; }` puis `return livrees/closes` — `livrees` est TOUJOURS égal à `closes`, donc la fonction renvoie **systématiquement 1.0** dès qu'une commande a clos, quel que soit le taux réel de retards. RL.2.1 (export SCOR) l'utilise directement : RL.2.1 affiche donc à tort "100%" en permanence dès la 1re commande close | Renommée avec la sémantique CORRECTE : `servies/(servies+enRetard+refusees+bloquees)`, exclut REAPPRO_, inclut les échecs terminaux (REFUSEE/BLOQUE_*) au dénominateur | **Bug réel, démontré par lecture de code, préexistant dans le master actuel** (indépendant de ce merge) : RL.2.1 ne discrimine jamais rien | Aucune (fonction autonome) | Moyen — corrige un export SCOR déjà visible utilisateur, mais touche une fonction nommée déjà utilisée ailleurs dans le master (mapping SCOR) | **B.3** (export SCOR) — documenté ici comme trouvaille B.1, correction proposée : soit renommer/réécrire `tauxCommandesLivreesCloses()` avec la sémantique collègue et réaffecter les mappings RL.2.1/RL.2.2 en conséquence, à valider explicitement avant toute écriture (renommage = risque de confusion avec l'existant) |
+| `nombreCommandesClosesFiabilite()` | Absente | Présente, dépend de `cmd.retardConstate` (Bloc C, absent) | Nouvelle fonction | `estOrdreReappro`-like filtre (existe : `estOrdreStockAutonome`) | Faible — lecture seule sur `commandes` | **B.1 — PORTÉE**, adaptée (retire `\|\| cmd.retardConstate`, même précédent que A.2/A.4) |
+| `unitesLivreesClients()` | Absente | Présente, aucune dépendance Bloc C | Nouvelle fonction | Aucune | Faible — lecture seule | **B.1 — PORTÉE** telle quelle |
+| `dureeTraitementNominale()` | Absente | Présente, dépend de `LoiTemps.esperance()` (absente) | Nouvelle fonction | `LoiTemps.esperance()` (nouveau, pur, isolé) | Faible — lecture seule sur `PosteGenericAgent`/`LoiTemps` | **B.1 — PORTÉE**, avec `LoiTemps.esperance()` |
+| `majBorneCycleMacro()` | Absente | Présente, dépend de `strategic.facteurToleranceCycleMacro` (absent) et construit un `NormalizationProfile` avec `decroissanceLente=true` | Nouvelle fonction, appelée UNIQUEMENT depuis la section RS.2.x de `calculerPIGlobal()` | `facteurToleranceCycleMacro` (nouveau), `NormalizationProfile.decroissanceLente` (porté en B.1, voir plus bas) | Moyen — seul appelant est `calculerPIGlobal()` (non modifié ce tour) | **REJET pour ce tour** (aucun appelant tant que RS.2.x n'est pas refondu) — **B.3** avec la refonte RS |
+| `NormalizationProfile` / `decroissanceLente` | Classe présente (`score10()` = plancher linéaire PUIS coupure dure à 0 au-delà de `max`) | + champ `decroissanceLente` (défaut `false`, rétrocompatible), + constructeur 7 args, + branche hyperbolique `10*min/valeur` dans `score10()` si `decroissanceLente=true` | Purement additif : défaut `false` ⇒ AUCUN profil existant n'est affecté | Aucune | Faible — nouvelle branche jamais empruntée tant qu'aucun appelant ne construit `decroissanceLente=true` | **B.1 — PORTÉE** (mécanisme seul ; aucun appelant ne l'active encore, `majBorneCycleMacro()` différé à B.3) |
+| `ActeurSC.ENTREPRISE_FOCALE` / `normaliserCategorieActeur()` | **Déjà présents** dans le master (utilisés massivement pour l'export ABox, `p.categorieActeurResponsable` déjà lu depuis le JSON) | Réutilisés dans `calculerPIGlobal()` pour reconstruire les bundles KPI par macro-processus filtrés à l'entreprise focale (C15.14) | Le master a déjà toute l'infrastructure de catégorisation d'acteur ; il manque seulement le CÂBLAGE dans `calculerPIGlobal()` | — | Faible techniquement (réutilisation), mais modifie `calculerPIGlobal()` | **B.3** (couplé à la refonte RS/périmètre, non isolable de `calculerPIGlobal()`) |
+| 8 variables PI (`attributsPonderesPI`, `sommePoidsEffectifsPI`, `seuilMinEchantillonRL`, `perimetrePIDejaComplet`, `donneesRLPresentesPrecedent`, `donneesRSPresentesPrecedent`, `donneesAMPresentesPrecedent`, `dernierLogDetailSCOR`) | Absentes (confirmé par grep exhaustif avant ce bloc) | Présentes sur `StrategicAgent`, réinitialisées dans `demarrerSimulation()` | Nouvelles | Aucune (champs inertes tant que `calculerPIGlobal()` ne les lit/écrit pas) | Nul — déclarations seules | **B.1 — PORTÉES**, + reset dans `demarrerSimulation()` |
+| `compteurCyclesExportExcel` / `verboseLogs` | Absent / présent (générique, déjà utilisé par `traceln()`) | Présents | Utilité confirmée hors Bloc B (export Excel = Bloc A.4 ; verbosité de logs = générique) | — | — | **REJET** (hors périmètre B, conformément à la consigne explicite) |
+| `agregerN3()` / `poidsEffectifN3()` | Présents | Identiques caractère pour caractère (vérifié) | Aucune | — | Nul | **RAS** (déjà à parité) |
+
+#### Point 1 — Périmètre entreprise focale
+Le master dispose déjà de `ActeurSC.ENTREPRISE_FOCALE` et `normaliserCategorieActeur()`,
+utilisés pour l'export ABox et l'assignation d'acteurs, mais **`calculerPIGlobal()` ne les
+utilise pas** : il lit `board.kpiParMacro`, qui agrège TOUS les postes d'un macro-processus
+sans filtrer par acteur responsable (un poste Source côté CLIENT ou FOURNISSEUR pèse
+autant qu'un poste Source de l'entreprise focale). Le nom `ZENER` n'apparaît nulle part
+dans ce mécanisme ni côté collègue ni côté master — le filtre repose uniquement sur
+`categorieActeurResponsable` (donnée JSON), jamais sur un nom d'entreprise. Câblage
+proposé pour B.3 : reconstruire des `KPIBundle` locaux filtrés comme le fait le collègue,
+sans toucher à `board.kpiParMacro` (qui reste nécessaire ailleurs, ex. détection de goulots
+sur la chaîne étendue).
+
+#### Point 2 — Warm-up / amorçage
+Condition de sortie exacte (collègue) : `perimetreComplet = (wEffRL>0 && wEffRS>0 &&
+wEffAG>0 && wEffCO>0 && wEffAM>0)`, mémorisée une fois atteinte (`perimetrePIDejaComplet`,
+jamais réévaluée à la baisse). Tant que non atteinte (et qu'un blocage structurel de CO
+n'est pas détecté via `attenteImpossible`), le PI est maintenu à `ciblePIGlobal` (déjà
+présent dans le master, valeur existante réutilisée). Aucun seuil arbitraire, aucun compte
+de commandes ZENER hardcodé — la condition ne porte que sur la présence de poids effectifs
+par famille SCOR.
+
+#### Point 3 — Poids effectifs
+Confirmé dans le code : chaque famille (RL/RS/AG/CO/AM) calcule `sommePoids{RL..AM}` =
+somme des poids de ses métriques individuelles ; `wEff{RL..AM} = sommePoids>0 ? w_{RL..AM}
+: 0`. `attributsPonderesPI` trace la liste des familles réellement incluses (ex.
+"RL+AG+CO", jamais "RL+RS+AG+CO+AM" tant que RS ou AM manquent) ; `sommePoidsEffectifsPI`
+est la somme de ces poids effectifs, permettant de recalculer le PI affiché à la main.
+Aucune famille sans donnée n'est comptée comme performance nulle.
+
+#### Point 4 — Reliability / RL
+Code confirmé (pas les anciens documents) : seul **RL.2.2** est réellement pondéré dans le
+PI côté collègue (`nRL=1`) ; RL.2.1/RL.3.33/RL.3.35 sont informatifs (poids 0), car ce
+master ne simule ni erreur d'article ni erreur de quantité — les 4 indicateurs recopiaient
+la même valeur sans être 4 mesures indépendantes. Seuil minimal : `seuilMinEchantillonRL`
+(porté en B.1, défaut `1`, valeur du collègue — pas un hardcode ZENER). En dessous du
+seuil, RL est exclu du PI (poids effectif 0) mais **reste affiché** avec une valeur
+provisoire explicitement étiquetée hors-PI (`rlAffichage`, mention "provisoire, hors PI"),
+jamais gonflé artificiellement à 10/10.
+
+#### Point 5 — RS / Responsiveness
+Chaîne collègue : temps de cycle macro = (temps de traitement CUMULÉ + temps d'ATTENTE
+cumulé) / nombre d'unités entrées dans le macro (`unitesParMacro`), comparé à un nominal
+lui-même pondéré par les mêmes passages réels (`nominalPondereParMacro`,
+`dureeTraitementNominale()` × fréquence). La borne de normalisation devient un multiple
+(`facteurToleranceCycleMacro`, défaut 10.0) du nominal pondéré, avec décroissance
+hyperbolique (`decroissanceLente`) au lieu d'une coupure dure à 0 — un engorgement 56x
+reste mesurablement pire qu'un engorgement 13x. Le mécanisme `NormalizationProfile`
+correspondant est porté en B.1 ; `majBorneCycleMacro()` (l'appelant) est différé à B.3
+car son seul point d'appel est la section RS.2.x de `calculerPIGlobal()`.
+
+#### Point 6 — AG / AM et proxies
+Confirmé : le collègue distingue explicitement `AG.3.32` (réelle) de
+`PROXY.AG.SYSTEM_UTILIZATION` et renomme l'ancien `AG.1.1` (legacy master) en
+`PROXY.AG.STABILITE_DEBIT` — même valeur (`coefficientAdaptabilite()`, identique dans les
+2 modèles), mais présentée honnêtement comme proxy hors référentiel SCOR normatif. Idem
+AM : `AM.3.9`/`PROXY.AM.DISPONIBILITE_MACHINE` — même valeur
+(`calculerDisponibiliteMachinesMoyenne()`), renommée en proxy. `AM.2.2` (Inventory Days of
+Supply) reste une métrique réelle des deux côtés. Ce renommage est purement une question
+d'étiquetage de traçabilité SCOR (aucun changement de valeur) — couplé à la refonte
+`calculerPIGlobal()`, donc différé à B.3.
+
+#### Point 7 — Cost / CO
+Confirmé : `unitesLivreesClients()` (porté en B.1) résout un biais réel — `nbTermines`
+est un compteur HYBRIDE (incrémenté par unité en flux de production, mais une seule fois
+par commande en livraison directe MTS), sous-estimant le CA d'un facteur proche de la
+taille moyenne de commande en MTS pur (le mode nominal de ce master). REAPPRO_* déjà
+exclus de `unitesLivreesClients()` (même filtre que `estOrdreStockAutonome()`/
+`estCommandeClient()`, déjà existants dans le master). Câblage dans `CO.1.1` lui-même
+différé à B.2/B.3 (modifie `calculerPIGlobal()`).
+
+#### Point 8 — Prévision stratégique
+**Bug de rétroaction confirmé dans le master actuel par lecture directe** :
+`prevoirDemande()` calcule `debitActuel` à partir de `main.nbTermines` (production
+terminée), pas des commandes clientes. Combiné au pilotage MTS de `ajusterDebits()`
+(prévision → stock cible → décision de produire), ceci crée exactement la boucle que le
+Bloc M.3 rend maintenant active et observable : plus le REAPPRO autonome produit, plus la
+prévision monte, plus le stock cible monte, plus on produit. Le collègue calcule
+`debitActuel` depuis les commandes CLIENTES créées (`cmd.tCreation`/`cmd.qte`, exclut
+REAPPRO_), avec une garde de 2 commandes minimum et une mesure depuis la 1re commande
+(pas depuis T=0). En multi-produit, le collègue filtre déjà correctement par
+`cmd.idScenario` (`qteClientCreeeParProduit`), sans jamais utiliser le stock agrégé — le
+Bloc M n'a pas besoin d'être rouvert pour porter ce correctif. **Priorité haute pour B.2**,
+non portée ce tour car son intégration modifie une fonction consommée par
+`calculerBesoinsNets()` (matière, hors périmètre) et nécessite un choix explicite sur le
+comportement transitoire (garde d'échantillon, lissage) — non trivial au sens de la
+consigne B.1.
+
+#### Point 9 — Stock stratégique multi-produit
+**Bug xN confirmé dans le MASTER ACTUEL (pas seulement dans l'ancien document Phase 2)** :
+`ajusterDebits()` lit `stockFini.niveauStock` (l'agrégat de compatibilité du Bloc M) dans
+une boucle `for (ScenarioFlux sc : main.scenarios)`. Avec les 3 scénarios groupés actuels,
+chacun a son propre poste stock-fini physique (pas de partage), donc CE bug ne se
+manifeste PAS aujourd'hui sur les scénarios fournis (vérifié) — mais **il se manifesterait
+dès que 2 scénarios partageraient le même poste stock-fini physique** (exactement le cas
+de la fixture `scenario_M2_multiproduit_AB.json`, où PRODUIT_A et PRODUIT_B partagent
+`sM1.5.1`) : le même agrégat serait lu et sommé N fois dans `totalStockObserve`. Correctif
+proposé (non appliqué ce tour) : remplacer `stockFini.niveauStock` par
+`main.stockFiniDisponiblePourScenario(sc, stockFini)` (déjà existante, Bloc M, déjà
+correcte) dans cette seule boucle de `ajusterDebits()`. Ceci ne modifie NI
+`stockFiniParProduit` NI aucun mécanisme du Bloc M lui-même — uniquement ce que le
+lecteur stratégique consomme. Différé à B.2 (hors liste des modifications autorisées en
+B.1).
+
+#### Point 10 — Exports SCOR
+Audité sans modification, comme demandé. Trouvaille majeure documentée ci-dessus (tableau)
+: `tauxCommandesLivreesCloses()` du master est une fonction dégénérée (retourne toujours
+1.0 dès qu'une commande a clos) utilisée directement par le mapping RL.2.1 — un bug
+préexistant, indépendant de ce merge, à corriger en B.3 avec le reste des exports SCOR.
+`verifierFillRate()` du master est en réalité déjà correcte (renommage historique du
+master, sans lien avec le nommage du collègue). Décision de renommage/réaffectation des
+mappings SCOR différée à B.3, pour éviter de bundler cette correction avec les fondations
+de ce tour.
+
+### Fondations portées en B.1 (2026-09-18)
+
+- `LoiTemps.esperance()` — espérance théorique de la loi de temps (pure, isolée).
+- `NormalizationProfile.decroissanceLente` (champ, défaut `false`) + constructeur 7 args +
+  branche hyperbolique dans `score10()` — rétrocompatible, aucun profil existant affecté.
+- `Main.dureeTraitementNominale(PosteGenericAgent)` — lecture seule.
+- `Main.nombreCommandesClosesFiabilite()` — adaptée (sans `cmd.retardConstate`, absent de
+  ce master, même précédent que Bloc A.2/A.4).
+- `Main.unitesLivreesClients()` — portée telle quelle.
+- 8 variables PI sur `StrategicAgent` (`attributsPonderesPI`, `sommePoidsEffectifsPI`,
+  `seuilMinEchantillonRL`, `perimetrePIDejaComplet`, `donneesRLPresentesPrecedent`,
+  `donneesRSPresentesPrecedent`, `donneesAMPresentesPrecedent`, `dernierLogDetailSCOR`) +
+  remise à zéro dans `demarrerSimulation()`.
+
+**Aucune de ces fondations n'est encore consommée** : `calculerPIGlobal()`, `prevoirDemande()`,
+`ajusterDebits()` et les exports SCOR restent strictement inchangés ce tour, conformément à
+la consigne B.1. Les fondations sont donc du code mort jusqu'à B.2/B.3 — vérifié par grep
+(aucune des 8 variables, ni `dureeTraitementNominale()`, ni `nombreCommandesClosesFiabilite()`,
+ni `unitesLivreesClients()`, ni `decroissanceLente` n'apparaît en dehors de leurs propres
+déclarations et du reset de `demarrerSimulation()`).
+
+### Non touché en B.1
+`calculerPIGlobal()`, `prevoirDemande()`, `ajusterDebits()`, `analyserEtat()`, tous les
+exports SCOR (`codesProcessusPourMetriqueSCOR()`/`valeurRuntimeMetriqueSCOR()`/
+`uniteMetriqueSCOR()`/`sourceFormuleMetriqueSCOR()`), `verifierFillRate()`,
+`tauxCommandesLivreesCloses()`, `majBorneCycleMacro()`, tout mécanisme du Bloc A ou du
+Bloc M, la fixture A/B, ZENER, le JSON/scénarios, les Blocs C/D/E.
+
+### Validations statiques
+- XML bien formé : OK
+- IDs AnyLogic uniques : 1680/1680 (inchangé — uniquement du texte `AdditionalClassCode`
+  ajouté, aucun nouvel élément `<Function>`/`<Variable>` XML)
+- `git diff --check` : aucune erreur
+- Grep DataCo (`prophet|recalibrator|autocommande|dataco`) : 6 occurrences, toutes
+  pré-existantes (commentaires méthodologiques déjà présents avant ce bloc) — 0 nouvelle
+  occurrence introduite par les fondations B.1
+- Diff purement additif : 122 lignes ajoutées, 0 supprimée (confirmé par `git diff --stat`)
+- Aucun changement JSON/scénario (`scenario_M2_multiproduit_AB.json`,
+  `scenario_ZENER_SA_Togo_v39.json` inchangés)
+- Aucun changement Bloc C/D/E
+
+**Commit** : `feat(generic): prepare PI SCOR measurement foundations`
+
+**PR reste DRAFT. Aucun merge vers `main`. B.2 non commencé.**
+
+- [ ] B.2 — `prevoirDemande()` (demande client), `ajusterDebits()` (plafond + lecteur stock multi-produit), RL/warm-up/poids effectifs dans `calculerPIGlobal()`
+- [ ] B.3 — RS (périmètre focal + décroissance lente + `majBorneCycleMacro()`), AG/AM (proxies explicites), exports SCOR (`tauxCommandesLivreesCloses()` dégénérée, mappings RL)
 - [ ] Build AnyLogic utilisateur
 - [ ] Run court ZENER utilisateur
 

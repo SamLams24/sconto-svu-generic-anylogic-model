@@ -1016,6 +1016,26 @@ double bornerQuantiteLot(double qStar, double plafond) {
     return Math.max(1.0, Math.min(qStar, plafond));
 }
 
+// Bloc B.1 -- Duree NOMINALE d'un poste : esperance de sa loi de temps, sans
+// tirage aleatoire. Meme filtre de type que dureeTraitement() (seuls DELAI,
+// STOCKAGE et AIGUILLAGE portent une duree), pour que nominal et observe
+// soient comparables. Lecture seule (PosteGenericAgent.loiTemps/typePoste),
+// aucun etat mute. Fondation pour Bloc B.2 (RS.2.x, perimetre entreprise
+// focale) -- non consommee dans ce bloc.
+double dureeTraitementNominale(PosteGenericAgent p) {
+    if (p == null || p.loiTemps == null) return 0.0;
+    try {
+        switch (p.typePoste) {
+            case DELAI:
+            case STOCKAGE:
+            case AIGUILLAGE:
+                return Math.max(0.0, p.loiTemps.esperance());
+            default:
+                return 0.0;
+        }
+    } catch (Throwable ignored) { return 0.0; }
+}
+
 double dureeReceptionEtControleReelle(String idMatiere) {
     if (idMatiere == null) return 0.0;
     String posteReception = null, posteControle = null;
@@ -8566,16 +8586,34 @@ public static class NormalizationProfile implements java.io.Serializable {
     public double max = 1.0;             // BENEFIT: perfect ; COST: bottom
     public String source = "";
     public String version = "2.0";
+    // Bloc B.1 -- decroissance hyperbolique optionnelle pour les profils COST,
+    // desactivee par defaut (false) : AUCUN profil existant n'est affecte, le
+    // comportement de score10() ci-dessous reste identique pour tout profil qui
+    // ne l'active pas explicitement. Remplace le plancher lineaire-puis-coupure-
+    // dure (qui confond un ecart de 13x et un ecart de 56x au nominal, tous deux
+    // a 0.000) par une decroissance 10*min/valeur : continue avec le plancher
+    // lineaire en valeur=min (10/10 dans les deux cas), decroit ensuite beaucoup
+    // plus lentement, jamais de plancher dur a 0. Non consomme dans ce bloc
+    // (aucun appelant ne construit encore un profil avec decroissanceLente=true) --
+    // fondation pour Bloc B.2 (RS.2.x, cf. MERGE_PROGRESS.md).
+    public boolean decroissanceLente = false;
 
     public NormalizationProfile() {}
     public NormalizationProfile(String code, String direction, double min, double max, String source, String version) {
         this.code=code; this.direction=direction; this.min=min; this.max=max; this.source=source; this.version=version;
+    }
+    public NormalizationProfile(String code, String direction, double min, double max, String source, String version, boolean decroissanceLente) {
+        this(code, direction, min, max, source, version);
+        this.decroissanceLente = decroissanceLente;
     }
     public boolean higherIsBetter(){ return !("COST".equalsIgnoreCase(direction)||"MINIMIZE".equalsIgnoreCase(direction)); }
     public double bottom(){ return higherIsBetter()?min:max; }
     public double perfect(){ return higherIsBetter()?max:min; }
     public double score10(double valeur) {
         if(Double.isNaN(valeur)||Double.isInfinite(valeur)||Double.isNaN(min)||Double.isNaN(max)||max<=min) return Double.NaN;
+        if (decroissanceLente && !higherIsBetter() && min > 0.0 && valeur > 0.0) {
+            return Math.max(0.0, Math.min(10.0, 10.0 * min / valeur));
+        }
         double s = higherIsBetter() ? 10.0*(valeur-min)/(max-min) : 10.0*(max-valeur)/(max-min);
         return Math.max(0.0,Math.min(10.0,s));
     }
@@ -9800,6 +9838,46 @@ public boolean estCommandeClient(CommandeAgent cmd) {
 
 public boolean estOrdreStockAutonome(CommandeAgent cmd) {
     return cmd != null && cmd.idCommande != null && cmd.idCommande.startsWith("REAPPRO_");
+}
+
+// Bloc B.1 -- Meme comptage que tauxCommandesLivreesCloses() ci-dessous, expose
+// separement pour permettre un seuil de taille d'echantillon minimal avant de
+// ponderer RL dans le PI (Bloc B.2, calculerPIGlobal() -- non modifiee dans ce
+// bloc). Un etat TERMINAL couvre ici SERVIE/EN_RETARD/REFUSEE/BLOQUE_* : les
+// commandes jamais servies sont le pire cas de fiabilite au sens SCOR et ne
+// doivent pas etre invisibles pour ce comptage. Adaptation par rapport a la
+// reference technique collegue : son cmd.retardConstate (mecanisme de retard
+// continu, Bloc C) n'existe pas dans ce master et n'est pas introduit ici --
+// seuls les statuts deja presents dans ce master sont testes.
+public int nombreCommandesClosesFiabilite() {
+    int closes = 0;
+    try {
+        for (CommandeAgent cmd : commandes) {
+            if (cmd == null || estOrdreStockAutonome(cmd)) continue;
+            String s = cmd.statut == null ? "" : cmd.statut;
+            if ("SERVIE".equals(s) || "EN_RETARD".equals(s)
+                    || "REFUSEE".equals(s) || s.startsWith("BLOQUE")) closes++;
+        }
+    } catch (Throwable ignored) {}
+    return closes;
+}
+
+// Bloc B.1 -- Nombre d'UNITES reellement livrees a des clients (somme des qte
+// des commandes clientes closes, hors REAPPRO_). Fondation pour Bloc B.2
+// (CO.1.1 : le cout cumule est accumule par unite passee sur chaque poste,
+// alors que le chiffre d'affaire estime aujourd'hui avec nbTermines -- un
+// compteur hybride, incremente par unite en production mais une seule fois
+// par commande en livraison directe MTS -- sous-estime le CA en MTS pur).
+// Non consommee dans ce bloc : CO.1.1 lui-meme n'est pas modifie ici.
+public int unitesLivreesClients() {
+    int unites = 0;
+    try {
+        for (CommandeAgent cmd : commandes) {
+            if (cmd == null || estOrdreStockAutonome(cmd)) continue;
+            if ("SERVIE".equals(cmd.statut) || "EN_RETARD".equals(cmd.statut)) unites += Math.max(0, cmd.qte);
+        }
+    } catch (Throwable ignored) {}
+    return unites;
 }
 
 public int nombreCommandesClientes() {
@@ -12168,6 +12246,18 @@ try { generateurCommandes.reset(); } catch (Throwable ignored) {}
 try { tickAppro.reset(); } catch (Throwable ignored) {}
 
 board.reset();
+// Bloc B.1 -- remise a zero des fondations PI/SCOR par run (memes champs
+// qu'introduits sur StrategicAgent ; voir son AdditionalClassCode). Inerte
+// tant que le Bloc B.2 ne cable pas leur lecture dans calculerPIGlobal().
+if (strategic != null) {
+    strategic.donneesRLPresentesPrecedent = false;
+    strategic.donneesRSPresentesPrecedent = false;
+    strategic.donneesAMPresentesPrecedent = false;
+    strategic.dernierLogDetailSCOR = -999.0;
+    strategic.perimetrePIDejaComplet = false;
+    strategic.attributsPonderesPI = "";
+    strategic.sommePoidsEffectifsPI = 0;
+}
 resetSuiviSimulation();
 if (fluxLogs != null) fluxLogs.clear();
 if (tracesBrutes != null) tracesBrutes.clear();
@@ -49119,6 +49209,24 @@ void recevoirMessageHierarchique(AERMessage msg) {
     nbMessagesHierarchiquesRecus++;
     dernierMessageHierarchique = msg.toString();
 }
+
+// ============================================================
+// Bloc B.1 -- FONDATIONS PI/SCOR (warm-up, poids effectifs, seuil RL petits
+// echantillons, tracabilite du perimetre). Portees isolement du modele
+// collegue ; AUCUNE n'est encore lue/ecrite par calculerPIGlobal() ou tout
+// autre code de ce master (verifie par grep) -- champs inertes tant que le
+// Bloc B.2 ne cable pas leur usage dans le calcul du PI. Reinitialisees a
+// chaque run par demarrerSimulation(), a l'identique de scoreRL/scoreRS/etc.
+// ci-dessous (deja presents dans ce master).
+// ============================================================
+String attributsPonderesPI = "";
+double sommePoidsEffectifsPI = 0;
+int seuilMinEchantillonRL = 1;
+boolean perimetrePIDejaComplet = false;
+boolean donneesRLPresentesPrecedent = false;
+boolean donneesRSPresentesPrecedent = false;
+boolean donneesAMPresentesPrecedent = false;
+double dernierLogDetailSCOR = -999.0;
 ]]></AdditionalClassCode>
 			<Generic>false</Generic>
 			<GenericParameter>
@@ -53699,6 +53807,20 @@ public class LoiTemps implements java.io.Serializable {
     public LoiTemps() {}
     public LoiTemps(String distribution, double p1, double p2) {
         this.distribution = distribution; this.p1 = p1; this.p2 = p2;
+    }
+
+    // Bloc B.1 -- Esperance theorique de la loi, utilisee comme reference NOMINALE
+    // pour normaliser les temps de cycle SCOR (dureeTraitementNominale()) : elle
+    // donne la duree que le poste est cense prendre d'apres le scenario,
+    // independamment du tirage aleatoire (echantillon() ci-dessous).
+    public double esperance() {
+        switch (distribution) {
+            case "uniform":     return (p1 + p2) / 2.0;
+            case "triangular":  return (p1 + p2 + p3) / 3.0; // min p1, max p2, mode p3
+            case "exponential": return p1;
+            case "constant":    return p1;
+            default:            return p1;
+        }
     }
 
     public double echantillon(Random rng) {

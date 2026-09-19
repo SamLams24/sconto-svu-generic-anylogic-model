@@ -4269,6 +4269,346 @@ n'était pas non plus vérifiable depuis cet environnement.
 **C.4 = TERMINÉ / VALIDÉ STATIQUEMENT. C.4-FIX = TERMINÉ / VALIDÉ.
 C.5+ = NON COMMENCÉS. BLOC C = EN COURS.**
 
+### C.5 — Audit sémantique d'intégration SCOR / PI (2026-09-19)
+
+**Bloc d'audit uniquement. Le `.alp` n'a subi aucune modification** (voir
+Validations statiques en fin de section). Méthode : lecture directe du
+code à HEAD `9a783a3`, jamais de supposition sur le nom d'une fonction.
+
+#### 1. Inventaire des indicateurs concernés
+
+| Fonction/variable | Emplacement | Population lue | Rôle |
+|---|---|---|---|
+| `verifierFillRate()` | Main | Commandes clientes (`estCommandeClient`), statut ∈ {SERVIE, EN_RETARD} | RL.2.2, seule métrique RL pondérée dans le PI |
+| `tauxCommandesLivreesCloses()` | Main | Commandes non-REAPPRO, statut ∈ {SERVIE, EN_RETARD, REFUSEE, BLOQUE_*} (via `nombreCommandesClosesFiabilite()`) | RL.2.1/3.33/3.35, informatives, poids 0 |
+| `nombreCommandesClosesFiabilite()` | Main (Bloc B.1, refactorée C.3-FIX) | Idem, via `commandeEstTerminale()` | Compteur d'échantillon (`seuilMinEchantillonRL`), ET dénominateur de `tauxCommandesLivreesCloses()` |
+| `leadTimeClientReelSec` | `CommandeAgent` | Écrit une seule fois par commande, dans `actualiserRegistreTempsCommande()`, appelée depuis `enregistrerFinCommandeGlobale()` (2 sites de clôture uniquement) | Alimente `board.kpiGlobal` via `board.notifierFin()` → RS.1.1/RS.3.94 |
+| `board.kpiGlobal` (`avgLeadTime()`/`avgWaitTime()`) | BlackboardAgent | Alimenté **exclusivement** à la clôture (`notifierFin()`) | RS.1.1 (`orderFulfillmentLeadTimeGlobal()`), RS.3.94 (`tempsAttenteGlobalCoherent()`) |
+| `board.kpiParMicroActivite` | BlackboardAgent | Alimenté par `notifierPassage()`, appelée à **chaque passage d'unité sur un poste**, indépendamment du statut de clôture de la commande parente | RS.2.1/2.2/2.3/2.5 (macro cycle time), périmètre `ActeurSC.ENTREPRISE_FOCALE` |
+| `calculerPIGlobal()` | StrategicAgent | Agrège RL/RS/AG/CO/AM | PI global |
+| `commandeEstTerminale()` | Main (Bloc C.3-FIX) | `SERVIE, EN_RETARD, REFUSEE, BLOQUE_*` | Source canonique unique de terminalité |
+| `commandeOuverteEstEnRetardMaintenant()`/indicateurs C.4 | Main (Bloc C.4/C.4-FIX) | Commandes clientes non-REAPPRO, non terminales | Backlog courant — **non consommés par aucune métrique historique** (confirmé par grep : aucune occurrence de ces noms dans `calculerPIGlobal()`, `verifierFillRate()`, `tauxCommandesLivreesCloses()`) |
+
+#### 2. Formule exacte actuelle de RL
+
+```
+verifierFillRate() [= RL.2.2, seule metrique RL ponderee] :
+  population   = { cmd ∈ commandes : estCommandeClient(cmd) ∧ statut ∈ {SERVIE, EN_RETARD} }
+  numerateur   = |{ cmd ∈ population : statut = SERVIE }|
+  denominateur = |population|
+  résultat     = numerateur / denominateur, NaN si denominateur = 0
+  (statut figé au moment de la livraison — jamais recomparé à time())
+
+tauxCommandesLivreesCloses() [= RL.2.1/RL.3.33/RL.3.35, poids 0, informatif] :
+  population   = { cmd : ¬estOrdreStockAutonome(cmd) ∧ commandeEstTerminale(cmd) }
+               = statut ∈ {SERVIE, EN_RETARD, REFUSEE, BLOQUE_*}
+  numerateur   = |{ cmd ∈ population : statut ∈ {SERVIE, EN_RETARD} }|
+  denominateur = |population|  [= nombreCommandesClosesFiabilite()]
+  résultat     = numerateur / denominateur, NaN si denominateur = 0
+
+Gate d'echantillon (calculerPIGlobal) :
+  commandesClosesPresentes = nombreCommandesClosesFiabilite() >= seuilMinEchantillonRL (=1)
+  Si commandesClosesPresentes = faux : RL.2.2 poids effectif = 0 (exclu du PI),
+    mais affiche neanmoins fillRate en "provisoire, hors PI".
+
+scoreRL = agregerN3([RL.2.1(poids 0), RL.2.2(poids 1 si gate ok), RL.3.33(poids 0), RL.3.35(poids 0)])
+```
+
+**Réponses C.5.2** : (1) Le dénominateur de la métrique *pondérée*
+(RL.2.2) ne contient QUE `{SERVIE, EN_RETARD}`, pas les 2 autres états
+terminaux ; le dénominateur de la garde d'échantillon (`nombreCommandesClosesFiabilite()`)
+contient les 4 — **nuance interne documentée ci-dessous en §10**. (2)
+Oui, seulement les commandes terminales (jamais les commandes ouvertes,
+confirmé par le filtre `statut ∈ {SERVIE, EN_RETARD}`). (3) Oui, `SERVIE`
+est le succès. (4) Oui, `EN_RETARD` est l'échec pour RL.2.2. (5)
+`REFUSEE`/`BLOQUE_*` interviennent dans le dénominateur de
+`tauxCommandesLivreesCloses()` (informative) et dans la garde d'échantillon,
+mais jamais dans RL.2.2 elle-même. (6) Fill Rate **est** RL.2.2 (même
+fonction). (7) Non — une commande ouverte n'entre dans aucune des deux
+populations. (8) RL est **100% un résultat historique réalisé** — aucune
+commande ouverte, aucune notion de temps courant.
+
+#### 3. Formule exacte actuelle de RS
+
+```
+RS.2.1/RS.2.2/RS.2.3/RS.2.5 (par macro sS/sM/sD/sR) :
+  bundle_macro = somme des KPIBundle de board.kpiParMicroActivite pour les
+                 postes dont categorieActeurResponsable = ENTREPRISE_FOCALE
+  cycle_macro  = (bundle_macro.sumCycleTime + bundle_macro.sumWaitTime)
+                 / unites_entrees_dans_le_macro
+  borne_normalisation = facteurToleranceCycleMacro × nominal_pondere_par_unite
+                        (decroissance hyperbolique au-dela, Bloc B.1/B.2)
+  -> population = UNITES ayant termine leur passage sur au moins un poste
+     du macro, QUEL QUE SOIT le statut de clôture de la commande parente
+     (notifierPassage() est appelé a chaque sortie de poste, pas a la
+     cloture de la commande).
+
+RS.1.1 (Order Fulfillment Cycle Time) = orderFulfillmentLeadTimeGlobal()
+  = board.kpiGlobal.avgLeadTime() = avgCycleTime()+avgWaitTime()
+RS.3.94 (Order Fulfillment Dwell Time) = tempsAttenteGlobalCoherent()
+  = board.kpiGlobal.avgWaitTime()
+  -> population = board.kpiGlobal, alimente EXCLUSIVEMENT par
+     board.notifierFin(), appelee UNIQUEMENT depuis enregistrerFinCommandeGlobale(),
+     elle-meme appelee UNIQUEMENT aux 2 sites de cloture (audit C.1) —
+     100% commandes clientes CLOSES.
+
+scoreRS = agregerN3([RS.2.1..RS.2.5 (si macro execute), RS.1.1, RS.3.94 (si ≥1 commande close)])
+```
+
+**Réponse C.5.3 (question centrale)** : **RS est HYBRIDE, pas uniforme**.
+RS.1.1/RS.3.94 (2 des 6 métriques) mesurent une durée **effectivement
+observée après clôture** (100% réalisé, même population que RL). RS.2.1
+à RS.2.5 (4 des 6) mesurent une durée réalisée **au niveau de l'UNITÉ**
+(un passage de poste terminé), **indépendamment de la clôture de la
+commande parente** — une unité appartenant à une commande encore ouverte
+contribue déjà à RS.2.x dès qu'elle a fini de traverser un poste. Ce
+n'est ni une estimation en cours de traitement (l'unité a réellement fini
+CE poste), ni un résultat post-clôture au niveau commande. **C'est une
+troisième population, distincte de RL/RS.1.1 (commande close) et du
+backlog C.4 (commande ouverte)** — un fait important pour §10.
+
+#### 4. Formule exacte actuelle du Fill Rate
+
+Voir §2 — `verifierFillRate()` **est** RL.2.2. Il n'existe pas de
+fonction "Fill Rate" distincte de RL dans ce master : le nom historique
+"Fill Rate" désigne, dans le code réellement exécuté, la ponctualité de
+livraison parmi les commandes clientes closes (SERVIE/EN_RETARD), pas une
+définition théorique de taux de service logistique (ex. taux de
+satisfaction depuis le stock). Ne pas supposer l'inverse à partir du nom.
+
+#### 5. Arbre de dépendance de `calculerPIGlobal()`
+
+```
+calculerPIGlobal()
+├── RL  = agregerN3([RL.2.1(w0), RL.2.2(w=poidsEffectifN3(...)), RL.3.33(w0), RL.3.35(w0)])
+│         ├── verifierFillRate()              -> RL.2.2
+│         └── tauxCommandesLivreesCloses()     -> RL.2.1/3.33/3.35
+│              └── nombreCommandesClosesFiabilite() -> gate d'echantillon
+├── RS  = agregerN3([RS.2.1..2.5, RS.1.1, RS.3.94])
+│         ├── board.kpiParMicroActivite (perimetre ENTREPRISE_FOCALE)  -> RS.2.x
+│         ├── dureeTraitementNominale() + majBorneCycleMacro()          -> bornes RS.2.x
+│         ├── orderFulfillmentLeadTimeGlobal() (board.kpiGlobal)        -> RS.1.1
+│         └── tempsAttenteGlobalCoherent() (board.kpiGlobal)            -> RS.3.94
+├── AG  = agregerN3([AG.3.32, PROXY.AG.SYSTEM_UTILIZATION, PROXY.AG.STABILITE_DEBIT])
+│         ├── debit (nbTermines/board.totalTerminees/kpiGlobal.count, max des 3) -> AG.3.32
+│         ├── board.avgWIP() / capaciteTotale                                    -> PROXY.AG.SYSTEM_UTILIZATION
+│         └── coefficientAdaptabilite() (historiqueDebit, fenetre glissante)     -> PROXY.AG.STABILITE_DEBIT
+├── CO  = agregerN3([CO.1.1, CO.3.13(w0), CO.3.11(w0)])
+│         └── calculerCoutsCumules() + unitesLivreesClients() + chiffreAffaireParUnite -> CO.1.1
+├── AM  = agregerN3([PROXY.AM.DISPONIBILITE_MACHINE, AM.2.2, AM.3.18(w0)])
+│         ├── calculerDisponibiliteMachinesMoyenne() -> PROXY.AM.DISPONIBILITE_MACHINE
+│         └── calculerInventoryDaysOfSupply() (stockProduitFiniDisponibleTotal()/debit) -> AM.2.2
+└── PI  = defuzzifier(agregerGrades([gRL,gRS,gAG,gCO,gAM], [wEffRL,wEffRS,wEffAG,wEffCO,wEffAM]))
+          wEffX = sommePoids(X) > 0 ? w_X (poids utilisateur) : 0   [poids EFFECTIFS, Bloc B.2]
+          Avant perimetre complet (les 5 wEff>0) : PI = ciblePIGlobal (warm-up, Bloc B.1/B.2),
+            sauf attenteImpossible (CO structurellement bloque, JSON sans chiffreAffaireParUnite)
+```
+
+Aucun élément de cet arbre ne référence `retardConstate` ni aucune
+fonction C.4 (confirmé par grep exhaustif sur le corps entier de
+`calculerPIGlobal()`).
+
+#### 6. Populations utilisées par chaque métrique — synthèse
+
+| Métrique | Population | Instant de calcul |
+|---|---|---|
+| RL.2.2/RL.2.1/3.33/3.35 | Commandes clientes **closes** | Figé à la clôture |
+| RS.1.1/RS.3.94 | Commandes clientes **closes** | Figé à la clôture |
+| RS.2.1-2.5 | **Unités** ayant fini un passage de poste (commande parente ouverte ou close) | Continu, à chaque sortie de poste |
+| AG.3.32 (débit) | Unités terminées (compteur cumulatif croissant) | Instantané (ratio glissant sur `time()`) |
+| PROXY.AG.SYSTEM_UTILIZATION | WIP courant du système | **Instantané** |
+| PROXY.AG.STABILITE_DEBIT | Historique glissant des derniers débits observés | Fenêtre glissante récente |
+| CO.1.1 | Coûts et unités livrées **cumulés depuis le début du run** | Cumulatif croissant |
+| AM.2.2 | Stock fini courant / débit courant | **Instantané** |
+| C.4 (`nombreCommandesOuvertes()` etc.) | Commandes clientes **ouvertes** | Instantané |
+
+**Constat important pour §10** : le PI **mélange déjà plusieurs horizons
+temporels entre familles** (RL/RS.1.1/RS.3.94 = historique pur ; AM.2.2 /
+PROXY.AG.SYSTEM_UTILIZATION = instantané ; RS.2.x = réalisé au niveau
+unité indépendamment de la commande ; CO.1.1/AG.3.32 = cumulatif). Ce
+mélange est **inter-familles**, jamais **intra-métrique** : chaque ratio
+individuel (numérateur/dénominateur d'une même fonction) porte toujours
+sur UNE SEULE population cohérente. C'est cette dernière propriété — pas
+l'absence de mélange temporel globale — que toute intégration future doit
+respecter.
+
+#### 7. Classification (historique / courant / responsiveness / service)
+
+| Indicateur | Catégorie | Justification |
+|---|---|---|
+| RL.2.2 (Fill Rate) | **A — Historique/réalisé** | Commandes closes uniquement |
+| RL.2.1/3.33/3.35 | **A — Historique/réalisé** | Idem, informatif |
+| RS.1.1/RS.3.94 | **A — Historique/réalisé** | Commandes closes uniquement |
+| RS.2.1-2.5 | **C — Durée/Responsiveness** (réalisé au niveau unité, pas au niveau commande) | Mesure un temps de cycle réellement écoulé, mais sans attendre la clôture de la commande parente |
+| AG.3.32 | **C/D** (débit = responsiveness/throughput) | Débit de sortie observé, cumulatif glissant |
+| PROXY.AG.SYSTEM_UTILIZATION | **B — Courant** (mais WIP production, pas backlog client) | Snapshot instantané du système, sans rapport avec l'engagement client |
+| PROXY.AG.STABILITE_DEBIT | **A/C** (historique récent) | Fenêtre glissante des derniers débits, ni pur instant ni pur historique figé |
+| CO.1.1 | **A — Historique/réalisé** (cumulatif) | Coûts et unités cumulés depuis le début du run |
+| AM.2.2 | **B/D — Courant/Service** | Stock et débit courants, snapshot instantané |
+| `nombreCommandesOuvertes()`/`nombreCommandesOuvertesEnRetard()`/`tauxCommandesOuvertesEnRetard()`/`retardCourantTotalOuvertSec()`/`retardCourantMoyenCommandesEnRetardSec()` (C.4) | **B — Courant/Backlog** | Commandes clientes **ouvertes** uniquement, instantané |
+| `retardConstate` | **B — Courant/mémorisé** | Signal binaire, backlog, mais avec latence jusqu'à 60s |
+
+**Constat** : le PI intègre déjà des métriques de catégorie B (AM.2.2,
+PROXY.AG.SYSTEM_UTILIZATION) — "courant" n'est donc pas en soi incompatible
+avec `calculerPIGlobal()`. Ce qui manque aujourd'hui est spécifiquement
+une métrique B **sur le backlog d'engagement CLIENT** (aucune des
+métriques B existantes ne porte sur des commandes clientes ouvertes).
+
+#### 8. Matrice de compatibilité C.4 avec RL/RS/Fill Rate/PI
+
+| Élément C | RL | RS | Fill Rate | PI global | Verdict |
+|---|---|---|---|---|---|
+| `retardConstate` | NON COMPATIBLE | NON COMPATIBLE | NON COMPATIBLE | À EXPOSER SÉPARÉMENT | Population (ouvertes) incompatible avec RL/RS/FillRate (closes uniquement) ; latence de 60s le rend de toute façon impropre à une métrique instantanée |
+| `commandeOuverteEstEnRetardMaintenant()` | NON COMPATIBLE | NON COMPATIBLE | NON COMPATIBLE | À EXPOSER SÉPARÉMENT | Prédicat instantané par commande, pas une métrique agrégée en soi |
+| `nombreCommandesOuvertes()` | NON COMPATIBLE | NON COMPATIBLE | NON COMPATIBLE | À EXPOSER SÉPARÉMENT | Dénominateur "ouvertes" incompatible avec toute métrique RL/RS/FillRate actuelle (toutes gated "closes") |
+| `nombreCommandesOuvertesEnRetard()` | NON COMPATIBLE | NON COMPATIBLE | NON COMPATIBLE | À EXPOSER SÉPARÉMENT | Idem |
+| `tauxCommandesOuvertesEnRetard()` | NON COMPATIBLE | NON COMPATIBLE | NON COMPATIBLE | À EXPOSER SÉPARÉMENT | Ratio 0..1 déjà compatible en FORME avec RL.2.2, mais en POPULATION totalement disjoint (ouvertes vs closes) — les fusionner mélangerait deux univers d'échantillonnage |
+| `retardCourantTotalOuvertSec()` | NON COMPATIBLE | NON COMPATIBLE (unité `s` compatible, population non) | NON COMPATIBLE | À EXPOSER SÉPARÉMENT | Unité homogène avec RS (secondes) mais population disjointe (ouvertes vs closes/unités) |
+| `retardCourantMoyenCommandesEnRetardSec()` | NON COMPATIBLE | NON COMPATIBLE | NON COMPATIBLE | À EXPOSER SÉPARÉMENT | Idem |
+
+**Aucun élément C.4 n'est COMPATIBLE tel quel** avec une injection directe
+dans RL/RS/Fill Rate/PI global : toutes les fonctions historiques
+existantes reposent sur une population "commande close" (RL, RS.1.1/3.94)
+ou "unité ayant terminé un poste" (RS.2.x), jamais "commande cliente
+encore ouverte".
+
+#### 9. `retardConstate` vs `EN_RETARD`
+
+| Situation | `retardConstate` | statut `EN_RETARD` possible ? | terminale ? |
+|---|---:|---:|---:|
+| 1. Ouverte, à temps | `false` | Non (jamais assigné à une commande ouverte) | Non |
+| 2. Ouverte, `tPromise` dépassé, avant le prochain cycle de l'Event C.3 | `false` (latence ≤60s, Bloc C.4-FIX documentée) | Non | Non |
+| 3. Ouverte, constatée en retard (après passage de l'Event C.3) | `true` | Non — le statut opérationnel reste inchangé (`EN_COURS`/`EN_ATTENTE`/etc.) | Non |
+| 4. Clôturée à temps | `false` (fixé à la clôture par le Bloc C.2 : `time()<=tPromise`) | Non — devient `SERVIE` | Oui |
+| 5. Clôturée tardivement | `true` (fixé à la clôture par le Bloc C.2 : `time()>tPromise`) | **Oui** — devient `EN_RETARD` | Oui |
+
+**Preuve de non-interchangeabilité** : la situation 3 montre
+`retardConstate=true` alors que `EN_RETARD` est **impossible** (la
+commande n'est pas terminale, aucun code de ce master n'assigne
+`EN_RETARD` à une commande ouverte, confirmé par grep exhaustif — Bloc
+C.3.3). `EN_RETARD` implique toujours `retardConstate=true` (situation
+5), mais la réciproque est fausse (situation 3). Les deux ne coïncident
+que sur commande terminale.
+
+#### 10. Risques de double comptage / mélange de populations
+
+- **Hypothèse testée (C.5.8)** : `RL = livrées à temps / (closes + ouvertes en retard)`.
+  **Verdict : sémantiquement incorrecte, à rejeter.** Elle mélangerait,
+  au sein d'un **même ratio**, un numérateur figé (événements déjà
+  survenus, jamais réévalués) et un dénominateur partiellement mobile
+  (les commandes "ouvertes en retard" changent de composition à chaque
+  instant, y compris des commandes qui n'existaient pas encore lors du
+  calcul du numérateur historique). Contrairement au mélange
+  **inter-familles** déjà présent dans le PI (§6), qui combine des
+  scores DÉJÀ agrégés via des poids fixes, cette hypothèse mélangerait
+  des POPULATIONS BRUTES dans un seul calcul — un précédent qui
+  n'existe nulle part ailleurs dans ce master (chaque fonction "taux..."
+  auditée ici tire son numérateur ET son dénominateur de la MÊME
+  population). L'implémenter romprait cette convention implicite mais
+  jusqu'ici universelle.
+- **Nuance interne à RL déjà existante (documentée, non un bug)** : la
+  garde d'échantillon `nombreCommandesClosesFiabilite()` (4 états
+  terminaux) et le ratio pondéré `verifierFillRate()` (2 états) ne
+  portent pas exactement sur la même population — la garde est
+  volontairement plus large ("y a-t-il eu au moins un événement terminal
+  quelconque"), le ratio plus étroit ("parmi les livraisons réelles,
+  combien à temps"). Ce n'est pas un double comptage (aucune commande
+  n'est comptée deux fois dans un même total), mais une différence de
+  périmètre entre le déclencheur et la métrique — à garder à l'esprit
+  si une future intégration touche l'un sans l'autre.
+- **RS.2.x et le backlog** : comme RS.2.x compte des UNITÉS (pas des
+  commandes) et n'attend pas la clôture de la commande parente, une
+  unité appartenant à une commande cliente ACTUELLEMENT en retard peut
+  déjà avoir contribué "normalement" à RS.2.x avant même que le retard
+  ne soit détecté — aucune incohérence en soi (RS.2.x mesure la vitesse
+  du flux physique, pas la ponctualité client), mais à ne jamais
+  présenter comme un signal de "retard client" par erreur.
+
+#### 11. Proposition d'architecture pour C.6
+
+**Architecture validée (proposition de l'énoncé confirmée après audit,
+pas rejetée)** :
+
+```
+Historique (INCHANGÉ, Bloc B figé) :
+  RL.2.1/2.2/3.33/3.35 (verifierFillRate/tauxCommandesLivreesCloses)
+  RS.1.1/2.1-2.5/3.94
+  AG.3.32/PROXY.AG.*
+  CO.1.1/3.13/3.11
+  AM.2.2/PROXY.AM.*/3.18
+  -> calculerPIGlobal() : AUCUNE modification de formule
+
+Courant/Backlog (Bloc C.4, deja existant, purement additif) :
+  nombreCommandesOuvertes()
+  nombreCommandesOuvertesEnRetard()
+  tauxCommandesOuvertesEnRetard()
+  retardCourantTotalOuvertSec()
+  retardCourantMoyenCommandesEnRetardSec()
+  -> exposition SEPAREE (nouvelle feuille/section dashboard/bilan/traces),
+     JAMAIS fusionnee dans un ratio RL/RS existant
+```
+
+Justification tirée du code réel : le PI a déjà une place structurelle
+pour des métriques "courantes" (AM.2.2, PROXY.AG.SYSTEM_UTILIZATION) mais
+**au niveau d'une famille SCOR entière avec son propre score et poids**,
+jamais en modifiant le calcul interne d'une métrique existante. Un futur
+sous-bloc pourrait donc, **s'il est explicitement demandé**, envisager
+d'ajouter une 6ᵉ dimension ou une métrique supplémentaire au sein d'AG
+(agilité = capacité à réagir à un backlog émergent serait défendable
+conceptuellement), mais cela sort du périmètre purement observationnel
+de C.4/C.5 et nécessiterait sa propre validation dédiée — non proposé
+ici, seulement noté comme option future envisageable.
+
+#### 12. Question PI global — décision argumentée
+
+**Réponse : PAS ENCORE / INDICATEUR SÉPARÉ.**
+
+Arguments tirés du code : (1) aucune famille SCOR existante ne représente
+aujourd'hui le risque de backlog d'engagement client — l'ajouter
+nécessiterait une décision de conception explicite (nouvelle famille ? 6ᵉ
+attribut dans AG ? nouveau poids `w_BACKLOG` ?), pas une simple
+injection ; (2) injecter `tauxCommandesOuvertesEnRetard()` dans RL
+mélangerait deux populations dans un même ratio, un précédent inexistant
+dans ce master (§10) ; (3) la qualité de `tPromise` (voir §13) reste une
+dette non résolue — pondérer un indicateur de ponctualité courant dans le
+PI global avant de fiabiliser sa source d'engagement amplifierait
+prématurément une donnée encore fragile. Rien n'empêche à terme une
+intégration réfléchie, mais elle doit être un choix de conception
+explicite et documenté, pas une conséquence automatique de la
+disponibilité technique des fonctions C.4.
+
+#### 13. Dette legacy `tPromise` (rappel, non résolue)
+
+Confirmée inchangée : `modeSCORActif() → cmd.typeCommande → delaiPromessePourMode(cmd.typeCommande) → tPromise`,
+valeurs 300/1800/3600s, dépendantes du mode de run global (MTS/MTO/ETO),
+aucune source JSON/contractuelle par client (audit C.1/C.3.0). **Toute
+proposition d'intégration SCOR/PI d'un indicateur de ponctualité —
+historique ou courant — hérite directement de cette dette** : la qualité
+de `retardConstate`/`commandeOuverteEstEnRetardMaintenant()` ne peut pas
+dépasser celle de la promesse qu'ils mesurent. Cette dette reste visible
+et non traitée, réservée à un bloc futur (au-delà de C.5/C.6).
+
+#### Ce qui n'a PAS été modifié
+
+Confirmé par `git status`/`git diff` : **le `.alp` est strictement
+inchangé** — aucune ligne touchée dans `calculerPIGlobal()`,
+`verifierFillRate()`, `tauxCommandesLivreesCloses()`,
+`nombreCommandesClosesFiabilite()`, `commandeEstTerminale()`,
+`evaluerRetardsCommandesOuvertes()`, `evtEvaluationRetardsCommandesOuvertes`,
+`tPromise`, les statuts, `retardConstate`, les fonctions C.4, ni aucun
+mécanisme A/M/B.
+
+#### Validations statiques
+
+- `.alp` : **0 diff** (`git status --porcelain -- model/SCONTO_SVU_GENERIC_MASTER.alp` vide avant et après ce bloc)
+- Seul `MERGE_PROGRESS.md` modifié dans ce commit
+
+**Build AnyLogic de `9a783a3`** : toujours **À CONFIRMER PAR
+L'UTILISATEUR** — non exécutable depuis ce terminal, sans lien avec ce
+bloc d'audit (aucune modification fonctionnelle à builder).
+
+**C.5 = AUDIT COMPLET. C.6+ = NON COMMENCÉS. BLOC C = EN COURS.**
+
 ### Statut Bloc C
 
 - [x] **C.1 — Audit sémantique retards / engagement client : TERMINÉ / AUDIT VALIDÉ**
@@ -4277,9 +4617,9 @@ C.5+ = NON COMMENCÉS. BLOC C = EN COURS.**
 - [x] **C.3-FIX — Source canonique des états terminaux : TERMINÉ / VALIDÉ**
 - [x] **C.4 — Indicateurs dérivés du retard courant : TERMINÉ / VALIDÉ STATIQUEMENT**
 - [x] **C.4-FIX — Cohérence instantanée du retard courant : TERMINÉ / VALIDÉ**
-- [ ] C.5+ — non commencés
-- [ ] Export/PI cohérent (intégration de `retardConstate`/indicateurs C.4 dans RL/dashboards — hors périmètre C.4)
-- [ ] Build + run utilisateur (C.2, C.3, C.3-FIX, C.4 et C.4-FIX)
+- [x] **C.5 — Audit sémantique d'intégration SCOR / PI : TERMINÉ / AUDIT VALIDÉ**
+- [ ] C.6+ — non commencés
+- [ ] Build + run utilisateur (C.2, C.3, C.3-FIX, C.4 et C.4-FIX — toujours en attente)
 
 **BLOC C = EN COURS.**
 

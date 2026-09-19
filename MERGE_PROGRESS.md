@@ -3267,7 +3267,89 @@ suppressions, vérifié par `git diff`).
 
 **PR reste DRAFT. Aucun merge vers `main`.**
 
-- [ ] Dernier run export court utilisateur — si Catalogue RS.2.1/2.2/2.3 == Pipeline RS.2.1/2.2/2.3 et CO.1.1 reste identique : **BLOC B = TERMINÉ / VALIDÉ / FIGÉ**
+## CLÔTURE OFFICIELLE DU BLOC B — VALIDATION RUNTIME FINALE B.3-FIX2 (2026-09-19)
+
+Dernier export utilisateur vérifié. Alignement confirmé sur les 4 surfaces
+(Pipeline, Traçabilité, Catalogue SCOR, Métriques SCOR calculables) :
+
+| Métrique | Pipeline | Traçabilité | Catalogue | Calculables |
+|---|---|---|---|---|
+| RS.2.1 | 5.000 | 5.000 | 5.000 | 5.000 |
+| RS.2.2 | 996.721 | 996.721 | 996.721 | 996.721 |
+| RS.2.3 | 4794.008 | 4794.008 | 4794.008 | 4794.008 |
+| CO.1.1 | 0.047 | 0.047 | 0.047 | 0.047 |
+
+**Catalogue RS.2.x == PI live. CO.1.1 reste parfaitement aligné.**
+
+RS.2.5 : Return non exécuté sur ce run → Catalogue affiche "Non calculée",
+absente de Métriques SCOR calculables — aucune valeur artificielle,
+comportement attendu **VALIDÉ**.
+
+**Pipeline ↔ Traçabilité** : 18 métriques communes comparées, 0 divergence
+sur valeur brute / unité / Bottom→Perfect / score / grades fuzzy / poids /
+contribution / source — **VALIDÉ runtime**.
+
+**Sources/formules validées** : RS.2.1/2.2/2.3 (cycle macro
+(traitement+attente)/unités, périmètre ENTREPRISE_FOCALE, nominal via
+`dureeTraitementNominale()` pondéré + `majBorneCycleMacro()` + décroissance
+lente), AG.3.32 (max des 3 candidats × 3600/time()), CO.1.1
+(`unitesLivreesClients()`, REAPPRO exclus), AM.2.2
+(`stockProduitFiniDisponibleTotal()` / débit journalier).
+
+**Scan classeur final** : `#REF!`=0, `#DIV/0!`=0, `#VALUE!`=0, `#NAME?`=0,
+`#N/A`=0.
+
+### Statut final
+
+- **B.1 = TERMINÉ / VALIDÉ / FIGÉ**
+- **B.2 = TERMINÉ / VALIDÉ / FIGÉ**
+- **B.2-FIX = TERMINÉ / VALIDÉ / FIGÉ**
+- **B.3 = TERMINÉ / VALIDÉ / FIGÉ**
+- **B.3-FIX = TERMINÉ / VALIDÉ / FIGÉ**
+- **B.3-FIX2 = TERMINÉ / VALIDÉ / FIGÉ**
+
+## **BLOC B — PI / SCOR = TERMINÉ / VALIDÉ / FIGÉ**
+
+Ne plus modifier les mécanismes du Bloc B (`calculerPIGlobal()`,
+`prevoirDemande()`, `ajusterDebits()`, `calculerInventoryDaysOfSupply()`,
+`majBorneCycleMacro()`, `NormalizationProfile.decroissanceLente`,
+`tauxCommandesLivreesCloses()`, `valeurRuntimePIDetail()`, les mappings
+d'export SCOR) sauf bug runtime réellement démontré.
+
+**Garanties apportées par le Bloc B** :
+- demande cliente (`prevoirDemande()`) découplée de la production —
+  élimine la boucle de rétroaction production→prévision→stock
+  cible→production ;
+- lecture stock multi-produit correcte dans `ajusterDebits()`
+  (`stockFiniDisponiblePourScenario()`, jamais l'agrégat sommé N fois) ;
+- périmètre du PI restreint à l'entreprise focale
+  (`ActeurSC.ENTREPRISE_FOCALE`), plus d'agrégation aveugle de toute la
+  chaîne étendue ;
+- poids effectifs (absence de donnée ≠ score nul) et warm-up (PI maintenu
+  à la cible tant que le périmètre de mesure n'est pas complet) ;
+- RL.2.2 (ponctualité) réellement pondérée dans le PI ; RL.2.1/3.33/3.35
+  (complétude/proxies) informatives, jamais confondues ;
+- RS fondée sur temps de traitement + temps d'attente cumulés, pas la
+  seule moyenne de traitement ;
+- proxies AG/AM (`PROXY.AG.STABILITE_DEBIT`, `PROXY.AG.SYSTEM_UTILIZATION`,
+  `PROXY.AM.DISPONIBILITE_MACHINE`) explicitement étiquetés, jamais
+  présentés comme des métriques SCOR normatives ;
+- CO fondé sur les unités réellement livrées aux clients
+  (`unitesLivreesClients()`), pas un compteur hybride production/commande ;
+- catalogue SCOR et exports (Pipeline, Traçabilité, Catalogue, Métriques
+  calculables) alignés avec le PI live — une seule source de vérité
+  numérique par métrique.
+
+**Dette connue, non résolue, conservée pour référence future** :
+incohérence du stock stratégique loggé en mode MONO dans certains logs
+(stock loggé ≠ Finished Stock Dashboard, ex. log T=1740 stock=185 vs
+Dashboard ≈37) — logique legacy mono, invariant "mono = comportement
+préservé" du Bloc B respecté à dessein, à auditer dans le Bloc D ou une
+revue architecturale post-merge.
+
+**PR reste DRAFT. Aucun merge vers `main`. Bloc C non commencé.**
+
+- [x] Bloc B — PI / SCOR : **TERMINÉ / VALIDÉ / FIGÉ**
 - [ ] Dette documentée : incohérence stock stratégique mono (log T=1740 stock=185 vs Dashboard ≈37) — audit architectural futur, hors Bloc B
 
 ## Bloc C — retards

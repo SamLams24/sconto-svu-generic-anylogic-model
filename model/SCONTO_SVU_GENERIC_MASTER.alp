@@ -9927,14 +9927,22 @@ public boolean estOrdreStockAutonome(CommandeAgent cmd) {
     return cmd != null && cmd.idCommande != null && cmd.idCommande.startsWith("REAPPRO_");
 }
 
-// Bloc C.3 -- reutilise EXACTEMENT le meme ensemble d'etats terminaux deja
-// etabli et valide en Bloc B (nombreCommandesClosesFiabilite()/
-// tauxCommandesLivreesCloses(), Blocs B.1/B.3-FIX2 -- SERVIE, EN_RETARD,
-// REFUSEE, BLOQUE_*), expose ici sous une forme reutilisable PAR COMMANDE
-// (predicat booleen) : cette classification n'existait jusqu'ici que sous
-// forme de compteur global. Aucune nouvelle notion de "commande terminale"
-// n'est introduite ; nombreCommandesClosesFiabilite()/tauxCommandesLivreesCloses()
-// (Bloc B, FIGE) ne sont ni modifiees ni redefinies differemment.
+// Bloc C.3-FIX -- SOURCE UNIQUE des etats terminaux (SERVIE, EN_RETARD,
+// REFUSEE, BLOQUE_*), deja etablis et valides en Bloc B. Avant ce
+// correctif, ce meme ensemble de 4 etats etait duplique en ligne dans
+// nombreCommandesClosesFiabilite() (Bloc B.1) ET ici (Bloc C.3) --
+// classification identique mais recopiee deux fois, risque de derive
+// future si l'un des deux exemplaires etait modifie sans l'autre.
+// commandeEstTerminale() devient desormais la SEULE definition ecrite de
+// cette classification ; nombreCommandesClosesFiabilite() (ci-dessous)
+// l'appelle au lieu de recopier la condition -- refactoring technique a
+// semantique strictement identique (memes commandes comptees, meme
+// resultat pour tout statut existant), aucun changement de la liste des
+// etats terminaux ni du comportement Bloc B. tauxCommandesLivreesCloses()
+// (Bloc B.3-FIX2) appelle deja nombreCommandesClosesFiabilite() et
+// beneficie donc transitivement de cette source unique sans modification
+// directe. Predicat PUR : ne lit que cmd.statut, n'ecrit rien, ne depend
+// ni de retardConstate ni de tPromise ni de time().
 public boolean commandeEstTerminale(CommandeAgent cmd) {
     if (cmd == null) return true;
     String s = cmd.statut == null ? "" : cmd.statut;
@@ -9978,14 +9986,20 @@ void evaluerRetardsCommandesOuvertes() {
 // reference technique collegue : son cmd.retardConstate (mecanisme de retard
 // continu, Bloc C) n'existe pas dans ce master et n'est pas introduit ici --
 // seuls les statuts deja presents dans ce master sont testes.
+// Bloc C.3-FIX -- la classification des 4 etats terminaux ci-dessus est
+// desormais deleguee a commandeEstTerminale() (source unique, voir son
+// commentaire) au lieu d'etre recopiee ici : refactoring technique a
+// semantique strictement identique, aucun changement de la liste des
+// etats ni du resultat pour un meme jeu de commandes (le filtre
+// cmd==null/estOrdreStockAutonome(cmd) ci-dessous reste inchange et
+// s'applique toujours AVANT l'appel, donc commandeEstTerminale() n'est
+// jamais invoquee avec cmd==null dans ce contexte).
 public int nombreCommandesClosesFiabilite() {
     int closes = 0;
     try {
         for (CommandeAgent cmd : commandes) {
             if (cmd == null || estOrdreStockAutonome(cmd)) continue;
-            String s = cmd.statut == null ? "" : cmd.statut;
-            if ("SERVIE".equals(s) || "EN_RETARD".equals(s)
-                    || "REFUSEE".equals(s) || s.startsWith("BLOQUE")) closes++;
+            if (commandeEstTerminale(cmd)) closes++;
         }
     } catch (Throwable ignored) {}
     return closes;

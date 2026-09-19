@@ -3822,14 +3822,153 @@ qu'une commande MTS n'atteigne son échéance.
 
 **C.3 = TERMINÉ / VALIDÉ STATIQUEMENT. C.4+ = NON COMMENCÉS. BLOC C = EN COURS.**
 
+### C.3-FIX — Source canonique des états terminaux (2026-09-19)
+
+#### Étape 1 — Audit exact avant modification
+
+Recherche exhaustive de toute expression répondant à *"cette commande
+est-elle clôturée/terminale ?"* dans `model/SCONTO_SVU_GENERIC_MASTER.alp`
+(HEAD `dec5f9f`). **2 classifications identiques trouvées** pour
+l'ensemble exact `SERVIE ∪ EN_RETARD ∪ REFUSEE ∪ BLOQUE_*` :
+
+| Emplacement | Expression | Rôle |
+|---|---|---|
+| `commandeEstTerminale(CommandeAgent)` (Bloc C.3) | `"SERVIE".equals(s) \|\| "EN_RETARD".equals(s) \|\| "REFUSEE".equals(s) \|\| s.startsWith("BLOQUE")` | Prédicat booléen par commande |
+| `nombreCommandesClosesFiabilite()` (Bloc B.1) | même expression, recopiée en ligne | Compteur agrégé |
+
+`tauxCommandesLivreesCloses()` (Bloc B.3-FIX2) **n'est PAS un 3ᵉ site** :
+elle appelle déjà `nombreCommandesClosesFiabilite()` pour son dénominateur
+(confirmé par lecture directe) et ne recopie **pas** la classification —
+aucune duplication à corriger là.
+
+**2 autres sites examinés et explicitement écartés** (ne répondent pas à
+la question "commande terminale ?", classifications différentes et
+légitimes pour un usage différent) :
+- La grande majorité des sites `"SERVIE".equals \|\| "EN_RETARD".equals`
+  seuls (sans `REFUSEE`/`BLOQUE_*`) — ex. `verifierFillRate()`,
+  `unitesLivreesClients()`, les gardes de fin de campagne du Bloc M.3 :
+  concept **"close via livraison"** (ponctualité/unités livrées), plus
+  étroit que "terminal", déjà cohérent et voulu tel quel — non touché.
+- `nombreCommandesOuvertesPourPerturbation()` (test de retard
+  fournisseur) : exclut `SERVIE`/`EN_RETARD`/`ANNULEE`/`CLOTUREE` —
+  ensemble **différent** (pas `REFUSEE`/`BLOQUE_*`, contient
+  `ANNULEE`/`CLOTUREE` — statuts jamais assignés nulle part dans ce
+  master, vestigiaux), usage différent (comptage pour un test de
+  perturbation fournisseur, sans rapport avec la fiabilité RL ou le
+  retard client) — non touché, hors périmètre de ce fix.
+
+#### Étape 2/3 — Source canonique retenue et consolidation
+
+**Aucune source canonique par-commande (booléenne) n'existait avant
+C.3** — seul un compteur global (`nombreCommandesClosesFiabilite()`,
+Bloc B.1). Le cas particulier ("une vraie source canonique existait déjà
+avant C.3") ne s'applique donc pas : **`commandeEstTerminale(CommandeAgent)`
+devient la source canonique unique**, conformément à l'Étape 2 (prédicat
+pur confirmé : ne lit que `cmd.statut`, n'écrit rien, ne dépend ni de
+`retardConstate`, ni de `tPromise`, ni de `time()`).
+
+**`nombreCommandesClosesFiabilite()` refactorée** pour appeler
+`commandeEstTerminale(cmd)` au lieu de recopier la condition — le filtre
+`cmd == null || estOrdreStockAutonome(cmd)` en tête de boucle reste
+inchangé et s'applique toujours AVANT l'appel, donc `commandeEstTerminale()`
+n'est jamais invoquée avec `cmd == null` dans ce contexte (son propre
+repli `if (cmd == null) return true;` reste un garde-fou pour tout futur
+appelant externe, jamais exercé ici).
+
+**Diff sémantique `nombreCommandesClosesFiabilite()`** :
+AVANT : boucle + classification recopiée en ligne (`"SERVIE".equals(s) || ...`).
+APRÈS : boucle + `if (commandeEstTerminale(cmd)) closes++;`.
+**Aucun changement de résultat** pour un même jeu de commandes — même
+ensemble de statuts testés, même ordre d'évaluation, aucune commande
+comptée ou exclue différemment. Pour les 4 statuts terminaux + un état
+ouvert quelconque (`EN_COURS`, `EN_ATTENTE`, `EN_LIVRAISON`,
+`EN_APPROVISIONNEMENT`, `MATIERES_DISPONIBLES`, `PRODUCTION_PLANIFIEE`) :
+`SERVIE`→compté (avant et après), `EN_RETARD`→compté, `REFUSEE`→compté,
+chaque `BLOQUE_*` réellement existant (`BLOQUE_CONFIG`, `BLOQUE_MATIERE`,
+`BLOQUE_NOMENCLATURE`)→compté, tout état ouvert→non compté — identique
+avant/après par construction (même expression booléenne, seulement
+déplacée dans une fonction nommée).
+
+**Diff sémantique `tauxCommandesLivreesCloses()`** : **aucun changement
+direct** — elle appelait déjà `nombreCommandesClosesFiabilite()` avant ce
+fix et continue de le faire ; elle bénéficie donc **transitivement** de la
+source unique sans qu'une seule de ses lignes ne soit modifiée.
+
+**Invariant central garanti structurellement** : `nombreCommandesClosesFiabilite()`/
+`tauxCommandesLivreesCloses()` (Bloc B) et `evaluerRetardsCommandesOuvertes()`
+(Bloc C.3, via `!commandeEstTerminale(cmd)`) utilisent désormais
+**littéralement le même appel de fonction** — il est structurellement
+impossible que Bloc B considère une commande terminale pendant que C.3 la
+considère ouverte (ou l'inverse), puisqu'il n'existe plus qu'un seul
+endroit où cette classification est écrite.
+
+#### Non-régression B — confirmée
+
+Ensemble des états terminaux **strictement inchangé** :
+`SERVIE, EN_RETARD, REFUSEE, BLOQUE_*` — 0 ajout, 0 retrait, 0
+reformulation de la condition elle-même (seulement extraite dans une
+fonction déjà existante et déjà identique). `calculerPIGlobal()`,
+`verifierFillRate()`, les mappings SCOR (Bloc B.3/B.3-FIX/B.3-FIX2) : 0
+ligne touchée.
+
+#### Validation C.3 — confirmée après refactor
+
+- Commande ouverte + `time() <= tPromise` → `commandeEstTerminale()` peut
+  être vraie ou fausse selon le statut (inchangé), mais
+  `evaluerRetardsCommandesOuvertes()` n'écrit `retardConstate` que si
+  `time() > tPromise` — comportement inchangé.
+- Commande ouverte + `time() > tPromise` → `retardConstate = true`,
+  inchangé (aucune ligne de `evaluerRetardsCommandesOuvertes()`
+  elle-même modifiée par ce fix — seule `commandeEstTerminale()`, qu'elle
+  appelait déjà, a été redocumentée comme canonique).
+- Commande terminale → ignorée par `evaluerRetardsCommandesOuvertes()`
+  via `commandeEstTerminale()`, **désormais la même fonction exacte** que
+  celle utilisée par le Bloc B pour la même question.
+- `Event evtEvaluationRetardsCommandesOuvertes` et sa fréquence (60s,
+  `Condition=modeExecution`) : **0 ligne modifiée**.
+
+#### Ce qui n'a PAS été modifié
+
+`retardConstate`, `modeEngagementClient`, `tPromise`,
+`evaluerRetardsCommandesOuvertes()` (elle-même, au-delà de bénéficier de
+la même fonction `commandeEstTerminale()` qu'elle appelait déjà),
+`evtEvaluationRetardsCommandesOuvertes` et sa fréquence, PI/SCOR/VSM,
+stocks, production, prévisions, auto-commande, multi-produit, A.1/A.2/M.
+
+#### Validations statiques
+
+- XML bien formé : OK
+- IDs AnyLogic uniques : 1684/1684 (inchangé — uniquement du texte
+  `AdditionalClassCode` modifié, aucun élément XML ajouté/retiré)
+- `git diff --check` : aucune erreur
+- Grep DataCo : 6 occurrences, toutes pré-existantes (inchangé)
+- Diff minimal : 25 insertions / 11 suppressions, concentrées en 2 zones
+  exactes (le commentaire de `commandeEstTerminale()` mis à jour ; les 3
+  lignes de classification recopiée dans `nombreCommandesClosesFiabilite()`
+  remplacées par 1 appel) — aucun bruit `<EmbeddedIcon>`, aucune
+  coordonnée graphique, aucun ID modifié
+- Aucune ligne de Bloc A/M touchée ; Bloc B touché **uniquement** dans la
+  mesure explicitement autorisée (refactoring à sémantique identique de
+  `nombreCommandesClosesFiabilite()`) — `calculerPIGlobal()`,
+  `prevoirDemande()`, `ajusterDebits()`, `stockFiniParProduit` absents du
+  diff
+- JSON/scénarios inchangés
+
+**BUILD RUNTIME À CONFIRMER PAR UTILISATEUR** — non exécuté depuis ce
+terminal.
+
+**C.3 = TERMINÉ / VALIDÉ STATIQUEMENT. C.3-FIX = TERMINÉ / VALIDÉ.
+C.4+ = NON COMMENCÉS. BLOC C = EN COURS.**
+
 ### Statut Bloc C
 
 - [x] **C.1 — Audit sémantique retards / engagement client : TERMINÉ / AUDIT VALIDÉ**
 - [x] **C.2 — Fondation sémantique engagement / retard : TERMINÉ / VALIDÉ**
 - [x] **C.3 — Détection des retards ouverts : TERMINÉ / VALIDÉ STATIQUEMENT**
+- [x] **C.3-FIX — Source canonique des états terminaux : TERMINÉ / VALIDÉ**
 - [ ] C.4+ — non commencés
 - [ ] Export/PI cohérent (intégration de `retardConstate` dans RL/dashboards — hors périmètre C.3)
-- [ ] Build + run utilisateur (C.2 et C.3)
+- [ ] Build + run utilisateur (C.2, C.3 et C.3-FIX)
 
 **BLOC C = EN COURS.**
 

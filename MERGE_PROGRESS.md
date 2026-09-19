@@ -3576,19 +3576,98 @@ tout sous-bloc d'implémentation :
 
 **C.1 = AUDIT COMPLET.**
 
+### C.2 — Fondation sémantique engagement / retard (2026-09-19)
+
+Fondation minimale uniquement, comme demandé : pas d'évaluation périodique,
+pas de nouveau compteur de temps, aucun changement A.1/A.2/Bloc M/Bloc B/
+PI/SCOR/VSM/stocks/production/réapprovisionnement/multi-produit.
+
+**`retardConstate` ajouté** — `CommandeAgent`, nouvelle `<Variable>`
+(`Id=2026083101011`, `boolean`, défaut `false`), juste après
+`ordresReapproImputes` et avant `tPromise` dans la déclaration de classe.
+Sémantique : `true` signifie uniquement que l'engagement porté par
+`tPromise` a été dépassé — jamais une attente de stock, jamais un lead
+time long, jamais lié à `EN_RETARD`. Signal strictement orthogonal au
+statut opérationnel.
+
+**`modeEngagementClient` ajouté** — `CommandeAgent`, nouvelle `<Variable>`
+(`Id=2026083101012`, `String`, défaut `""`), juste après. Valeur affectée
+à la création : `"LEGACY_MODE_SCOR"`, documentant explicitement que la
+promesse provient de la politique legacy
+`delaiPromessePourMode(modeSCORActif())` — jamais simplement `"MTS"`/
+`"MTO"`/`"ETO"`, pour ne pas reproduire la conflation mode
+industriel/engagement identifiée en C.1.
+
+**`tPromise` inchangé** : calcul `time() + delaiPromessePourMode(cmd.typeCommande)`
+strictement identique à avant C.2, à la même ligne, non déplacé. Constantes
+`delaiPromessePourMode()` non modifiées (MTS=300s, MTO=1800s, ETO=3600s).
+
+**`dureeClientAccumulee` volontairement NON ajoutée**, conformément à
+l'audit C.1 et à l'invariant C.2.6 : le retard courant reste dérivable
+(`max(0, time() - tPromise)`) sans nouvel état cumulatif.
+
+**Clôtures synchronisées** (C.2.3), aux 2 seuls sites identifiés en C.1,
+logique terminale historique strictement inchangée à côté :
+- `finaliserReceptionClientDirecte()` (livraison directe MTS) : ajout de
+  `cmd.retardConstate = time() > cmd.tPromise;` juste avant
+  `cmd.statut = (time() <= cmd.tPromise) ? "SERVIE" : "EN_RETARD";`
+  (inchangée).
+- Chemin de clôture post-production (MTO/Cas 2-3) : même ajout au même
+  endroit relatif, juste avant la même ligne de statut terminal
+  (inchangée).
+
+**Aucune évaluation périodique introduite** : ni `evaluerRetardsCommandesOuvertes()`,
+ni timer, ni event, ni boucle globale. Conséquence assumée et documentée :
+une commande encore ouverte après `tPromise` n'a pas encore de détection
+garantie — réservé à C.3.
+
+**`EN_RETARD` conservé comme état terminal historique**, jamais assigné à
+une commande encore ouverte par ce commit — les 2 lignes de statut
+terminal existantes ne sont pas remplacées, seulement précédées d'une
+ligne `retardConstate` supplémentaire et strictement additive.
+
+**Tests (raisonnement sur le code, à confirmer par Build/run utilisateur)** :
+
+| Test | Résultat attendu | Vérifié par |
+|---|---|---|
+| 1 — Commande à temps | `retardConstate=false`, statut terminal inchangé | `time() > tPromise` faux si clôture avant l'échéance ; branche `SERVIE` intacte |
+| 2 — Commande en retard | `retardConstate=true`, statut terminal historique inchangé | `time() > tPromise` vrai ; branche `EN_RETARD` intacte, non modifiée |
+| 3 — Commande ouverte | jamais déplacée vers `EN_RETARD` par ce commit | aucune nouvelle écriture de `statut` introduite, seulement de `retardConstate` |
+| 4 — Engagement à la création | `tPromise`=valeur legacy, `modeEngagementClient="LEGACY_MODE_SCOR"`, `retardConstate=false` | 3 lignes ajoutées juste après le calcul `tPromise` inchangé dans `genererCommande()` |
+| 5 — Régression modes MTS/MTO/ETO | promesses inchangées | `delaiPromessePourMode()`/`modeSCORActif()` non modifiées (0 ligne touchée) |
+| 6 — Build | 0 erreur | à confirmer par Build AnyLogic utilisateur (non exécutable depuis ce terminal) |
+
+**Contrôle du diff avant commit** : diff intégralement inspecté — 50
+lignes ajoutées, **0 ligne supprimée**, réparties en exactement 4 zones :
+les 2 `<Variable>` XML (`retardConstate`/`modeEngagementClient`), les 2
+lignes d'initialisation + commentaire à la création de commande, et les 2
+lignes de synchronisation + commentaire aux 2 sites de clôture. Un
+glissement accidentel d'espaces en fin de ligne sur la `<Variable>`
+pré-existante `ordresReapproImputes` (introduit puis corrigé pendant
+l'édition) a été restauré à l'identique avant commit — n'apparaît plus
+dans le diff. Aucun bruit `<EmbeddedIcon>` : le bruit de sauvegarde
+automatique déjà présent dans l'arbre de travail avant ce tour (même
+motif récurrent que les blocs précédents) a été explicitement reverté.
+Aucune ligne de Bloc A/M/B touchée (vérifié par grep des noms de fonctions
+concernées : `fluxAppartientACommande`, `stockFiniParProduit`,
+`calculerPIGlobal`, `prevoirDemande`, `ajusterDebits`, absents du diff).
+
+**Validations statiques** : XML bien formé, IDs AnyLogic uniques
+(1682/1682, +2 attendu pour les 2 nouvelles `<Variable>`), `git diff --check`
+propre, grep DataCo inchangé (6 occurrences pré-existantes), JSON/scénarios
+inchangés.
+
+**C.2 = TERMINÉ / VALIDÉ (statique). C.3+ = NON COMMENCÉS. BLOC C = EN COURS.**
+
 ### Statut Bloc C
 
 - [x] **C.1 — Audit sémantique retards / engagement client : TERMINÉ / AUDIT VALIDÉ**
-- [ ] C.2+ — non commencés
-- [ ] Détection continue
-- [ ] Engagement configurable
+- [x] **C.2 — Fondation sémantique engagement / retard : TERMINÉ / VALIDÉ**
+- [ ] C.3+ — non commencés (détection continue des commandes ouvertes)
 - [ ] Export/PI cohérent
 - [ ] Build + run utilisateur
 
-**BLOC C = EN COURS.** Aucune modification du `.alp` dans ce commit (audit
-uniquement). Le `.alp` contenait déjà, avant ce tour, un bruit de
-sauvegarde automatique AnyLogic pré-existant (`<EmbeddedIcon>`) —
-volontairement laissé non indexé, non commité, conformément à l'instruction.
+**BLOC C = EN COURS.**
 
 ## Bloc D — moteur conflictuel
 - [ ] Fonctions communes fusionnées une par une

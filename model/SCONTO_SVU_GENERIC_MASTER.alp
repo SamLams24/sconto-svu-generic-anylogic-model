@@ -5749,6 +5749,10 @@ void finaliserReceptionClientDirecte(CommandeAgent cmd) {
     double leadTimeSimulation = Math.max(0, time() - cmd.tCreation);
     actualiserRegistreTempsCommande(cmd, leadTimeSimulation, 0.0);
     double leadTime = Math.max(0.001, cmd.leadTimeClientReelSec);
+    // Bloc C.2 -- synchronisation orthogonale au statut terminal historique
+    // (inchange ci-dessous) : retardConstate signale le depassement de
+    // l'engagement client independamment du workflow operationnel.
+    cmd.retardConstate = time() > cmd.tPromise;
     cmd.statut = (time() <= cmd.tPromise) ? "SERVIE" : "EN_RETARD";
 
     // C14.9 -- DOUBLE COMPTAGE CORRIGE : nbMTS/nbMTO et sumLeadTimeMTS/MTO
@@ -12895,6 +12899,10 @@ if (refCommandeFlux.contains("CMD_") || refCommandeFlux.contains("REAPPRO_")) {
                 cmd, "Make", "Toutes les opérations de production sont terminées");
 
             double leadTimeCommande = Math.max(0.001, time() - cmd.tCreation);
+            // Bloc C.2 -- meme synchronisation orthogonale qu'en livraison
+            // directe (finaliserReceptionClientDirecte()) : ne remplace pas
+            // la logique terminale historique ci-dessous, inchangee.
+            cmd.retardConstate = time() > cmd.tPromise;
             cmd.statut = (time() <= cmd.tPromise) ? "SERVIE" : "EN_RETARD";
 
             // C14.46 -- ce chemin de cloture (post-production) est synchrone : il
@@ -13204,6 +13212,18 @@ enregistrerLigneProduitCommande(cmd, scenarioCommande, cmd.qte);
 cmd.typeCommande = modeSCORActif();
 
 cmd.tPromise = time() + delaiPromessePourMode(cmd.typeCommande);
+// Bloc C.2 -- fondation semantique engagement/retard (audit C.1). tPromise
+// reste l'unique reference d'engagement, calcul inchange ci-dessus.
+// modeEngagementClient documente desormais explicitement la SOURCE/METHODE
+// ayant produit cette promesse -- ici la politique legacy
+// delaiPromessePourMode(modeSCORActif()) -- plutot que de se contenter du
+// mode industriel brut (MTS/MTO/ETO), qui masquerait la conflation deja
+// identifiee en C.1 entre mode de production et engagement client.
+// retardConstate demarre a false (deja la valeur par defaut du champ) et
+// n'est mis a jour qu'aux 2 points de cloture existants (C.2.3) -- jamais
+// ici, jamais en cours de vie de la commande.
+cmd.modeEngagementClient = "LEGACY_MODE_SCOR";
+cmd.retardConstate = false;
 
 Order order = creerOuSynchroniserOrder(cmd);
 
@@ -49265,6 +49285,36 @@ board.logEvent("[ORDONNANCEMENT] " + prochaine.idCommande + " (priorité " + lib
 						<Type><![CDATA[java.util.LinkedHashSet<String>]]></Type>        
 						<InitialValue Class="CodeValue">
 							<Code><![CDATA[new java.util.LinkedHashSet<String>()]]></Code>
+						</InitialValue>
+					</Properties>
+				</Variable>
+				<Variable Class="PlainVariable">
+					<Id>2026083101011</Id>
+					<Name><![CDATA[retardConstate]]></Name>
+					<X>180</X><Y>200</Y>
+					<Label><X>10</X><Y>0</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>true</ShowLabel>
+					<Properties SaveInSnapshot="true" Constant="false" AccessType="public" StaticVariable="false">
+						<Type><![CDATA[boolean]]></Type>
+						<InitialValue Class="CodeValue">
+							<Code><![CDATA[false]]></Code>
+						</InitialValue>
+					</Properties>
+				</Variable>
+				<Variable Class="PlainVariable">
+					<Id>2026083101012</Id>
+					<Name><![CDATA[modeEngagementClient]]></Name>
+					<X>180</X><Y>220</Y>
+					<Label><X>10</X><Y>0</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>true</ShowLabel>
+					<Properties SaveInSnapshot="true" Constant="false" AccessType="public" StaticVariable="false">
+						<Type><![CDATA[String]]></Type>
+						<InitialValue Class="CodeValue">
+							<Code><![CDATA[""]]></Code>
 						</InitialValue>
 					</Properties>
 				</Variable>

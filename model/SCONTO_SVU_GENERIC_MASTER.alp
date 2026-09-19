@@ -20712,9 +20712,22 @@ try {
     if (c.equals("CO.3.11") || c.equals("CO.2.8")) return couts[1];
     if (c.equals("CO.3.12") || c.equals("CO.2.9")) return 0.0; // coût indirect non renseigné : valeur explicite nulle, pas inventée
     if (c.equals("CO.1.1")) {
-        if(chiffreAffaireParUnite<=0 || nbTermines<=0) return Double.NaN;
-        double ca=chiffreAffaireParUnite*nbTermines;
-        return ca>0 ? Math.min(1.0,couts[2]/ca) : Double.NaN;
+        // Bloc B.3-FIX -- BUG CONFIRME PAR RUN REEL : cette branche utilisait
+        // encore nbTermines (compteur HYBRIDE -- incremente par unite en
+        // production, une seule fois par commande en livraison directe MTS)
+        // comme assiette de CA, alors que calculerPIGlobal() utilise deja
+        // unitesLivreesClients() depuis le Bloc B.2 (REAPPRO_ exclus). Le
+        // texte source affirmait deja a tort la parite ("assiette
+        // unitesLivreesClients()") avant ce correctif de VALEUR -- catalogue
+        // (0.476) et pipeline live (0.048) divergeaient d'un facteur proche
+        // de 10, exactement le meme biais que celui deja corrige dans
+        // calculerPIGlobal() au Bloc B.2. Alignee ici caractere pour
+        // caractere sur la section CO de calculerPIGlobal() : memes gardes,
+        // meme clamp Math.min(1.0, ...).
+        int unitesFacturables = unitesLivreesClients();
+        if (chiffreAffaireParUnite <= 0 || unitesFacturables <= 0) return Double.NaN;
+        double ca = chiffreAffaireParUnite * unitesFacturables;
+        return ca > 0 ? Math.min(1.0, couts[2] / ca) : Double.NaN;
     }
     if (c.equals("CO.2.1") || c.equals("CO.2.2") || c.equals("CO.2.3") || c.equals("CO.2.4") || c.equals("CO.2.5")) return couts[2];
     if (c.equals("CO.3.1") || c.equals("CO.3.2") || c.equals("CO.3.3") || c.equals("CO.3.4") || c.equals("CO.3.5") || c.equals("CO.3.7") || c.equals("CO.3.8") || c.equals("CO.3.9") || c.equals("CO.3.10") || c.equals("CO.3.14") || c.equals("CO.3.15")) return couts[2];
@@ -20850,9 +20863,18 @@ if (c.equals("RL.2.4") || c.equals("RL.3.24") || c.equals("RL.3.41") || c.equals
 
 if (c.equals("RS.1.1")) return "Order Fulfillment Lead Time issu du registre metier CMD, reconstitution liee incluse.";
 if (c.equals("RS.3.94")) return "Order Waiting / Dwell Time issu de l'attente de stock explicite imputee depuis REAPPRO.";
+// Bloc B.3-FIX -- BUG CONFIRME : sans ces branches explicites, RS.2.1/2.2/2.3/2.5
+// tombaient dans le repli generique "Moyenne des temps de traitement des
+// postes SCOR [...]" (via codesProcessusPourMetriqueSCOR(), plus bas), une
+// description devenue fausse depuis le Bloc B.2 -- le temps de cycle macro
+// n'est plus une moyenne de temps de TRAITEMENT seul, ni agrege sur toute la
+// chaine. Resolues ICI, avant ce repli generique (meme principe que le
+// commentaire C14.2.1 ci-dessus). Ne decrit que le calcul reel de
+// calculerPIGlobal() -- valeurs runtime non modifiees.
+if (c.equals("RS.2.1") || c.equals("RS.2.2") || c.equals("RS.2.3") || c.equals("RS.2.5")) return "Temps de cycle macro-processus = (temps de traitement cumule + temps d'attente cumule) / nombre d'unites entrees dans le macro, perimetre ENTREPRISE_FOCALE uniquement (calculerPIGlobal(), Bloc B.2) ; borne de normalisation = dureeTraitementNominale() pondere par les passages reels, mise a jour via majBorneCycleMacro() avec decroissance lente/hyperbolique (Bloc B.1/B.2, NormalizationProfile.decroissanceLente)";
 
 if (c.equals("AG.3.38")) return "Nombre de passages Make : codes M1.2 à M1.6";
-if (c.equals("AG.3.32")) return "Débit de sortie observé = entités terminées × 3600 / temps de simulation ; même calcul exact que calculerPIGlobal() (Bloc B.3-FIX)";
+if (c.equals("AG.3.32")) return "Débit de sortie observé = max(board.totalTerminees, main.nbTermines, board.kpiGlobal.count) × 3600 / time() ; même calcul exact à 3 candidats que calculerPIGlobal() (Bloc B.3-FIX)";
 // Bloc B.3-FIX -- AG.1.1 = code SCOR officiel LEGACY (pre-Bloc B.2), conserve
 // pour compatibilite du catalogue/des profils historiques, jamais utilise
 // comme code actif par calculerPIGlobal() depuis le Bloc B.2.

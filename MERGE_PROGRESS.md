@@ -3092,7 +3092,91 @@ aucun changement nécessaire), les Blocs C/D/E.
 
 **PR reste DRAFT. Aucun merge vers `main`.**
 
-- [ ] Run export court utilisateur (B.3) — si Pipeline SCOR / Traçabilité performance cohérents : **BLOC B = TERMINÉ / VALIDÉ / FIGÉ**
+## VALIDATION UTILISATEUR RUNTIME — B.3 (2026-09-18)
+
+Run export réel comparé ligne à ligne entre Pipeline SCOR vers PI et
+Traçabilité performance : **cohérents sur code/valeur/unité/Bottom→Perfect/
+score/grades/poids/contribution/source**. RL.2.1 (complétude, poids 0),
+RL.2.2 (ponctualité, poids 1 local), RL.3.33/RL.3.35 (proxy explicite),
+`PROXY.AG.STABILITE_DEBIT` (0.967, profil 0→1, score 9.671),
+`PROXY.AM.DISPONIBILITE_MACHINE` (0.941, profil 0→1, score 9.412), AM.2.2
+(0.061 jour, source correcte) — tous confirmés corrects. **Pipeline ↔
+Traçabilité = VALIDÉ.**
+
+Un bug runtime confirmé sur la feuille séparée "Catalogue SCOR (139)" :
+`CO.1.1` y affichait 0.476 (score≈5.240) contre 0.048 (score≈9.524) sur
+Pipeline SCOR/PI live pour le même instant — facteur ×10, signature du
+biais nbTermines déjà corrigé ailleurs.
+
+## Bloc B.3-FIX FINAL — alignement catalogue / PI live (2026-09-19)
+
+Correctif strictement scopé à 3 éléments, comme demandé :
+`valeurRuntimeMetriqueSCOR("CO.1.1")`, `sourceFormuleMetriqueSCOR()` pour
+`RS.2.1/2.2/2.3/2.5` et `AG.3.32`.
+
+### 1. `CO.1.1` — Catalogue utilisait encore `nbTermines`
+
+**Confirmé par lecture de code, caractère par caractère** :
+`valeurRuntimeMetriqueSCOR("CO.1.1")` calculait `ca = chiffreAffaireParUnite * nbTermines`
+(compteur hybride production/commande), alors que `calculerPIGlobal()`
+utilise `unitesLivreesClients()` depuis le Bloc B.2. Le texte source
+(`sourceFormuleMetriqueSCOR("CO.1.1")`, écrit en B.3) affirmait déjà à tort
+la parité — seule la VALEUR n'avait pas suivi. Corrigé pour utiliser
+exactement `unitesLivreesClients()` (REAPPRO_ exclus), mêmes gardes
+(`chiffreAffaireParUnite<=0 || unitesFacturables<=0` → `NaN`) et même clamp
+(`Math.min(1.0, couts[2]/ca)`) que `calculerPIGlobal()`. Catalogue CO.1.1
+doit désormais valoir ≈0.048 (== Pipeline) sur le run rapporté, plus 0.476.
+
+### 2. Source RS.2.1/RS.2.2/RS.2.3/RS.2.5 — description obsolète depuis B.2
+
+Sans branche explicite, ces 4 codes tombaient dans le repli générique
+"Moyenne des temps de traitement des postes SCOR [...]"
+(`codesProcessusPourMetriqueSCOR()`) — une description exacte AVANT le
+Bloc B.2, devenue fausse depuis : le temps de cycle macro n'est plus une
+moyenne de traitement seul, ni agrégé sur toute la chaîne, mais
+`(sumCycleTime + sumWaitTime) / unités entrées`, périmètre
+ENTREPRISE_FOCALE, borne via `dureeTraitementNominale()` pondérée par les
+passages réels et `majBorneCycleMacro()` (décroissance lente/hyperbolique).
+4 branches explicites ajoutées, résolues avant le repli générique (même
+principe que le commentaire C14.2.1 déjà présent pour RL). **Uniquement la
+description de preuve modifiée — aucune valeur runtime ni
+`calculerPIGlobal()` touchés.**
+
+### 3. Source AG.3.32 — formule incomplète
+
+L'ancien texte ("entités terminées × 3600 / temps") ne mentionnait pas les
+3 candidats réellement comparés. Mis à jour :
+`max(board.totalTerminees, main.nbTermines, board.kpiGlobal.count) × 3600 / time()`
+— formule exacte lue dans le code des deux fonctions (déjà alignées entre
+elles depuis le B.3-FIX précédent), désormais auto-explicative dans
+l'export.
+
+### Ce qui n'a PAS été modifié
+
+`calculerPIGlobal()`, `prevoirDemande()`, `ajusterDebits()`,
+`calculerInventoryDaysOfSupply()`, le warm-up, les valeurs RL runtime, les
+proxies (valeurs), les Blocs A/M, le JSON/scénarios, la fixture A/B,
+ZENER, les Blocs C/D/E. Diff purement scopé aux 3 éléments demandés (26
+insertions / 4 suppressions, vérifié par `git diff`).
+
+### Validations statiques
+
+- XML bien formé : OK
+- IDs AnyLogic uniques : 1680/1680 (inchangé)
+- `git diff --check` : aucune erreur (aucun bruit `<EmbeddedIcon>`
+  cette fois)
+- Grep DataCo : 6 occurrences, toutes pré-existantes (inchangé)
+- JSON/scénarios inchangés
+- Blocs A/M/B.2 inchangés (vérifié : les 4 lignes supprimées sont
+  exactement les 3 lignes de calcul `CO.1.1` erronées + 1 ligne de texte
+  `AG.3.32` incomplet)
+- Blocs C/D/E non commencés
+
+**Commit** : `fix(generic): align SCOR catalogue with live PI`
+
+**PR reste DRAFT. Aucun merge vers `main`.**
+
+- [ ] Dernier run export court utilisateur — si Catalogue CO.1.1 == Pipeline CO.1.1 et sources RS/AG exactes : **BLOC B = TERMINÉ / VALIDÉ / FIGÉ**
 - [ ] Dette documentée : incohérence stock stratégique mono (log T=1740 stock=185 vs Dashboard ≈37) — audit architectural futur, hors Bloc B
 
 ## Bloc C — retards

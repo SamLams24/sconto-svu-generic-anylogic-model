@@ -3659,13 +3659,177 @@ inchangés.
 
 **C.2 = TERMINÉ / VALIDÉ (statique). C.3+ = NON COMMENCÉS. BLOC C = EN COURS.**
 
+### C.3 — Détection des retards ouverts (2026-09-19)
+
+#### C.3.0 — Pré-audit : réconciliation de la chaîne `tPromise`
+
+Tracée à nouveau, ligne par ligne, dans le HEAD `ba195d0` (`genererCommande()`,
+commande cliente) :
+
+```
+modeSCORActif()                                   [L8399-8397, lit isMTS/isMTO/isETO]
+  → cmd.typeCommande = modeSCORActif()             [L13188, reaffecte L13212 -- meme valeur]
+  → delaiPromessePourMode(cmd.typeCommande)        [L8403, constante par mode]
+  → cmd.tPromise = time() + ...                    [L13191, reaffecte L13214 -- meme valeur]
+```
+
+**Les formulations C.1 (`delaiPromessePourMode(modeSCORActif())`) et C.2
+(`delaiPromessePourMode(cmd.typeCommande)`) décrivent la MÊME chaîne
+réelle, à deux niveaux de détail différents** : `cmd.typeCommande` est
+affecté depuis `modeSCORActif()` immédiatement avant chaque calcul de
+`tPromise`, sans rien d'autre entre les deux qui puisse le faire varier —
+donc `delaiPromessePourMode(cmd.typeCommande)` et
+`delaiPromessePourMode(modeSCORActif())` sont rigoureusement équivalents à
+cet instant précis. **Aucune divergence réelle, aucune incohérence** —
+confirmé et documenté comme demandé, aucune ligne modifiée.
+
+Chaîne distincte notée pour les ordres `REAPPRO_*`
+(`declencherProductionAutonome()`) : `cmd.typeCommande = "MTS"` (littéral,
+sans passer par `modeSCORActif()`) puis
+`cmd.tPromise = time() + delaiPromessePourMode("MTS")` — hors périmètre
+de `evaluerRetardsCommandesOuvertes()` (REAPPRO exclus, voir plus bas),
+documentée ici pour rigueur d'audit uniquement.
+
+Aucune valeur (300/1800/3600) ni aucune de ces lignes n'a été modifiée.
+
+#### C.3.1 — Fonction canonique
+
+**`evaluerRetardsCommandesOuvertes()`** ajoutée dans `Main`, juste après
+`estOrdreStockAutonome()` (zone des prédicats de classification de
+commande). Responsabilité unique : positionner `cmd.retardConstate` pour
+les commandes clientes non terminales dont `tPromise` est dépassé.
+N'écrit jamais `cmd.statut`.
+
+**Source canonique du prédicat terminal réutilisée, pas dupliquée** :
+aucune fonction booléenne par-commande n'existait déjà (seul un compteur
+global, `nombreCommandesClosesFiabilite()`, Bloc B, figé). Une nouvelle
+fonction **`commandeEstTerminale(CommandeAgent cmd)`** a donc été ajoutée
+(juste avant `evaluerRetardsCommandesOuvertes()`), reprenant *exactement*
+le même ensemble d'états terminaux déjà validé en Bloc B
+(`SERVIE`/`EN_RETARD`/`REFUSEE`/`BLOQUE_*`) — aucune nouvelle notion de
+"terminal" introduite, `nombreCommandesClosesFiabilite()`/
+`tauxCommandesLivreesCloses()` non modifiées ni redéfinies différemment.
+
+```java
+public boolean commandeEstTerminale(CommandeAgent cmd) {
+    if (cmd == null) return true;
+    String s = cmd.statut == null ? "" : cmd.statut;
+    return "SERVIE".equals(s) || "EN_RETARD".equals(s) || "REFUSEE".equals(s) || s.startsWith("BLOQUE");
+}
+
+void evaluerRetardsCommandesOuvertes() {
+    for (CommandeAgent cmd : commandes) {
+        if (cmd == null || estOrdreStockAutonome(cmd)) continue;
+        if (commandeEstTerminale(cmd)) continue;
+        if (cmd.tPromise <= 0) continue;
+        if (time() > cmd.tPromise) {
+            cmd.retardConstate = true;
+        }
+    }
+}
+```
+
+**Sémantique monotone (C.3.2) respectée** : `if (time() > tPromise) cmd.retardConstate = true;`,
+jamais `cmd.retardConstate = time() > tPromise;` — ne peut jamais repasser
+de `true` à `false`. La synchronisation terminale du Bloc C.2 (2 sites de
+clôture, non modifiée) reste la seule à affecter une valeur recalculée
+explicitement (`true` OU `false`) au moment de la clôture.
+
+**Aucun changement de `cmd.statut`** (C.3.3) : ni dans
+`evaluerRetardsCommandesOuvertes()`, ni dans `commandeEstTerminale()` —
+toutes deux strictement en lecture sur `statut`, jamais en écriture.
+
+**REAPPRO exclus** via `estOrdreStockAutonome()` (Bloc M, réutilisée telle
+quelle, non modifiée) : `retardConstate` ne concerne que les engagements
+clients.
+
+#### C.3.4 — Mécanisme de déclenchement
+
+**Inventaire des mécanismes périodiques de `Main`** (9 `Event` recensés) :
+`arrivee`, `generateurCommandes`, `tickAppro` (génération de flux/commandes,
+rôle décisionnel métier — écartés) ; `event` (Condition `false`,
+`ExcludeFromBuild=true` — désactivé, écarté) ; `rafraichir`
+(rafraîchissement de listes déroulantes UI — sans rapport, écarté) ;
+`ExcelExportManager`/`DashboardHistoryManager` (Bloc A.4, figé — écartés,
+modification interdite) ; `bilanPeriodique` (Bloc A.2, figé — **écarté
+explicitement, comme demandé** ; son propre commentaire d'origine confirme
+d'ailleurs : *"La detection continue des retards
+(evaluerRetardsCommandesOuvertes, engagement client)... appartient au
+Bloc C — non porté ici"*) ; `AnimationMessagesManager` (présentation
+visuelle — sans rapport, écarté).
+
+**Aucun mécanisme périodique neutre et modifiable sans toucher un bloc
+figé n'existe** → **CAS B retenu** : nouvel `Event` dédié minimal
+**`evtEvaluationRetardsCommandesOuvertes`**, ajouté dans `Main` juste après
+`bilanPeriodique`. Action : **exclusivement**
+`evaluerRetardsCommandesOuvertes();` — aucune commande produite, aucun
+stock modifié, aucun PI recalculé, aucun statut modifié, aucune production
+lancée, aucune prévision touchée, `bilanPeriodique`/Bloc A.2 non touchée.
+
+**Fréquence retenue : 60 s**, `Condition=modeExecution` (identique à
+`bilanPeriodique`) — cadence déjà établie dans ce master pour les
+contrôles périodiques non décisionnels, plutôt qu'une échelle nouvelle
+inventée. Suffisamment réactif face à la promesse la plus courte
+existante (MTS=300s, inchangée) : au moins ~5 évaluations possibles avant
+qu'une commande MTS n'atteigne son échéance.
+
+#### C.3.5/C.3.6/C.3.7 — Invariants respectés
+
+- **Aucun nouvel état temporel** : ni `dureeClientAccumulee`, ni
+  `retardAccumuleSec`, ni `datePremierRetard`, ni compteur, ni timer par
+  commande. Uniquement `time()`, `cmd.tPromise`, `cmd.retardConstate` et le
+  prédicat terminal canonique.
+- **C.2 non modifié** : les 2 synchronisations terminales
+  (`finaliserReceptionClientDirecte()`, chemin post-production) restent
+  identiques à leur état du commit `ba195d0`.
+- **`retardConstate` non consommé** dans `calculerPIGlobal()`, RL, RS,
+  dashboards, exports, traces SCOR, tableaux KPI ou reporting — vérifié
+  par grep, 0 occurrence de `retardConstate` en dehors des 2 nouvelles
+  fonctions C.3 et des 3 sites C.2 déjà existants.
+
+#### Tests statiques (raisonnement sur le code, Build runtime à confirmer)
+
+| Test | Vérification |
+|---|---|
+| 1 — Ouverte avant promesse | `time() > tPromise` faux → boucle ne touche pas `retardConstate` (reste à sa valeur d'initialisation `false`, Bloc C.2) ; `statut` jamais lu en écriture |
+| 2 — Franchissement de promesse | Dès le 1er passage de l'Event après `time() > tPromise`, `retardConstate` passe à `true` **avant** toute clôture — test central, satisfait par construction (boucle sur `commandes`, filtrée par `!commandeEstTerminale()`) |
+| 3 — Statut non terminal conservé | `evaluerRetardsCommandesOuvertes()` ne contient aucune écriture de `cmd.statut` (vérifié par grep sur le corps de la fonction) |
+| 4 — Poursuite du workflow | Aucune autre variable/collection touchée (stocks, REAPPRO, production) — la commande continue son cycle normalement |
+| 5 — Clôture tardive | Aux 2 sites C.2 (inchangés), `retardConstate` est réévalué explicitement (`time() > tPromise`) au moment de la clôture, cohérent avec le statut terminal historique inchangé |
+| 6 — Commande à temps | Clôture avant promesse → C.2 fixe `retardConstate=false` (recalcul explicite au point de clôture, inchangé) |
+| 7 — Commandes terminales | `if (commandeEstTerminale(cmd)) continue;` exclut explicitement toute commande déjà terminale de la boucle |
+| 8 — Plusieurs commandes simultanées | Boucle indépendante par commande (`for (CommandeAgent cmd : commandes)`), aucun état partagé entre itérations |
+| 9 — Régression promesses | `delaiPromessePourMode()`/`modeSCORActif()` : 0 ligne modifiée (confirmé par diff) |
+| 10 — Build | **BUILD RUNTIME À CONFIRMER PAR UTILISATEUR** — non exécutable depuis ce terminal, comme pour tous les blocs précédents |
+
+#### Validations statiques
+
+- XML bien formé : OK
+- IDs AnyLogic uniques : 1684/1684 (+2, attendu pour le nouvel `Event`
+  `evtEvaluationRetardsCommandesOuvertes` — les 2 nouvelles fonctions sont
+  du texte `AdditionalClassCode`, sans `Id` XML propre)
+- `git diff --check` : aucune erreur
+- Grep DataCo : 6 occurrences, toutes pré-existantes (inchangé)
+- Diff purement additif : 89 lignes ajoutées, **0 ligne supprimée**
+  (2 nouvelles fonctions + 1 nouvel `Event`, rien d'autre)
+- Aucun bruit `<EmbeddedIcon>`/repositionnement graphique/ID existant
+  modifié — le `.alp` était déjà propre en début de tour (`git status`
+  vide avant édition)
+- Aucune ligne de Bloc A/M/B touchée (`bilanPeriodique`,
+  `calculerPIGlobal`, `prevoirDemande`, `ajusterDebits`,
+  `stockFiniParProduit` absents du diff)
+- JSON/scénarios inchangés
+
+**C.3 = TERMINÉ / VALIDÉ STATIQUEMENT. C.4+ = NON COMMENCÉS. BLOC C = EN COURS.**
+
 ### Statut Bloc C
 
 - [x] **C.1 — Audit sémantique retards / engagement client : TERMINÉ / AUDIT VALIDÉ**
 - [x] **C.2 — Fondation sémantique engagement / retard : TERMINÉ / VALIDÉ**
-- [ ] C.3+ — non commencés (détection continue des commandes ouvertes)
-- [ ] Export/PI cohérent
-- [ ] Build + run utilisateur
+- [x] **C.3 — Détection des retards ouverts : TERMINÉ / VALIDÉ STATIQUEMENT**
+- [ ] C.4+ — non commencés
+- [ ] Export/PI cohérent (intégration de `retardConstate` dans RL/dashboards — hors périmètre C.3)
+- [ ] Build + run utilisateur (C.2 et C.3)
 
 **BLOC C = EN COURS.**
 

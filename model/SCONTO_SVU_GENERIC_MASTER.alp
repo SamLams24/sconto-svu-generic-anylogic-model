@@ -9927,6 +9927,48 @@ public boolean estOrdreStockAutonome(CommandeAgent cmd) {
     return cmd != null && cmd.idCommande != null && cmd.idCommande.startsWith("REAPPRO_");
 }
 
+// Bloc C.3 -- reutilise EXACTEMENT le meme ensemble d'etats terminaux deja
+// etabli et valide en Bloc B (nombreCommandesClosesFiabilite()/
+// tauxCommandesLivreesCloses(), Blocs B.1/B.3-FIX2 -- SERVIE, EN_RETARD,
+// REFUSEE, BLOQUE_*), expose ici sous une forme reutilisable PAR COMMANDE
+// (predicat booleen) : cette classification n'existait jusqu'ici que sous
+// forme de compteur global. Aucune nouvelle notion de "commande terminale"
+// n'est introduite ; nombreCommandesClosesFiabilite()/tauxCommandesLivreesCloses()
+// (Bloc B, FIGE) ne sont ni modifiees ni redefinies differemment.
+public boolean commandeEstTerminale(CommandeAgent cmd) {
+    if (cmd == null) return true;
+    String s = cmd.statut == null ? "" : cmd.statut;
+    return "SERVIE".equals(s) || "EN_RETARD".equals(s) || "REFUSEE".equals(s) || s.startsWith("BLOQUE");
+}
+
+// Bloc C.3 -- detection du retard des commandes CLIENTES encore ouvertes
+// (audit semantique C.1, fondation C.2). Strictement orthogonale au statut
+// operationnel/workflow/stocks/production/PI/SCOR/lead time/attente stock :
+// lit uniquement time()/cmd.tPromise, n'ecrit QUE cmd.retardConstate,
+// n'ecrit JAMAIS cmd.statut (aucun equivalent de "cmd.statut = EN_RETARD"
+// ici). Semantique MONOTONE deliberee (C.3.2) : ne fait jamais repasser
+// retardConstate de true a false -- une promesse depassee l'a ete
+// historiquement, meme si la commande finit par se cloturer a temps par
+// ailleurs (cas theorique, non observe, mais la monotonie l'empeche par
+// construction). Seule la synchronisation terminale du Bloc C.2 (aux 2
+// sites de cloture existants, inchangee par ce bloc) affecte une valeur
+// explicitement recalculee (true OU false) au moment ou la commande
+// devient terminale. Les ordres REAPPRO_* (estOrdreStockAutonome()) sont
+// exclus : ce ne sont pas des engagements clients (meme filtre que
+// verifierFillRate()/nombreCommandesClosesFiabilite(), Bloc B). Aucun
+// nouvel etat temporel (pas de compteur, pas de date de premier retard) :
+// uniquement time(), tPromise et retardConstate, comme demande.
+void evaluerRetardsCommandesOuvertes() {
+    for (CommandeAgent cmd : commandes) {
+        if (cmd == null || estOrdreStockAutonome(cmd)) continue;
+        if (commandeEstTerminale(cmd)) continue;
+        if (cmd.tPromise <= 0) continue;
+        if (time() > cmd.tPromise) {
+            cmd.retardConstate = true;
+        }
+    }
+}
+
 // Bloc B.1 -- Meme comptage que tauxCommandesLivreesCloses() ci-dessous, expose
 // separement pour permettre un seuil de taille d'echantillon minimal avant de
 // ponderer RL dans le PI (Bloc B.2, calculerPIGlobal() -- non modifiee dans ce
@@ -11745,6 +11787,53 @@ capturerPointHistoriqueDashboard();]]></Action>
 // client) et le bilan agrege (logBilanCommandes) restent hors perimetre de ce bloc
 // et appartiennent au Bloc C -- non portes ici.
 diagnostiquerCommandesBloquees();]]></Action>
+				</Event>
+				<Event>
+					<Id>2026091900001</Id>
+					<Name><![CDATA[evtEvaluationRetardsCommandesOuvertes]]></Name>
+					<X>-200</X><Y>310</Y>
+					<Label><X>10</X><Y>0</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>true</ShowLabel>
+					<Properties TriggerType="timeout" Mode="cyclic">
+						<Timeout Class="CodeUnitValue">
+							<Code><![CDATA[60]]></Code>
+							<Unit Class="TimeUnits"><![CDATA[SECOND]]></Unit>
+						</Timeout>
+						<Rate Class="CodeUnitValue">
+							<Code><![CDATA[1]]></Code>
+							<Unit Class="RateUnits"><![CDATA[PER_SECOND]]></Unit>
+						</Rate>
+						<Id>2026091900002</Id>
+						<OccurrenceAtTime>true</OccurrenceAtTime>
+						<OccurrenceDate>1781078400000</OccurrenceDate>
+						<OccurrenceTime Class="CodeUnitValue">
+							<Code><![CDATA[0]]></Code>
+							<Unit Class="TimeUnits"><![CDATA[SECOND]]></Unit>
+						</OccurrenceTime>
+						<RecurrenceCode Class="CodeUnitValue">
+							<Code><![CDATA[60]]></Code>
+							<Unit Class="TimeUnits"><![CDATA[SECOND]]></Unit>
+						</RecurrenceCode>
+						<Condition><![CDATA[modeExecution]]></Condition>
+					</Properties>
+					<Action><![CDATA[// Bloc C.3 -- Event dedie minimal, cree car aucun mecanisme periodique
+// existant dans Main n'est reutilisable sans toucher un bloc fige :
+// bilanPeriodique (Bloc A.2) documente lui-meme explicitement que la
+// detection continue des retards est hors de son perimetre et appartient
+// au Bloc C (voir son propre commentaire ci-dessus) ; DashboardHistoryManager/
+// ExcelExportManager appartiennent au Bloc A.4 ; "event" est desactive
+// (Condition=false, ExcludeFromBuild=true) ; "rafraichir"/AnimationMessagesManager
+// n'ont aucun rapport avec l'etat metier des commandes. Cadence alignee sur
+// bilanPeriodique (60s, cadence deja etablie pour les controles periodiques
+// non decisionnels dans ce master) : suffisamment reactif face a la plus
+// courte promesse existante (MTS=300s, Bloc C.1/C.2, inchangee) sans
+// inventer une nouvelle echelle temporelle. N'appelle QUE
+// evaluerRetardsCommandesOuvertes() : aucune commande produite, aucun
+// stock modifie, aucun PI recalcule, aucun statut modifie, aucune
+// production lancee, aucune prevision touchee, A.2 non touchee.
+evaluerRetardsCommandesOuvertes();]]></Action>
 				</Event>
 				<Event>
 					<Id>1783700000030</Id>

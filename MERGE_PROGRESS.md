@@ -4609,6 +4609,208 @@ bloc d'audit (aucune modification fonctionnelle à builder).
 
 **C.5 = AUDIT COMPLET. C.6+ = NON COMMENCÉS. BLOC C = EN COURS.**
 
+### C.6 — Observabilité du backlog client en retard
+
+#### 1. Audit préalable de `bilanPeriodique`
+
+Relu intégralement avant modification (Event Bloc A.2, `Id=1791000009401`,
+cyclique 60s, `Condition=modeExecution`). Action existante :
+`diagnostiquerCommandesBloquees();` précédée d'un commentaire qui anticipait
+déjà explicitement un futur "bilan agrégé (`logBilanCommandes`)" pour le
+Bloc C. `grep` exhaustif confirme que `logBilanCommandes` n'existe nulle
+part ailleurs dans le master — c'était un nom de convention jamais
+implémenté, pas une fonction existante à réutiliser. Aucun autre Event
+périodique candidat n'a été considéré : l'énoncé C.6 autorise explicitement
+la réutilisation de `bilanPeriodique` pour l'affichage (contrairement à
+C.3, où créer un nouvel Event de **détection** avait été jugé nécessaire
+pour ne pas coupler détection et diagnostic Bloc A.2).
+
+#### 2. Mécanisme retenu
+
+Ajout, à l'intérieur de l'`Action` existante de `bilanPeriodique`, **après**
+l'appel inchangé à `diagnostiquerCommandesBloquees();`, d'un second bloc de
+code qui :
+- appelle exclusivement les 5 fonctions C.4/C.4-FIX déjà existantes
+  (aucun recalcul inline, aucune ré-implémentation d'un filtre
+  REAPPRO/terminal/instantané) ;
+- journalise un bloc humain multi-lignes (`board.logEvent("=== RETARDS
+  CLIENTS OUVERTS ===...")`) ;
+- journalise une ligne structurée pipe-séparée
+  `[RETARD-CLIENT-OUVERT] ouvertes=... | enRetard=... | taux=... | ...`
+  suivant la convention déjà en usage (`[DIAG-BLOQUEE]`, `[SCOR-DETAIL]`,
+  `[STOCK]`).
+
+Aucun nouvel `Event`, aucune nouvelle `<Variable>` (formelle ou dans
+`AdditionalClassCode`), aucun élément graphique : uniquement du texte à
+l'intérieur d'une `Action` déjà existante. C'est la raison pour laquelle
+le nombre total/unique d'`<Id>` reste strictement inchangé (1684/1684).
+
+#### 3. Métriques exposées, unités, convention ratio vs %
+
+| Métrique (fonction C.4/C.4-FIX réutilisée) | Unité interne | Affichage humain | Trace structurée |
+|---|---|---|---|
+| `nombreCommandesOuvertes()` | entier (commandes) | `%d` | `ouvertes=%d` |
+| `nombreCommandesOuvertesEnRetard()` | entier (commandes) | `%d` | `enRetard=%d` |
+| `tauxCommandesOuvertesEnRetard()` | ratio `0..1` | `×100` → `%.2f %%` (affichage uniquement) | `%.3f` — **reste en 0..1, jamais multiplié** |
+| `retardCourantTotalOuvertSec()` | secondes | `%.0f s` | `retardTotalSec=%.0f` |
+| `retardCourantMoyenCommandesEnRetardSec()` | secondes | `%.0f s` | `retardMoyenSec=%.0f` |
+
+La conversion `×100` n'existe qu'au moment du `String.format` de
+l'affichage humain (`c6Taux * 100.0`) ; la variable `c6Taux` elle-même,
+réutilisée telle quelle dans la trace structurée, n'est jamais modifiée —
+convention confirmée en C.4 (fonctions `taux...()` sans suffixe `Pct` =
+0..1) et respectée à l'identique ici.
+
+#### 4. Exclusions REAPPRO / terminal / instantanéité — confirmation
+
+Ces trois garanties ne sont **pas réimplémentées** en C.6 : elles sont
+héritées automatiquement des fonctions C.4/C.4-FIX appelées (qui
+utilisent en interne `estOrdreStockAutonome()`, `commandeEstTerminale()`
+et `commandeOuverteEstEnRetardMaintenant()`). C.6 ne fait qu'appeler ces
+fonctions et journaliser leur résultat — **aucune condition métier
+n'est écrite dans le code ajouté en C.6**, seulement des affectations
+locales (`int c6Ouvertes = nombreCommandesOuvertes();`, etc.) et des
+`String.format`. Vérifié par relecture directe du diff (voir §9).
+
+#### 5. Exemple de bilan humain (cas mixte, 2 ouvertes dont 1 en retard 45s)
+
+```
+=== RETARDS CLIENTS OUVERTS ===
+Commandes ouvertes clientes : 2
+Commandes ouvertes en retard : 1
+Taux backlog en retard : 50.00 %
+Retard courant total : 45 s
+Retard courant moyen : 45 s
+```
+
+#### 6. Exemple de trace structurée correspondante
+
+```
+[RETARD-CLIENT-OUVERT] ouvertes=2 | enRetard=1 | taux=0.500 | retardTotalSec=45 | retardMoyenSec=45
+```
+
+#### 7. Cas zéro (C.6.6)
+
+Si `nombreCommandesOuvertes()==0` : `nombreCommandesOuvertesEnRetard()`
+retourne `0`, et `tauxCommandesOuvertesEnRetard()`,
+`retardCourantTotalOuvertSec()`, `retardCourantMoyenCommandesEnRetardSec()`
+retournent chacune `0.0` par leur propre garde interne déjà existante
+(Bloc C.4/C.4-FIX, non modifiée ici). Sortie attendue :
+
+```
+=== RETARDS CLIENTS OUVERTS ===
+Commandes ouvertes clientes : 0
+Commandes ouvertes en retard : 0
+Taux backlog en retard : 0.00 %
+Retard courant total : 0 s
+Retard courant moyen : 0 s
+[RETARD-CLIENT-OUVERT] ouvertes=0 | enRetard=0 | taux=0.000 | retardTotalSec=0 | retardMoyenSec=0
+```
+
+Aucune division par zéro, aucun `NaN`/`Infinity` possible : aucune garde
+supplémentaire n'a donc été ajoutée en C.6 (les fonctions consommées la
+fournissent déjà), conformément au principe "quelques lignes suffisent"
+déjà appliqué en C.4/C.4-FIX.
+
+#### 8. Cas mixte A/B/C/D/E (C.6.7)
+
+Population hypothétique de 5 commandes clientes au moment du cycle :
+
+| Commande | État | `tPromise` vs `time()` | Comptée dans `nombreCommandesOuvertes()` ? | Comptée dans `nombreCommandesOuvertesEnRetard()` ? |
+|---|---|---|---|---|
+| A | ouverte, à temps | non dépassé | Oui | Non |
+| B | ouverte, en retard | dépassé | Oui | **Oui** |
+| C | ouverte, en retard | dépassé | Oui | **Oui** |
+| D | **terminale** (`SERVIE`) | dépassé (non pertinent, close) | **Non** (exclue via `commandeEstTerminale()`) | Non |
+| E | **REAPPRO** (ordre stock autonome) | dépassé (non pertinent) | **Non** (exclue via `estOrdreStockAutonome()`) | Non |
+
+Résultat attendu : `nombreCommandesOuvertes()=3` (A, B, C),
+`nombreCommandesOuvertesEnRetard()=2` (B, C),
+`tauxCommandesOuvertesEnRetard()=0.667`, `retardCourantTotalOuvertSec()` =
+somme des retards courants de B+C uniquement, `retardCourantMoyenCommandesEnRetardSec()`
+= moyenne sur B+C uniquement (dénominateur = 2, pas 3 ni 5). D et E
+n'apparaissent dans **aucun** des 5 compteurs, confirmant que les
+exclusions terminal/REAPPRO déjà actées en C.3/C.4/C.4-FIX se propagent
+correctement au bilan C.6 sans code additionnel.
+
+#### 9. Continuité temporelle (C.6.8)
+
+Le bilan C.6 est **recalculé intégralement à chaque cycle de 60s**,
+sans aucun état mémorisé propre à C.6 : à `t=290s` (avant `tPromise`,
+supposé `t=300s`), la commande n'apparaît dans aucun compteur "en
+retard" ; au cycle suivant `t=350s` (après dépassement), elle apparaît
+immédiatement dans `nombreCommandesOuvertesEnRetard()` et
+`retardCourantTotalOuvertSec()` **sans attendre** le passage de l'Event
+de détection C.3 (`evtEvaluationRetardsCommandesOuvertes`, cadence 60s
+indépendante) — car ces fonctions utilisent
+`commandeOuverteEstEnRetardMaintenant()` (vérité instantanée, Bloc
+C.4-FIX), pas `cmd.retardConstate` (mémorisé, à latence ≤60s). Le bilan
+C.6 est donc à la fois indépendant du calendrier de l'Event C.3 et
+strictement cohérent avec lui à convergence — aucune divergence
+possible au-delà de la fenêtre de latence déjà documentée en C.4-FIX.
+
+#### 10. Non-régression PI / SCOR — preuve
+
+Le diff de ce bloc ne touche que l'intérieur de l'`Action` de
+`bilanPeriodique` (voir §9 du diff ci-dessous) : **aucune ligne modifiée**
+dans `calculerPIGlobal()`, `verifierFillRate()`,
+`tauxCommandesLivreesCloses()`, `nombreCommandesClosesFiabilite()`,
+`commandeEstTerminale()`, `commandeOuverteEstEnRetardMaintenant()`,
+`evaluerRetardsCommandesOuvertes()`, `evtEvaluationRetardsCommandesOuvertes`,
+les 6 fonctions C.4, `retardConstate`, `tPromise`, les statuts, ni aucun
+mécanisme A/M/B. **C.6 est strictement consommateur, jamais producteur** :
+aucune des fonctions qu'il appelle n'est modifiée, aucun nouvel appel
+n'est inséré dans une fonction PI/SCOR existante.
+
+#### 11. Diff — preuve de portée
+
+```
+model/SCONTO_SVU_GENERIC_MASTER.alp | 39 ++++++++++++++++++++++++++++++++++---
+1 file changed, 36 insertions(+), 3 deletions(-)
+```
+
+Un seul hunk, localisé exclusivement dans l'`Action` de `bilanPeriodique`
+(`Id=1791000009401`) : 3 lignes de commentaire pré-existant reformulées
+(suppression de la mention `logBilanCommandes`, jamais implémentée, au
+profit d'un renvoi explicite vers l'Event C.3 réel) + 33 lignes nouvelles
+(commentaire d'intention C.6 + 5 affectations locales + 2
+`board.logEvent`). Aucune autre zone du fichier touchée.
+
+#### 12. Protocole de validation runtime proposé (Runs A–E, à exécuter par l'utilisateur)
+
+| Run | Scénario | Attendu dans le bilan/trace |
+|---|---|---|
+| A | Aucune commande cliente ouverte | Cas zéro (§7) sur tous les cycles |
+| B | 1 commande ouverte, avant `tPromise` | `ouvertes=1, enRetard=0, taux=0.000` |
+| C | 1 commande ouverte, après `tPromise` | `ouvertes=1, enRetard=1, taux=1.000`, `retardTotalSec` croissant d'un cycle à l'autre |
+| D | Mélange A/B/C/D/E (§8) | `ouvertes=3, enRetard=2, taux≈0.667`, D et E absentes de tous les compteurs |
+| E | Traversée du seuil `tPromise` entre deux cycles de 60s | Bilan reflète le nouvel état dès le cycle suivant, sans attendre le cycle de `evtEvaluationRetardsCommandesOuvertes` (§9) |
+
+#### Ce qui n'a PAS été modifié
+
+Confirmé par diff (§11) : `calculerPIGlobal()`, `verifierFillRate()`,
+`tauxCommandesLivreesCloses()`, `nombreCommandesClosesFiabilite()`,
+`commandeEstTerminale()`, `commandeOuverteEstEnRetardMaintenant()`,
+`evaluerRetardsCommandesOuvertes()`, l'Event C.3, les 6 fonctions C.4,
+`retardConstate`, `modeEngagementClient`, `tPromise`, les statuts, les
+constantes 300/1800/3600, les stocks, la production, les prévisions,
+l'auto-commande, le multi-produit — tous strictement inchangés. Aucun
+nouvel `Event`, aucune nouvelle `<Variable>`, aucun élément graphique.
+
+#### Validations statiques
+
+- XML bien formé : **OK** (`xml.etree.ElementTree`)
+- `<Id>` total/unique : **1684 / 1684** (inchangé — aucun nouvel élément XML formel)
+- `git diff --check` : **propre** (seul avertissement bénin LF→CRLF de Git, aucun conflit de fin de ligne)
+- `grep -ciE "prophet|recalibrator|autocommande|dataco"` : **6** (baseline inchangée)
+- Fichier modifié : uniquement `model/SCONTO_SVU_GENERIC_MASTER.alp`
+
+**Build AnyLogic** : **BUILD RUNTIME À CONFIRMER PAR UTILISATEUR** — non
+exécutable depuis ce terminal ; les Runs A–E (§12) restent à exécuter par
+l'utilisateur.
+
+**C.6 = TERMINÉ / VALIDÉ STATIQUEMENT. C.7+ = NON COMMENCÉS. BLOC C = EN COURS.**
+
 ### Statut Bloc C
 
 - [x] **C.1 — Audit sémantique retards / engagement client : TERMINÉ / AUDIT VALIDÉ**
@@ -4618,8 +4820,9 @@ bloc d'audit (aucune modification fonctionnelle à builder).
 - [x] **C.4 — Indicateurs dérivés du retard courant : TERMINÉ / VALIDÉ STATIQUEMENT**
 - [x] **C.4-FIX — Cohérence instantanée du retard courant : TERMINÉ / VALIDÉ**
 - [x] **C.5 — Audit sémantique d'intégration SCOR / PI : TERMINÉ / AUDIT VALIDÉ**
-- [ ] C.6+ — non commencés
-- [ ] Build + run utilisateur (C.2, C.3, C.3-FIX, C.4 et C.4-FIX — toujours en attente)
+- [x] **C.6 — Observabilité du backlog client en retard : TERMINÉ / VALIDÉ STATIQUEMENT**
+- [ ] C.7+ — non commencés
+- [ ] Build + run utilisateur (C.2, C.3, C.3-FIX, C.4, C.4-FIX et C.6 — toujours en attente)
 
 **BLOC C = EN COURS.**
 

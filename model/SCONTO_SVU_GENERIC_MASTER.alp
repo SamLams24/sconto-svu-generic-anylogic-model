@@ -11919,9 +11919,42 @@ capturerPointHistoriqueDashboard();]]></Action>
 // simulation. Ne fait qu'inspecter et journaliser (voir diagnostiquerCommandesBloquees) :
 // aucun changement de statut, de stock, de production, de PI ni de routage.
 // La detection continue des retards (evaluerRetardsCommandesOuvertes, engagement
-// client) et le bilan agrege (logBilanCommandes) restent hors perimetre de ce bloc
-// et appartiennent au Bloc C -- non portes ici.
-diagnostiquerCommandesBloquees();]]></Action>
+// client) reste hors perimetre de ce bloc et appartient au Bloc C -- non
+// portee ici (Event dedie evtEvaluationRetardsCommandesOuvertes, Bloc C.3,
+// inchange).
+diagnostiquerCommandesBloquees();
+
+// Bloc C.6 -- observabilite du backlog CLIENT ouvert en retard. Reutilise
+// EXCLUSIVEMENT les fonctions deja existantes des Blocs C.4/C.4-FIX (aucun
+// recalcul inline ici) : garantit automatiquement l'exclusion des REAPPRO_,
+// la terminalite canonique (commandeEstTerminale()) et la verite
+// instantanee (commandeOuverteEstEnRetardMaintenant()), sans dupliquer la
+// moindre condition. Purement OBSERVATEUR : ne fait qu'appeler ces
+// fonctions et journaliser -- aucune ecriture, aucun impact statut/stock/
+// production/PI/SCOR/routage, aucune detection declenchee ici (celle-ci
+// reste exclusivement la responsabilite de evaluerRetardsCommandesOuvertes(),
+// dans son propre Event separe -- meme separation detection/observabilite
+// deja actee en C.3). Aucun etat stocke : tout est recalcule a chaque
+// cycle, jamais mis en cache. tauxCommandesOuvertesEnRetard() reste
+// manipulee en 0..1 pour la trace structuree (coherence analytique) ; la
+// conversion ×100 n'est appliquee qu'a l'affichage humain du bilan
+// ci-dessous, jamais a la valeur elle-meme.
+int c6Ouvertes = nombreCommandesOuvertes();
+int c6EnRetard = nombreCommandesOuvertesEnRetard();
+double c6Taux = tauxCommandesOuvertesEnRetard();
+double c6RetardTotalSec = retardCourantTotalOuvertSec();
+double c6RetardMoyenSec = retardCourantMoyenCommandesEnRetardSec();
+board.logEvent(String.format(java.util.Locale.US,
+    "=== RETARDS CLIENTS OUVERTS ===\n"
+    + "Commandes ouvertes clientes : %d\n"
+    + "Commandes ouvertes en retard : %d\n"
+    + "Taux backlog en retard : %.2f %%\n"
+    + "Retard courant total : %.0f s\n"
+    + "Retard courant moyen : %.0f s",
+    c6Ouvertes, c6EnRetard, c6Taux * 100.0, c6RetardTotalSec, c6RetardMoyenSec));
+board.logEvent(String.format(java.util.Locale.US,
+    "[RETARD-CLIENT-OUVERT] ouvertes=%d | enRetard=%d | taux=%.3f | retardTotalSec=%.0f | retardMoyenSec=%.0f",
+    c6Ouvertes, c6EnRetard, c6Taux, c6RetardTotalSec, c6RetardMoyenSec));]]></Action>
 				</Event>
 				<Event>
 					<Id>2026091900001</Id>

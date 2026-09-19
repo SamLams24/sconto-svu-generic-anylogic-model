@@ -3960,15 +3960,152 @@ terminal.
 **C.3 = TERMINÉ / VALIDÉ STATIQUEMENT. C.3-FIX = TERMINÉ / VALIDÉ.
 C.4+ = NON COMMENCÉS. BLOC C = EN COURS.**
 
+### C.4 — Indicateurs dérivés du retard courant (2026-09-19)
+
+Précondition runtime demandée (Build AnyLogic sur `b928b6b` = 0 erreur) :
+**non exécutable depuis ce terminal, non confirmée** — les modifications
+C.4 ci-dessous sont donc, comme les blocs précédents,
+**statiquement validées, runtime à confirmer par l'utilisateur**.
+
+#### C.4.0 — Audit préalable des fonctions existantes
+
+Inventaire de `Main` avant toute création, pour éviter de dupliquer une
+fonction déjà disponible :
+
+| Fonction existante | Rôle | Réutilisable pour C.4 ? |
+|---|---|---|
+| `nombreCommandesClosesFiabilite()` (Bloc B.1) | Compte les commandes **terminales** (via `commandeEstTerminale()` depuis C.3-FIX) | Non — C.4 a besoin de l'inverse (ouvertes), fonction absente |
+| `tauxCommandesLivreesCloses()` (Bloc B.3-FIX2) | Complétude parmi les commandes **closes** | Non — périmètre "closes", pas "ouvertes" |
+| `verifierFillRate()` | Ponctualité parmi les commandes **closes**, pondérée dans le PI | Non — même remarque, et interdiction explicite de toucher au PI historique |
+| `calculerPIGlobal()` | Calcul du PI global (Bloc B.2/B.3, figé) | Non concerné, non modifié |
+| `nombreCommandesClientes()` | Compte **toutes** les commandes clientes, tout statut confondu | Non — pas de filtre "ouverte" |
+| `nombreCommandesOuvertesPourPerturbation()` | Compte les commandes non closes, mais avec un ensemble d'états **différent** (`SERVIE`/`EN_RETARD`/`ANNULEE`/`CLOTUREE`, ces 2 derniers jamais assignés dans ce master) pour un usage de test de perturbation fournisseur | Non — classification incompatible avec `commandeEstTerminale()`, usage sans rapport |
+| `nombreCommandesOuvertes()` | — | **N'existe pas** — créée en C.4.2 |
+
+**Convention de taux identifiée** : les fonctions `taux...()` **sans**
+suffixe `Pct` (`verifierFillRate()`, `tauxCommandesLivreesCloses()`,
+`tauxOccupation` dans `calculerPIGlobal()`) retournent un ratio **0..1** ;
+seules les fonctions à suffixe `...Pct` (`tauxRebutPct()`,
+`tauxReprisePct()`, `100.0 * ... / total` dans leur corps) retournent
+**0..100**. `tauxCommandesOuvertesEnRetard()` (sans suffixe `Pct`) suit
+donc la convention **0..1**, alignée sur son plus proche analogue
+`tauxCommandesLivreesCloses()`.
+
+#### Fonctions ajoutées (Main, toutes juste après `evaluerRetardsCommandesOuvertes()`)
+
+| Fonction | Définition mathématique |
+|---|---|
+| `retardCourantCommandeOuverteSec(CommandeAgent cmd)` | `cmd==null ∨ commandeEstTerminale(cmd) ∨ tPromise≤0 → 0` ; sinon `max(0, time() − tPromise)` |
+| `nombreCommandesOuvertes()` | `\|{cmd ∈ commandes : ¬estOrdreStockAutonome(cmd) ∧ ¬commandeEstTerminale(cmd)}\|` |
+| `nombreCommandesOuvertesEnRetard()` | `\|{cmd ouverte (idem ci-dessus) : cmd.retardConstate}\|` |
+| `tauxCommandesOuvertesEnRetard()` | `nombreCommandesOuvertesEnRetard() / nombreCommandesOuvertes()`, `0` si dénominateur nul — échelle **0..1** |
+| `retardCourantTotalOuvertSec()` | `Σ retardCourantCommandeOuverteSec(cmd)` pour `cmd` ouverte, REAPPRO exclus |
+| `retardCourantMoyenCommandesEnRetardSec()` | `Σ retardCourantCommandeOuverteSec(cmd)` pour `cmd` ouverte **et** `retardConstate=true`, divisé par `nombreCommandesOuvertesEnRetard()`, `0` si dénominateur nul |
+
+**Écart documenté par rapport à la formulation littérale de C.4.5** :
+la consigne disait "pour toutes les commandes connues" sans mention
+explicite d'exclusion REAPPRO. Choix retenu : **exclure les REAPPRO_*
+partout dans C.4** (`estOrdreStockAutonome()`), par cohérence avec (a)
+l'objectif explicite du bloc ("mesurer les commandes ouvertes dont
+l'**engagement client** est dépassé"), (b) `evaluerRetardsCommandesOuvertes()`
+(Bloc C.3) qui exclut déjà les REAPPRO de toute évaluation de retard, et
+(c) le fait que les REAPPRO n'ont jamais de vrai engagement client (audit
+C.1). Décision documentée, pas une divergence silencieuse.
+
+#### Confirmations demandées
+
+- **Toutes pures** : aucune des 6 fonctions n'écrit quoi que ce soit
+  (`retardConstate`, `statut`, ou tout autre champ) — confirmé par
+  relecture, chacune ne fait que lire `commandes`/`cmd.statut`/
+  `cmd.tPromise`/`cmd.retardConstate`/`time()`.
+- **Aucun état temporel stocké** : ni `retardCumule`, ni
+  `retardMoyenStocke`, ni `nombreRetardsStocke`, ni `datePremierRetard`,
+  ni `dureeClientAccumulee`, ni historique — tout est recalculé à la
+  demande à chaque appel.
+- **Terminalité exclusivement via `commandeEstTerminale()`** : les 6
+  fonctions l'appellent (directement ou via
+  `retardCourantCommandeOuverteSec()`/`nombreCommandesOuvertesEnRetard()`),
+  aucune ne recrée de liste de statuts.
+- **PI/SCOR historiques inchangés** : `calculerPIGlobal()`,
+  `verifierFillRate()`, `RS`, `RL` — 0 ligne touchée (confirmé par le
+  diff : 92 insertions, **0 suppression**).
+- **`evtEvaluationRetardsCommandesOuvertes` inchangé** : fréquence 60s,
+  action limitée à `evaluerRetardsCommandesOuvertes();` — 0 ligne
+  modifiée.
+- **`evaluerRetardsCommandesOuvertes()`/`commandeEstTerminale()`/
+  `nombreCommandesClosesFiabilite()`/`tauxCommandesLivreesCloses()`
+  inchangées** : aucun appel externe ajouté à leur corps, seulement de
+  nouvelles fonctions qui les *appellent* en lecture.
+
+#### Tests raisonnés sur le code
+
+**Commandes A/B/C/D/E** (A ouverte à temps, B ouverte retard 120s, C
+ouverte retard 60s, D terminale tardive, E terminale à temps) :
+
+| Indicateur | Calcul | Résultat |
+|---|---|---|
+| `nombreCommandesOuvertes()` | `\|{A,B,C}\|` (D,E exclues : terminales) | **3** |
+| `nombreCommandesOuvertesEnRetard()` | `\|{B,C}\|` (`retardConstate=true`) | **2** |
+| `retardCourantTotalOuvertSec()` | `0 + 120 + 60` | **180** |
+| `retardCourantMoyenCommandesEnRetardSec()` | `(120 + 60) / 2` | **90** |
+| `tauxCommandesOuvertesEnRetard()` | `2 / 3` | **0.666...** (échelle 0..1, convention confirmée) |
+
+Tous conformes aux valeurs attendues dans la demande.
+
+**Commande C (terminale, `retardConstate=false`)** et **Commande D
+(terminale, `retardConstate=true`)** : `commandeEstTerminale()` vraie pour
+les deux → `retardCourantCommandeOuverteSec()` retourne `0` pour les
+deux, **sans lire `time()-tPromise`** (le `if (commandeEstTerminale(cmd)) return 0.0;`
+précède tout calcul temporel dans le corps de la fonction) — la commande
+D ne produit donc jamais un retard courant croissant après sa clôture.
+`nombreCommandesOuvertes()`/`nombreCommandesOuvertesEnRetard()` les
+excluent également toutes les deux.
+
+**Cohérence C.3** : pour toute commande ouverte, `retardConstate==true`
+implique nécessairement `retardCourantCommandeOuverteSec(cmd) > 0` tant
+que `tPromise` reste valide — les deux dérivent de la même comparaison
+`time() > tPromise`, l'une posée par `evaluerRetardsCommandesOuvertes()`
+(Bloc C.3, à la cadence de l'Event), l'autre recalculée à la demande.
+Réciproquement, après le passage de l'Event C.3, `time() > tPromise`
+implique `retardConstate==true` au prochain cycle. **Résolution
+temporelle documentée** : détection à ±60s près (cadence de
+`evtEvaluationRetardsCommandesOuvertes`, Bloc C.3, non modifiée) — granularité
+délibérément choisie en C.3, pas une anomalie.
+
+#### Non-régression — diff inspecté
+
+`commandeEstTerminale()`, `evaluerRetardsCommandesOuvertes()`,
+`evtEvaluationRetardsCommandesOuvertes`, `nombreCommandesClosesFiabilite()`,
+`tauxCommandesLivreesCloses()`, `calculerPIGlobal()`, `verifierFillRate()` :
+**0 ligne modifiée** (diff = 92 insertions, 0 suppression, confirmé par
+`git diff`).
+
+#### Validations statiques
+
+- XML bien formé : OK
+- IDs AnyLogic uniques : 1684/1684 (inchangé — texte `AdditionalClassCode`
+  uniquement, aucun élément XML ajouté/retiré)
+- `git diff --check` : aucune erreur
+- Grep DataCo : 6 occurrences, toutes pré-existantes (inchangé)
+- Diff purement additif : 92 lignes ajoutées, 0 supprimée
+- Aucun bruit `<EmbeddedIcon>`/coordonnée graphique/ID modifié
+- JSON/scénarios inchangés
+
+**BUILD RUNTIME À CONFIRMER PAR UTILISATEUR** — non exécuté depuis ce
+terminal.
+
+**C.4 = TERMINÉ / VALIDÉ STATIQUEMENT. C.5+ = NON COMMENCÉS. BLOC C = EN COURS.**
+
 ### Statut Bloc C
 
 - [x] **C.1 — Audit sémantique retards / engagement client : TERMINÉ / AUDIT VALIDÉ**
 - [x] **C.2 — Fondation sémantique engagement / retard : TERMINÉ / VALIDÉ**
 - [x] **C.3 — Détection des retards ouverts : TERMINÉ / VALIDÉ STATIQUEMENT**
 - [x] **C.3-FIX — Source canonique des états terminaux : TERMINÉ / VALIDÉ**
-- [ ] C.4+ — non commencés
-- [ ] Export/PI cohérent (intégration de `retardConstate` dans RL/dashboards — hors périmètre C.3)
-- [ ] Build + run utilisateur (C.2, C.3 et C.3-FIX)
+- [x] **C.4 — Indicateurs dérivés du retard courant : TERMINÉ / VALIDÉ STATIQUEMENT**
+- [ ] C.5+ — non commencés
+- [ ] Export/PI cohérent (intégration de `retardConstate`/indicateurs C.4 dans RL/dashboards — hors périmètre C.4)
+- [ ] Build + run utilisateur (C.2, C.3, C.3-FIX et C.4)
 
 **BLOC C = EN COURS.**
 

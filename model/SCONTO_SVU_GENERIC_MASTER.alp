@@ -9977,6 +9977,98 @@ void evaluerRetardsCommandesOuvertes() {
     }
 }
 
+// Bloc C.4 -- retard COURANT d'une commande encore ouverte. Fonction PURE :
+// aucune ecriture, ne modifie ni retardConstate ni statut, aucun effet de
+// bord. Ne jamais utiliser time()-tPromise pour une commande TERMINALE --
+// commandeEstTerminale() (source unique, Bloc C.3-FIX) est donc verifiee
+// AVANT tout calcul temporel, sinon le retard "courant" d'une commande deja
+// cloturee continuerait artificiellement d'augmenter avec time(). Distinct
+// de retardConstate (signal binaire fige a la cloture, Bloc C.2/C.3) : ceci
+// est une mesure continue, recalculee a chaque appel, jamais stockee.
+public double retardCourantCommandeOuverteSec(CommandeAgent cmd) {
+    if (cmd == null) return 0.0;
+    if (commandeEstTerminale(cmd)) return 0.0;
+    if (cmd.tPromise <= 0) return 0.0;
+    return Math.max(0.0, time() - cmd.tPromise);
+}
+
+// Bloc C.4 -- nombre de commandes CLIENTES encore ouvertes. Aucune liste de
+// statuts recreee : "ouverte" = connue, pas un ordre REAPPRO_
+// (estOrdreStockAutonome(), Bloc M, non modifiee) et NON terminale selon
+// commandeEstTerminale() (source unique, Bloc C.3-FIX) -- memes filtres que
+// evaluerRetardsCommandesOuvertes() ci-dessus.
+public int nombreCommandesOuvertes() {
+    int n = 0;
+    for (CommandeAgent cmd : commandes) {
+        if (cmd == null || estOrdreStockAutonome(cmd)) continue;
+        if (!commandeEstTerminale(cmd)) n++;
+    }
+    return n;
+}
+
+// Bloc C.4 -- nombre de commandes ouvertes dont l'engagement client est deja
+// depasse. Verite metier = cmd.retardConstate (Bloc C.2/C.3), jamais une
+// seconde definition divergente : aucune re-evaluation de time()>tPromise
+// ici, seulement une lecture du signal deja pose par
+// evaluerRetardsCommandesOuvertes().
+public int nombreCommandesOuvertesEnRetard() {
+    int n = 0;
+    for (CommandeAgent cmd : commandes) {
+        if (cmd == null || estOrdreStockAutonome(cmd)) continue;
+        if (commandeEstTerminale(cmd)) continue;
+        if (cmd.retardConstate) n++;
+    }
+    return n;
+}
+
+// Bloc C.4 -- taux de commandes ouvertes en retard, sur l'echelle 0..1 --
+// meme convention que verifierFillRate()/tauxCommandesLivreesCloses() (les
+// fonctions "taux..." SANS suffixe "Pct" dans ce master retournent un ratio
+// 0..1 ; seules les fonctions "...Pct", ex. tauxRebutPct()/tauxReprisePct(),
+// retournent 0..100 -- audit des conventions existantes, aucun choix
+// arbitraire). Aucune commande ouverte -> 0 (pas NaN : contrairement a
+// verifierFillRate()/tauxCommandesLivreesCloses(), qui distinguent une
+// absence de donnee d'un ratio nul sur une population de commandes CLOSES,
+// C.4 observe un instant courant ou "0 commande ouverte en retard sur 0
+// commande ouverte" n'est pas ambigu -- 0, comme demande explicitement).
+public double tauxCommandesOuvertesEnRetard() {
+    int ouvertes = nombreCommandesOuvertes();
+    if (ouvertes <= 0) return 0.0;
+    return (double) nombreCommandesOuvertesEnRetard() / ouvertes;
+}
+
+// Bloc C.4 -- dette temporelle CLIENT actuellement accumulee sur les
+// commandes encore ouvertes (somme des retards courants). Ordres REAPPRO_
+// exclus (estOrdreStockAutonome()), coherent avec toutes les autres
+// fonctions C.4 et avec evaluerRetardsCommandesOuvertes() (Bloc C.3) : ce
+// ne sont pas des engagements clients. Entierement derive a la demande,
+// aucun etat stocke.
+public double retardCourantTotalOuvertSec() {
+    double total = 0.0;
+    for (CommandeAgent cmd : commandes) {
+        if (cmd == null || estOrdreStockAutonome(cmd)) continue;
+        total += retardCourantCommandeOuverteSec(cmd);
+    }
+    return total;
+}
+
+// Bloc C.4 -- retard courant MOYEN, uniquement parmi les commandes ouvertes
+// DEJA en retard (denominateur = nombreCommandesOuvertesEnRetard(), jamais
+// nombreCommandesOuvertes()). Nom explicite "Courant"+"Ouvert" pour ne
+// jamais etre confondu avec un retard historique/final calcule a la
+// cloture. Aucune commande ouverte en retard -> 0.
+public double retardCourantMoyenCommandesEnRetardSec() {
+    int n = nombreCommandesOuvertesEnRetard();
+    if (n <= 0) return 0.0;
+    double total = 0.0;
+    for (CommandeAgent cmd : commandes) {
+        if (cmd == null || estOrdreStockAutonome(cmd)) continue;
+        if (commandeEstTerminale(cmd) || !cmd.retardConstate) continue;
+        total += retardCourantCommandeOuverteSec(cmd);
+    }
+    return total / n;
+}
+
 // Bloc B.1 -- Meme comptage que tauxCommandesLivreesCloses() ci-dessous, expose
 // separement pour permettre un seuil de taille d'echantillon minimal avant de
 // ponderer RL dans le PI (Bloc B.2, calculerPIGlobal() -- non modifiee dans ce

@@ -3176,7 +3176,98 @@ insertions / 4 suppressions, vérifié par `git diff`).
 
 **PR reste DRAFT. Aucun merge vers `main`.**
 
-- [ ] Dernier run export court utilisateur — si Catalogue CO.1.1 == Pipeline CO.1.1 et sources RS/AG exactes : **BLOC B = TERMINÉ / VALIDÉ / FIGÉ**
+## VALIDATION UTILISATEUR RUNTIME — B.3-FIX (2026-09-19)
+
+Run export comparé ligne à ligne : Pipeline SCOR vers PI ↔ Traçabilité
+performance = **0 divergence sur 18 métriques communes** (valeur, unité,
+Bottom→Perfect, score, grades fuzzy, poids, contribution, source).
+**CO.1.1 aligné sur les 4 feuilles à 0.021** (Pipeline, Traçabilité,
+Catalogue SCOR, Métriques SCOR calculables) — **B.3-FIX CO.1.1 VALIDÉ
+runtime.** AG.3.32 et sources RS.2.x textuellement corrects. Aucune
+erreur Excel.
+
+## Bloc B.3-FIX2 — dernière incohérence valeurs RS.2.x du catalogue (2026-09-19)
+
+### Bug confirmé
+
+Même export, même instant : Pipeline/PI live donnait RS.2.1=5.000s,
+RS.2.2=1103.464s, RS.2.3=1881.827s ; Catalogue SCOR donnait
+RS.2.1=1.644s, RS.2.2=13.550s, RS.2.3=73.614s. Le texte source (déjà
+corrigé au B.3-FIX précédent) décrivait la formule B.2
+((sumCycleTime+sumWaitTime)/unités entrées, périmètre ENTREPRISE_FOCALE)
+mais la **valeur** provenait encore de `avgCycleTimeMacro()` — l'ancien
+calcul pré-B.2 (moyenne de temps de traitement seul, sur
+`board.kpiParMacro`, toute la chaîne) — confirmé par lecture directe des 4
+branches `valeurRuntimeMetriqueSCOR("RS.2.1"/"RS.2.2"/"RS.2.3"/"RS.2.5")`.
+
+### Audit préalable (comme demandé)
+
+- `catalogueMetriquesAHPRows()` et `metriquesSCORCalculablesRows()`
+  appellent bien toutes les deux `valeurRuntimeMetriqueSCOR(code)` (une
+  seule fonction à corriger pour les deux feuilles).
+- **Ni l'une ni l'autre n'appelle `strategic.calculerPIGlobal()`** avant de
+  lire — contrairement à `n3ToN1Rows()` (Pipeline) et
+  `piTraceabilityRows()` (Traçabilité), qui le font explicitement en tête
+  de fonction. Rien ne garantissait donc que `strategic.detailN3` soit à
+  jour au moment de la génération de ces 2 feuilles.
+
+### Solution retenue (celle privilégiée par la consigne)
+
+Nouvelle fonction **read-only** `valeurRuntimePIDetail(String code)` (Main) :
+force un calcul frais de `calculerPIGlobal()` (même principe déjà utilisé
+par Pipeline/Traçabilité elles-mêmes), puis cherche dans
+`strategic.detailN3` (RL/RS/AG/CO/AM) la `MetriqueN3` dont
+`codeOfficielSCOR` correspond exactement au code demandé et retourne sa
+`valeurBrute`. **Aucune reduplication de la formule de cycle macro B.2** —
+une seule source de vérité numérique, celle effectivement utilisée par le
+PI live. Les 4 branches `RS.2.1/RS.2.2/RS.2.3/RS.2.5` de
+`valeurRuntimeMetriqueSCOR()` délèguent désormais à cette fonction.
+`avgCycleTimeMacro()` n'est plus appelée par aucune de ces 4 branches
+(fonction elle-même non supprimée, non modifiée, plus aucun appelant après
+ce correctif).
+
+**RS.2.5** : si Return n'est pas exécuté sur le run,
+`calculerPIGlobal()` n'ajoute alors aucune `MetriqueN3` de code "RS.2.5" à
+`detailN3` (gardée par `main.macroExecutee(sR)`) — `valeurRuntimePIDetail()`
+ne trouve donc rien et retourne `NaN` automatiquement, sans cas particulier
+à coder : "non calculé" reste "non calculé", jamais une valeur fabriquée.
+
+### Ce qui n'a PAS été modifié
+
+La formule mathématique B.2 elle-même (`calculerPIGlobal()`),
+`prevoirDemande()`, `ajusterDebits()`, `CO.1.1`, RL, AG, AM, le warm-up,
+les Blocs A/M, le JSON/scénarios, la fixture A/B, ZENER, les Blocs C/D/E.
+Diff purement additif pour le nouveau helper + 4 lignes remplacées par un
+seul bloc dans `valeurRuntimeMetriqueSCOR()` (53 insertions / 4
+suppressions, vérifié par `git diff`).
+
+### Tests statiques B.3-FIX2
+
+| Test | Vérification |
+|---|---|
+| B3F2-1/2/3 | `valeurRuntimeMetriqueSCOR("RS.2.1"/"RS.2.2"/"RS.2.3")` délègue à `valeurRuntimePIDetail()`, qui lit `m.valeurBrute` depuis `detailN3` — même valeur que le PI live par construction |
+| B3F2-4 | RS.2.5 non exécuté → aucune `MetriqueN3` "RS.2.5" dans `detailN3` → `NaN` automatique |
+| B3F2-5 | `avgCycleTimeMacro(` n'apparaît plus dans aucune des 4 branches RS.2.x de `valeurRuntimeMetriqueSCOR()` (vérifié par grep) |
+| B3F2-6 | `n3ToN1Rows()`/`piTraceabilityRows()` non modifiées |
+| B3F2-7 | Branche `CO.1.1` non touchée par ce commit |
+
+### Validations statiques
+
+- XML bien formé : OK
+- IDs AnyLogic uniques : 1680/1680 (inchangé)
+- `git diff --check` : aucune erreur
+- Grep DataCo : 6 occurrences, toutes pré-existantes (inchangé)
+- JSON/scénarios inchangés
+- Diff scopé exactement aux 4 lignes RS.2.x remplacées + le nouveau helper
+  read-only (vérifié : aucune ligne de `calculerPIGlobal()`/`prevoirDemande()`/
+  `ajusterDebits()`/`CO.1.1` supprimée)
+- Blocs C/D/E non commencés
+
+**Commit** : `fix(generic): align RS catalogue values with live PI`
+
+**PR reste DRAFT. Aucun merge vers `main`.**
+
+- [ ] Dernier run export court utilisateur — si Catalogue RS.2.1/2.2/2.3 == Pipeline RS.2.1/2.2/2.3 et CO.1.1 reste identique : **BLOC B = TERMINÉ / VALIDÉ / FIGÉ**
 - [ ] Dette documentée : incohérence stock stratégique mono (log T=1740 stock=185 vs Dashboard ≈37) — audit architectural futur, hors Bloc B
 
 ## Bloc C — retards

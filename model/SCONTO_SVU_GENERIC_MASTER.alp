@@ -1064,6 +1064,43 @@ void majBorneCycleMacro(String codeSCOR, double nominalPondere) {
                                  "B.2_DECROISSANCE_LENTE", "2.0", true));
 }
 
+// Bloc B.3-FIX2 -- lecture READ-ONLY de la valeur BRUTE reellement utilisee
+// par calculerPIGlobal() pour un code SCOR donne, depuis strategic.detailN3
+// -- la MEME liste de MetriqueN3 que "Pipeline SCOR vers PI" (n3ToN1Rows())
+// et "Traçabilité performance" (piTraceabilityRows()) lisent deja. Evite de
+// redupliquer la formule de cycle macro B.2 (perimetre ENTREPRISE_FOCALE,
+// (sumCycleTime+sumWaitTime)/unites entrees) dans le catalogue export --
+// une seule source de verite numerique, celle du PI live.
+// Force un calcul frais de calculerPIGlobal() avant la recherche : meme
+// principe deja utilise par n3ToN1Rows()/piTraceabilityRows() elles-memes
+// (qui l'appellent en tete de fonction), necessaire ici car
+// catalogueMetriquesAHPRows()/metriquesSCORCalculablesRows() -- contrairement
+// a ces deux feuilles -- NE le font PAS, et rien ne garantit sinon que
+// detailN3 soit a jour au moment ou l'export Excel les genere.
+// Retourne Double.NaN si aucune metrique ne porte ce code officiel dans
+// aucune des 5 familles (RL/RS/AG/CO/AM) -- notamment RS.2.5 (Return) quand
+// ce macro n'est pas execute sur le run (calculerPIGlobal() ne l'ajoute
+// alors pas a detailN3 du tout, cf. main.macroExecutee(sR)) : NaN reflete
+// alors correctement "non calcule", jamais une valeur fabriquee.
+double valeurRuntimePIDetail(String code) {
+    if (strategic == null || code == null) return Double.NaN;
+    String c = code.trim().toUpperCase(java.util.Locale.ROOT);
+    try {
+        strategic.calculerPIGlobal();
+        String[] attrs = {"RL", "RS", "AG", "CO", "AM"};
+        for (String attr : attrs) {
+            java.util.ArrayList<MetriqueN3> lst = strategic.detailN3.get(attr);
+            if (lst == null) continue;
+            for (MetriqueN3 m : lst) {
+                if (m != null && m.codeOfficielSCOR != null && m.codeOfficielSCOR.trim().equalsIgnoreCase(c)) {
+                    return m.valeurBrute;
+                }
+            }
+        }
+    } catch (Throwable ignored) {}
+    return Double.NaN;
+}
+
 double dureeReceptionEtControleReelle(String idMatiere) {
     if (idMatiere == null) return 0.0;
     String posteReception = null, posteControle = null;
@@ -20700,10 +20737,22 @@ try {
     if (c.equals("AG.3.2")) return 100.0 - (pceCodes("M1.") * 100.0);
     if (c.equals("RS.1.1")) return (board != null && board.kpiGlobal != null && board.kpiGlobal.count > 0) ? orderFulfillmentLeadTimeGlobal() : Double.NaN;
     if (c.equals("RS.3.94")) return orderWaitingTimeGlobal();
-    if (c.equals("RS.2.1")) return avgCycleTimeMacro("sS");
-    if (c.equals("RS.2.2")) return avgCycleTimeMacro("sM");
-    if (c.equals("RS.2.3")) return avgCycleTimeMacro("sD");
-    if (c.equals("RS.2.5")) return avgCycleTimeMacro("sR");
+    // Bloc B.3-FIX2 -- BUG CONFIRME PAR RUN REEL : ces 4 branches renvoyaient
+    // encore avgCycleTimeMacro() (moyenne de temps de TRAITEMENT seul, sur
+    // board.kpiParMacro -- toute la chaine, pas le perimetre entreprise
+    // focale), l'ancien calcul pre-Bloc B.2. Le texte source
+    // (sourceFormuleMetriqueSCOR(), deja corrige au B.3-FIX precedent)
+    // decrivait deja la formule B.2 correcte -- seule la VALEUR n'avait pas
+    // suivi (Catalogue/Métriques SCOR calculables affichaient RS.2.1/2.2/2.3
+    // tres inferieurs au Pipeline/PI live, ex. 1.644s vs 5.000s). Corrige en
+    // lisant directement la valeur BRUTE deja calculee par calculerPIGlobal()
+    // (valeurRuntimePIDetail(), ci-dessus) plutot que de redupliquer sa
+    // formule ici : une seule source de verite numerique. RS.2.5 renvoie
+    // NaN si Return n'est pas execute sur ce run (aucune MetriqueN3 "RS.2.5"
+    // dans detailN3 dans ce cas), jamais une valeur fabriquee.
+    if (c.equals("RS.2.1") || c.equals("RS.2.2") || c.equals("RS.2.3") || c.equals("RS.2.5")) {
+        return valeurRuntimePIDetail(c);
+    }
     String codes = codesProcessusPourMetriqueSCOR(c);
     if (!codes.isEmpty()) return avgCycleTimeCodes(codes);
 

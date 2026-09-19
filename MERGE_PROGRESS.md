@@ -4096,6 +4096,179 @@ terminal.
 
 **C.4 = TERMINÉ / VALIDÉ STATIQUEMENT. C.5+ = NON COMMENCÉS. BLOC C = EN COURS.**
 
+### C.4-FIX — Cohérence instantanée du retard courant (2026-09-19)
+
+#### Distinction vérité instantanée / `retardConstate`
+
+Confirmée et rendue explicite dans le code : `retardConstate` (Bloc
+C.2/C.3) est un état **mémorisé et monotone**, actualisé uniquement à la
+cadence de `evtEvaluationRetardsCommandesOuvertes` (60s, inchangée) — il
+peut donc rester `false` jusqu'à ~60s après le franchissement réel de
+`tPromise`. Le "retard maintenant" est une vérité **recalculable à tout
+instant** (`time() > tPromise`) qui n'a pas besoin d'attendre ce cycle.
+Avant ce fix, les indicateurs C.4 mélangeaient les deux sources selon la
+fonction, créant une fenêtre d'incohérence pouvant aller jusqu'à 60s.
+
+#### C.4-FIX.1 — Pré-audit (filtres avant correctif)
+
+| Fonction | Filtre commande terminale | Filtre REAPPRO | Filtre `tPromise≤0` | Base retard |
+|---|---|---|---|---|
+| `evaluerRetardsCommandesOuvertes()` | `commandeEstTerminale()` | `estOrdreStockAutonome()` | oui | `time()>tPromise` (écrit `retardConstate`) |
+| `retardCourantCommandeOuverteSec()` | `commandeEstTerminale()` | **absent** | oui | `time()-tPromise` |
+| `nombreCommandesOuvertes()` | `commandeEstTerminale()` | `estOrdreStockAutonome()` | n/a | — |
+| `nombreCommandesOuvertesEnRetard()` | `commandeEstTerminale()` | `estOrdreStockAutonome()` | n/a | **`cmd.retardConstate`** (mémorisé) |
+| `tauxCommandesOuvertesEnRetard()` | via les 2 fonctions ci-dessus | idem | n/a | idem |
+| `retardCourantTotalOuvertSec()` | via `retardCourantCommandeOuverteSec()` | filtre redondant en plus | idem | instantané |
+| `retardCourantMoyenCommandesEnRetardSec()` | `commandeEstTerminale()` **+** `!cmd.retardConstate` | `estOrdreStockAutonome()` | idem | **mélange** : dénominateur instantané (`nombreCommandesOuvertesEnRetard()`), numérateur mémorisé (`retardConstate`) |
+
+**2 incohérences confirmées** : (1) `retardCourantCommandeOuverteSec()`
+n'excluait pas explicitement les REAPPRO (mais `commandeEstTerminale()`
+seule ne suffit pas à les exclure — un REAPPRO ouvert non terminal avec
+un `tPromise` dépassé aurait pu retourner une valeur positive) ; (2)
+`nombreCommandesOuvertesEnRetard()`/`retardCourantMoyenCommandesEnRetardSec()`
+utilisaient `retardConstate` (mémorisé) là où le reste de C.4 est
+instantané — source exacte de la fenêtre d'incohérence décrite dans la
+consigne.
+
+#### C.4-FIX.2/C.4-FIX.6 — Source canonique du retard instantané
+
+**Nouvelle fonction `commandeOuverteEstEnRetardMaintenant(CommandeAgent cmd)`**
+(Main, juste avant `evaluerRetardsCommandesOuvertes()`) : prédicat **pur**,
+aucune écriture. Réutilise exclusivement `commandeEstTerminale()` (source
+canonique unique, Bloc C.3-FIX) et `estOrdreStockAutonome()` (Bloc M,
+exclusion REAPPRO) — aucune liste de statuts recréée.
+
+```java
+public boolean commandeOuverteEstEnRetardMaintenant(CommandeAgent cmd) {
+    if (cmd == null) return false;
+    if (commandeEstTerminale(cmd)) return false;
+    if (estOrdreStockAutonome(cmd)) return false;
+    if (cmd.tPromise <= 0) return false;
+    return time() > cmd.tPromise;
+}
+```
+
+**Réutilisée par C.3** (`evaluerRetardsCommandesOuvertes()`), comme
+autorisé explicitement par la consigne — refactoring à sémantique
+strictement identique (mêmes 4 conditions, même résultat final) :
+
+```java
+void evaluerRetardsCommandesOuvertes() {
+    for (CommandeAgent cmd : commandes) {
+        if (commandeOuverteEstEnRetardMaintenant(cmd)) {
+            cmd.retardConstate = true;
+        }
+    }
+}
+```
+
+**`retardConstate` reste monotone** : toujours `if (...) cmd.retardConstate = true;`,
+jamais une réassignation `cmd.retardConstate = commandeOuverteEstEnRetardMaintenant(cmd);`
+qui pourrait le repasser à `false` — exigence C.4-FIX.7 respectée à la
+lettre.
+
+#### C.4-FIX.3/C.4-FIX.4/C.4-FIX.5 — Fonctions alignées
+
+- **`retardCourantCommandeOuverteSec(cmd)`** : `if (!commandeOuverteEstEnRetardMaintenant(cmd)) return 0.0; return Math.max(0.0, time() - cmd.tPromise);`
+  — non nul **si et seulement si** le prédicat est vrai (corrige au passage
+  l'absence de filtre REAPPRO).
+- **`nombreCommandesOuvertesEnRetard()`** : compte désormais
+  `commandeOuverteEstEnRetardMaintenant(cmd)` au lieu de
+  `cmd.retardConstate` — vérité instantanée, plus de latence de 60s.
+- **`retardCourantMoyenCommandesEnRetardSec()`** : la boucle de sommation
+  utilise désormais `commandeOuverteEstEnRetardMaintenant(cmd)` — **même
+  ensemble de commandes** que le dénominateur
+  `nombreCommandesOuvertesEnRetard()` (avant ce fix, le numérateur
+  utilisait `retardConstate` et le dénominateur la vérité instantanée —
+  ensembles potentiellement différents pendant la fenêtre de latence).
+- **`nombreCommandesOuvertes()`** et **`tauxCommandesOuvertesEnRetard()`** :
+  **aucune ligne modifiée** — la 1ʳᵉ ne dépend pas de `retardConstate`
+  (dénominateur "toutes ouvertes", indépendant du retard) ; la 2ᵉ hérite
+  automatiquement de la correction via ses 2 appels inchangés à
+  `nombreCommandesOuvertes()`/`nombreCommandesOuvertesEnRetard()`.
+- **`retardCourantTotalOuvertSec()`** : **aucune ligne modifiée** — son
+  appel à `retardCourantCommandeOuverteSec()` bénéficie transitivement de
+  la correction (le filtre `estOrdreStockAutonome()` explicite dans sa
+  boucle devient redondant mais harmless, aucune régression).
+
+#### Exclusion REAPPRO — confirmée et documentée
+
+Confirmé par relecture de `declencherProductionAutonome()`/
+`estOrdreStockAutonome()` : les ordres `REAPPRO_*` sont des ordres de
+fabrication **internes/autonomes** (Bloc M.3), jamais des commandes
+client. Toutes les fonctions C.4 (`nombreCommandesOuvertes()`,
+`nombreCommandesOuvertesEnRetard()`, `tauxCommandesOuvertesEnRetard()`,
+`retardCourantTotalOuvertSec()`, `retardCourantMoyenCommandesEnRetardSec()`,
+et désormais `commandeOuverteEstEnRetardMaintenant()`/
+`retardCourantCommandeOuverteSec()`) excluent les REAPPRO via
+`estOrdreStockAutonome()` (Bloc M, non modifiée, non dupliquée). **Ces
+fonctions portent donc explicitement sur les COMMANDES CLIENTES
+OUVERTES**, même si leurs noms historiques (hérités des consignes C.4)
+restent plus courts — noté ici pour lever toute ambiguïté future.
+
+#### Test critique — fenêtre 300 → 330 → 360s
+
+Commande cliente ouverte, `tPromise=300s`, dernier passage Event à 300s,
+`retardConstate=false` :
+
+- **À t=330s** (avant le prochain passage de l'Event, prévu à 360s) :
+  `commandeOuverteEstEnRetardMaintenant(cmd)` = `true` (`330 > 300`) →
+  `retardCourantCommandeOuverteSec(cmd) = 30` ;
+  `nombreCommandesOuvertesEnRetard()` inclut la commande ;
+  `retardCourantTotalOuvertSec()` inclut ces 30s — **tout en acceptant**
+  `retardConstate` toujours `false` (non contradictoire : deux sources
+  différentes, désormais explicitement documentées comme telles).
+- **À t=360s**, passage de l'Event : `evaluerRetardsCommandesOuvertes()`
+  appelle le même prédicat, déjà vrai depuis t=300s → `retardConstate = true`.
+  **Aucun changement brutal des indicateurs C.4** à cet instant : ils
+  reflétaient déjà la vérité instantanée depuis t=300s.
+
+**Test après clôture** : si la commande est ensuite clôturée
+(`commandeEstTerminale(cmd)=true`, `retardConstate=true` fixé par la
+synchronisation C.2, inchangée), `commandeOuverteEstEnRetardMaintenant(cmd)`
+redevient `false` (garde `commandeEstTerminale()` en premier) →
+`retardCourantCommandeOuverteSec(cmd)=0`, la commande ne contribue plus à
+aucun agrégat **courant** — confirmé par lecture directe du code (garde
+`commandeEstTerminale()` avant tout calcul temporel dans les 2 fonctions).
+
+#### Invariants garantis structurellement
+
+- `nombreCommandesOuvertesEnRetard()==0 ⇒ retardCourantTotalOuvertSec()==0` :
+  les deux dérivent désormais de `commandeOuverteEstEnRetardMaintenant()` —
+  si le prédicat est faux pour toute commande, `retardCourantCommandeOuverteSec()`
+  retourne 0 pour chacune, somme nulle.
+- Réciproque également garantie (même raisonnement).
+- `retardCourantMoyenCommandesEnRetardSec()` : numérateur et dénominateur
+  portent désormais sur le même ensemble exact de commandes.
+
+#### Non-régression
+
+Fréquence de l'Event (60s), `tPromise`, les constantes 300/1800/3600,
+les statuts, `commandeEstTerminale()` (source elle-même non modifiée,
+seulement appelée depuis un nouvel endroit), `modeEngagementClient`, la
+synchronisation de clôture du Bloc C.2, `calculerPIGlobal()`,
+`verifierFillRate()`, RL, RS, Fill Rate, SCOR, VSM, production, stocks,
+prévisions, auto-commande : **0 ligne touchée** (confirmé par le diff :
+54 insertions / 25 suppressions, toutes concentrées dans les 4 fonctions
+listées ci-dessus, aucune autre zone du fichier modifiée).
+
+#### Validations statiques
+
+- XML bien formé : OK
+- IDs AnyLogic uniques : 1684/1684 (inchangé — texte `AdditionalClassCode`
+  uniquement)
+- `git diff --check` : aucune erreur
+- Grep DataCo : 6 occurrences, toutes pré-existantes (inchangé)
+- Aucun bruit `<EmbeddedIcon>`/coordonnée graphique/ID modifié
+- JSON/scénarios inchangés
+
+**BUILD RUNTIME À CONFIRMER PAR UTILISATEUR** — non exécuté depuis ce
+terminal ; la précondition demandée (Build sur `fb1fe21` = 0 erreur)
+n'était pas non plus vérifiable depuis cet environnement.
+
+**C.4 = TERMINÉ / VALIDÉ STATIQUEMENT. C.4-FIX = TERMINÉ / VALIDÉ.
+C.5+ = NON COMMENCÉS. BLOC C = EN COURS.**
+
 ### Statut Bloc C
 
 - [x] **C.1 — Audit sémantique retards / engagement client : TERMINÉ / AUDIT VALIDÉ**
@@ -4103,9 +4276,10 @@ terminal.
 - [x] **C.3 — Détection des retards ouverts : TERMINÉ / VALIDÉ STATIQUEMENT**
 - [x] **C.3-FIX — Source canonique des états terminaux : TERMINÉ / VALIDÉ**
 - [x] **C.4 — Indicateurs dérivés du retard courant : TERMINÉ / VALIDÉ STATIQUEMENT**
+- [x] **C.4-FIX — Cohérence instantanée du retard courant : TERMINÉ / VALIDÉ**
 - [ ] C.5+ — non commencés
 - [ ] Export/PI cohérent (intégration de `retardConstate`/indicateurs C.4 dans RL/dashboards — hors périmètre C.4)
-- [ ] Build + run utilisateur (C.2, C.3, C.3-FIX et C.4)
+- [ ] Build + run utilisateur (C.2, C.3, C.3-FIX, C.4 et C.4-FIX)
 
 **BLOC C = EN COURS.**
 

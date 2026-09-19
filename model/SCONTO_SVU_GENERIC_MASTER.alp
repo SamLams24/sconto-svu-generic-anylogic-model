@@ -9966,29 +9966,47 @@ public boolean commandeEstTerminale(CommandeAgent cmd) {
 // verifierFillRate()/nombreCommandesClosesFiabilite(), Bloc B). Aucun
 // nouvel etat temporel (pas de compteur, pas de date de premier retard) :
 // uniquement time(), tPromise et retardConstate, comme demande.
+// Bloc C.4-FIX -- verite INSTANTANEE du depassement de promesse pour une
+// commande CLIENTE encore ouverte, distincte de cmd.retardConstate (etat
+// MEMORISE/monotone, actualise seulement a la cadence de
+// evtEvaluationRetardsCommandesOuvertes, 60s, Bloc C.3 -- non modifiee ici).
+// Predicat PUR : aucune ecriture, aucun effet de bord. Reutilise
+// exclusivement des sources deja existantes -- commandeEstTerminale()
+// (source canonique unique, Bloc C.3-FIX) et estOrdreStockAutonome() (Bloc
+// M, exclusion REAPPRO) -- aucune liste de statuts recreee. Devient la
+// source unique du "retard maintenant" pour les indicateurs C.4 ET pour
+// evaluerRetardsCommandesOuvertes() ci-dessous (une seule definition du
+// franchissement de promesse, plus deux copies de la meme condition).
+public boolean commandeOuverteEstEnRetardMaintenant(CommandeAgent cmd) {
+    if (cmd == null) return false;
+    if (commandeEstTerminale(cmd)) return false;
+    if (estOrdreStockAutonome(cmd)) return false;
+    if (cmd.tPromise <= 0) return false;
+    return time() > cmd.tPromise;
+}
+
+// Bloc C.3, refactoree en C.4-FIX pour utiliser commandeOuverteEstEnRetardMaintenant()
+// ci-dessus au lieu de recopier ses 4 conditions -- comportement strictement
+// identique (memes commandes, meme condition finale time()>tPromise), la
+// cadence de l'Event (60s, evtEvaluationRetardsCommandesOuvertes, non
+// modifiee) reste la seule limite de reactivite de retardConstate. Semantique
+// MONOTONE preservee (C.3.2) : `if (...) cmd.retardConstate = true;`, jamais
+// une reassignation `cmd.retardConstate = ...;` qui pourrait repasser a false.
 void evaluerRetardsCommandesOuvertes() {
     for (CommandeAgent cmd : commandes) {
-        if (cmd == null || estOrdreStockAutonome(cmd)) continue;
-        if (commandeEstTerminale(cmd)) continue;
-        if (cmd.tPromise <= 0) continue;
-        if (time() > cmd.tPromise) {
+        if (commandeOuverteEstEnRetardMaintenant(cmd)) {
             cmd.retardConstate = true;
         }
     }
 }
 
-// Bloc C.4 -- retard COURANT d'une commande encore ouverte. Fonction PURE :
-// aucune ecriture, ne modifie ni retardConstate ni statut, aucun effet de
-// bord. Ne jamais utiliser time()-tPromise pour une commande TERMINALE --
-// commandeEstTerminale() (source unique, Bloc C.3-FIX) est donc verifiee
-// AVANT tout calcul temporel, sinon le retard "courant" d'une commande deja
-// cloturee continuerait artificiellement d'augmenter avec time(). Distinct
-// de retardConstate (signal binaire fige a la cloture, Bloc C.2/C.3) : ceci
-// est une mesure continue, recalculee a chaque appel, jamais stockee.
+// Bloc C.4-FIX -- alignee sur commandeOuverteEstEnRetardMaintenant() : le
+// retard courant d'une commande n'est non nul QUE si cette meme verite
+// instantanee est vraie (jamais fondee sur retardConstate, qui peut retarder
+// jusqu'a 60s derriere l'instant reel). Fonction PURE, aucune ecriture,
+// recalculee a chaque appel, jamais stockee.
 public double retardCourantCommandeOuverteSec(CommandeAgent cmd) {
-    if (cmd == null) return 0.0;
-    if (commandeEstTerminale(cmd)) return 0.0;
-    if (cmd.tPromise <= 0) return 0.0;
+    if (!commandeOuverteEstEnRetardMaintenant(cmd)) return 0.0;
     return Math.max(0.0, time() - cmd.tPromise);
 }
 
@@ -10006,17 +10024,22 @@ public int nombreCommandesOuvertes() {
     return n;
 }
 
-// Bloc C.4 -- nombre de commandes ouvertes dont l'engagement client est deja
-// depasse. Verite metier = cmd.retardConstate (Bloc C.2/C.3), jamais une
-// seconde definition divergente : aucune re-evaluation de time()>tPromise
-// ici, seulement une lecture du signal deja pose par
-// evaluerRetardsCommandesOuvertes().
+// Bloc C.4-FIX -- BUG D'INCOHERENCE CORRIGE : cette fonction comptait sur
+// cmd.retardConstate (etat MEMORISE, jusqu'a 60s de latence derriere la
+// verite reelle), alors que retardCourantCommandeOuverteSec() ci-dessus (et
+// retardCourantTotalOuvertSec()) reposent desormais sur la verite
+// INSTANTANEE -- une commande pouvait donc avoir un retard courant > 0 sans
+// etre comptee ici pendant la fenetre entre 2 cycles de l'Event C.3.
+// Alignee sur commandeOuverteEstEnRetardMaintenant() : meme source que le
+// retard courant, garantissant structurellement l'invariant
+// "nombreCommandesOuvertesEnRetard()==0 => retardCourantTotalOuvertSec()==0"
+// (et reciproquement). retardConstate lui-meme n'est ni lu ni modifie ici ;
+// il reste la memoire monotone consommee par la synchronisation terminale
+// du Bloc C.2, inchangee.
 public int nombreCommandesOuvertesEnRetard() {
     int n = 0;
     for (CommandeAgent cmd : commandes) {
-        if (cmd == null || estOrdreStockAutonome(cmd)) continue;
-        if (commandeEstTerminale(cmd)) continue;
-        if (cmd.retardConstate) n++;
+        if (commandeOuverteEstEnRetardMaintenant(cmd)) n++;
     }
     return n;
 }
@@ -10057,13 +10080,19 @@ public double retardCourantTotalOuvertSec() {
 // nombreCommandesOuvertes()). Nom explicite "Courant"+"Ouvert" pour ne
 // jamais etre confondu avec un retard historique/final calcule a la
 // cloture. Aucune commande ouverte en retard -> 0.
+// Bloc C.4-FIX -- le filtre de la boucle de sommation utilisait
+// `!cmd.retardConstate` (etat MEMORISE) alors que `n` (le denominateur)
+// vient desormais de nombreCommandesOuvertesEnRetard(), fondee sur la
+// verite INSTANTANEE : les deux pouvaient donc porter sur des ensembles de
+// commandes differents pendant la fenetre entre 2 cycles de l'Event C.3.
+// Aligne sur commandeOuverteEstEnRetardMaintenant(), exactement la meme
+// source que nombreCommandesOuvertesEnRetard() et retardCourantCommandeOuverteSec().
 public double retardCourantMoyenCommandesEnRetardSec() {
     int n = nombreCommandesOuvertesEnRetard();
     if (n <= 0) return 0.0;
     double total = 0.0;
     for (CommandeAgent cmd : commandes) {
-        if (cmd == null || estOrdreStockAutonome(cmd)) continue;
-        if (commandeEstTerminale(cmd) || !cmd.retardConstate) continue;
+        if (!commandeOuverteEstEnRetardMaintenant(cmd)) continue;
         total += retardCourantCommandeOuverteSec(cmd);
     }
     return total / n;

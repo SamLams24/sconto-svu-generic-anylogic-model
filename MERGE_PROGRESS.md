@@ -3353,10 +3353,242 @@ revue architecturale post-merge.
 - [ ] Dette documentée : incohérence stock stratégique mono (log T=1740 stock=185 vs Dashboard ≈37) — audit architectural futur, hors Bloc B
 
 ## Bloc C — retards
+
+### C.1 — Audit sémantique des retards et de l'engagement client (2026-09-19)
+
+**Bloc d'audit uniquement.** Aucune ligne de `.alp` modifiée, aucune variable
+ni fonction ajoutée, `evaluerRetardsCommandesOuvertes()` non implémentée.
+Méthode : lecture directe et grep exhaustif de `model/SCONTO_SVU_GENERIC_MASTER.alp`
+(HEAD `ba74573`), jamais de suppositions.
+
+#### 1. Inventaire
+
+| Variable/fonction | Emplacement | Lecture/Écriture | Sémantique actuelle |
+|---|---|---|---|
+| `CommandeAgent.retardConstate` | **Absent du master** (3 mentions, toutes des commentaires documentant son absence, écrits lors des Blocs A.2/A.4/B.1) | — | N'existe pas. Champ du mécanisme de retard continu côté collègue, jamais porté |
+| `modeEngagementClient` | **Absent du master** (0 occurrence) | — | N'existe pas encore, ni comme variable ni comme concept nommé |
+| `dureeClientAccumulee` | **Absent du master** (0 occurrence) | — | N'existe pas sous ce nom exact — le concept le plus proche est `CommandeAgent.dureeReelleAccumulee` (voir plus bas) |
+| `CommandeAgent.leadTimeClientReelSec` | `Variable` sur `CommandeAgent` ; écrit dans `actualiserRegistreTempsCommande()` (L2424-2433) ; lu dans `finaliserReceptionClientDirecte()` (L5751), `enregistrerFinCommandeGlobale()` (L6130), export ABox (L9437) | Écriture unique (1 fonction), lectures multiples | **LEAD TIME**, pas un retard : `dureeTraitementClientReelleSec + dureeAttenteStockReelleSec` (ou repli sur les paramètres `leadTimeRepli`/`waitTimeRepli` si l'accumulation explicite est absente) |
+| `CommandeAgent.attenteStockOuverte` | `Variable` sur `CommandeAgent` ; écrit dans `ouvrirAttenteStockCommande()` (true, L2358-2359) et `finaliserDependanceReappro()` (false, L2414) ; lu dans `lierReapproAuxCommandesClientesEnAttente()` (L2400) | Écriture/lecture réparties sur 3 fonctions | **ATTENTE OPÉRATIONNELLE** (stock insuffisant en attente de réapprovisionnement), jamais un retard en soi — purement descriptif d'un état transitoire |
+| `CommandeAgent.tDebutAttenteStock` / `tFinAttenteStock` | `Variable`s sur `CommandeAgent` ; écrits dans les 2 mêmes fonctions que `attenteStockOuverte` | idem | Horodatage de l'épisode d'attente stock (début/fin), `-1` = jamais commencé/jamais fini |
+| `CommandeAgent.dureeAttenteStockReelleSec` | `Variable` sur `CommandeAgent` ; incrémenté dans `finaliserDependanceReappro()` (L2413) ; lu dans `actualiserRegistreTempsCommande()` (L2430), `enregistrerFinCommandeGlobale()` (L6131-6132) | Écriture cumulative (`+=`), potentiellement plusieurs fois si plusieurs REAPPRO couvrent la même commande | Durée réelle **cumulée** d'attente de stock, imputée depuis le(s) REAPPRO lié(s) — alimente le lead time, jamais un retard |
+| `CommandeAgent.dureeReapproImputeeReelleSec` | `Variable` sur `CommandeAgent` ; incrémenté au même site que `dureeAttenteStockReelleSec` (L2412) ; lu uniquement par l'export ABox (`run:replenishmentImputedTimeSeconds`, L9438) | Écriture cumulative, lecture export uniquement | Même valeur numérique que `dureeAttenteStockReelleSec` à l'instant de l'écriture, mais un champ **distinct**, dédié à la traçabilité ontologique (provenance), pas au calcul runtime du lead time |
+| `CommandeAgent.dureeReelleAccumulee` | `Variable` sur `CommandeAgent` ; incrémenté à 4 sites : `finaliserDependanceReappro()`-like L2531 (retry stock), L12856 (fin de production Make, calcul `time()-tDebutProduction`), L12913 (segment Deliver post-production), L13025 (segment Make) | Écriture cumulative sur plusieurs segments (Make + Deliver), jamais réinitialisé en cours de commande | Durée réelle **cumulée** de traitement physique tous segments confondus (Make + Deliver), volontairement additive (cf. commentaire C14.46 : sans le segment Deliver ajouté explicitement pour les commandes MTO/Cas2-3, leur lead time réel était artificiellement plus court que MTS) |
+| `CommandeAgent.dureeTraitementClientReelleSec` | `Variable` sur `CommandeAgent` ; écrit une seule fois dans `actualiserRegistreTempsCommande()` (L2431, depuis `dureeReelleAccumulee` ou repli) | Écriture unique par appel, idempotente | Miroir de `dureeReelleAccumulee` au moment de la clôture, utilisé pour construire `leadTimeClientReelSec` |
+| `CommandeAgent.tPromise` | `Variable` sur `CommandeAgent` ; écrit à la création de la commande (`genererCommande()`, L13183 et L13206 — 2 écritures successives redondantes mais harmless, `modeSCORActif()` ne change pas entre les deux) et à la création d'un REAPPRO (L2990, `delaiPromessePourMode("MTS")` fixe) | Écriture à la création uniquement, jamais réévaluée en cours de vie | **Seule référence d'engagement existant aujourd'hui** — voir §3 |
+| `CommandeAgent.statut` | `Variable` sur `CommandeAgent`, vocabulaire complet confirmé par grep exhaustif (voir §6) | Écrit à de nombreux sites (création, avancement, clôture) | État métier de la commande ; `EN_RETARD` est un état **terminal**, jamais transitoire |
+| `commandesRetardeesCount()` | Fonction Main (L7375) | Lecture seule sur `commandes` | Compte les commandes **déjà closes** en `EN_RETARD` (filtré `estCommandeClient()`) — alimente la colonne Dashboard "Delayed Orders (nb)" (Bloc A.4) |
+| `nombreCommandesClosesFiabilite()` / `tauxCommandesLivreesCloses()` | Fonctions Main (Bloc B.1/B.3-FIX2) | Lecture seule sur `commandes` | Déjà établissent le prédicat "commande terminale" fiable (`SERVIE`/`EN_RETARD`/`REFUSEE`/`BLOQUE_*`), directement réutilisable pour le futur prédicat "commande ouverte" (négation de ce prédicat) |
+| `verifierFillRate()` | Fonction Main (Bloc "ETAPE 3.1") | Lecture seule | Ratio de ponctualité (`SERVIE`/(`SERVIE`+`EN_RETARD`)) parmi les commandes clientes closes — seule métrique RL réellement pondérée dans le PI depuis le Bloc B.2 |
+| `delaiPromessePourMode(String mode)` | Fonction Main (L8399) | Lecture seule, retourne une constante | `ETO`→3600s, `MTO`→1800s, sinon (`MTS`)→300s. **Constantes codées en dur**, aucune source JSON |
+| `modeSCORActif()` | Fonction Main (L8395) | Lecture seule | `isETO`/`isMTO`/`isMTS` — un **mode de simulation global** (1 seul mode actif pour tout le run, configuré via `appliquerModeSimulationSCOR()`), pas une propriété par commande ni par client |
+
+#### 2. Chaîne temporelle réelle (confirmée par lecture de code)
+
+```
+genererCommande() [L13178-13206]
+  cmd.tCreation  = time()
+  cmd.typeCommande = modeSCORActif()           <- mode de RUN global (MTS/MTO/ETO), pas un choix client
+  cmd.tPromise   = time() + delaiPromessePourMode(cmd.typeCommande)   <- SEULE reference d'engagement
+  cmd.statut     = "EN_ATTENTE"
+        |
+        v
+  analyserStockCommandeOrchestree() : MTS servi depuis stock (immediat)
+        OU
+  attente stock insuffisant -> ouvrirAttenteStockCommande()
+    cmd.attenteStockOuverte = true ; cmd.tDebutAttenteStock = time()
+        |
+        v  (si REAPPRO necessaire, Bloc M.3)
+  finaliserDependanceReappro() a la cloture du REAPPRO lie
+    cmd.dureeAttenteStockReelleSec += dureeReappro
+    cmd.dureeReapproImputeeReelleSec += dureeReappro  (traçabilite ABox, meme valeur)
+    cmd.attenteStockOuverte = false ; cmd.tFinAttenteStock = time()
+        |
+        v
+  Production Make (si applicable) : cmd.dureeReelleAccumulee += ... (plusieurs segments)
+        |
+        v
+  Livraison (finaliserReceptionClientDirecte() OU chemin post-production L12898)
+    actualiserRegistreTempsCommande(cmd, ...)
+      cmd.dureeTraitementClientReelleSec = traitement (depuis dureeReelleAccumulee)
+      cmd.leadTimeClientReelSec = traitement + attente          <- LEAD TIME, jamais compare a tPromise ici
+    cmd.statut = (time() <= cmd.tPromise) ? "SERVIE" : "EN_RETARD"   <- SEULE evaluation d'engagement, UNE FOIS, a la cloture
+        |
+        v
+  cloturerOrderDepuisCommande() -> Order.cloturer("LIVREE" | "LIVREE_EN_RETARD", ...)  [ABox/VSM]
+  enregistrerFinCommandeGlobale() -> board.notifierFin(leadTimeClientReelSec, ...)      [PI/SCOR RS]
+```
+
+**Constat central** : `tPromise` n'est comparé à `time()` qu'à **exactement 2
+endroits** dans tout le master (`finaliserReceptionClientDirecte()` L5752 et
+le chemin post-production L12898), tous deux **au moment de la clôture**.
+Aucun timer, événement périodique ou fonction n'évalue jamais une commande
+encore `EN_COURS`/`EN_ATTENTE`/`EN_LIVRAISON`/etc. par rapport à son
+engagement pendant qu'elle est encore ouverte. Une commande peut donc
+dépasser `tPromise` de plusieurs heures sans que rien ne le signale tant
+qu'elle n'a pas encore été livrée.
+
+#### 3. Source actuelle de l'engagement client (avec preuves)
+
+L'engagement est **exclusivement** `cmd.tPromise = time() + delaiPromessePourMode(cmd.typeCommande)` :
+- `delaiPromessePourMode()` (L8399-8402) retourne une **constante codée en
+  dur** selon le mode : ETO=3600s, MTO=1800s, MTS=300s (repli par défaut).
+- `cmd.typeCommande` provient de `modeSCORActif()` (L8395-8397), qui lit 3
+  booléens **globaux au run** (`isMTS`/`isMTO`/`isETO`, positionnés une
+  seule fois via `appliquerModeSimulationSCOR()` au démarrage/à la
+  configuration) — **jamais** une propriété par commande, par client ou par
+  scénario.
+- Recherche exhaustive dans les 3 scénarios JSON fournis (ZENER, vélo
+  urbain, automobile GX5) : **aucun champ** `delai*Client`, `promis*`,
+  `engagement*`, `SLA*` ou `deadline*` lié à une livraison client
+  n'existe. Les seuls champs "délai" trouvés sont `delaiPaiementJours`
+  (conditions de paiement, hors sujet) et `delaiObtentionHeures`
+  (délai fournisseur Source, pas un engagement client).
+
+**Conclusion** : il n'existe aujourd'hui **aucune vraie source d'engagement
+contractuel, par client ou par commande** — seulement une constante par
+mode de production, appliquée uniformément à toutes les commandes d'un
+même run.
+
+#### 4. Sémantique actuelle des 5 éléments demandés
+
+- **`retardConstate`** : n'existe pas. Concept vide dans ce master.
+- **`modeEngagementClient`** : n'existe pas. Le mode de production
+  (MTS/MTO/ETO) sert aujourd'hui implicitement de proxy à la durée
+  d'engagement, mais rien ne nomme ni ne documente cela comme un
+  "mode d'engagement" — c'est une conflation implicite entre mode
+  industriel et promesse client, jamais explicitée dans le code.
+- **`dureeClientAccumulee`** : n'existe pas sous ce nom. Le concept le
+  plus proche, `dureeReelleAccumulee`, mesure le temps de traitement
+  physique cumulé (Make+Deliver), pas une durée "client" au sens large
+  (n'inclut pas l'attente stock, qui est un champ séparé).
+- **`leadTimeClientReelSec`** : LEAD TIME total réel (traitement + attente
+  stock), alimente RS (Responsiveness) via `enregistrerFinCommandeGlobale()`
+  → `board.notifierFin()` → `board.kpiGlobal` → `orderFulfillmentLeadTimeGlobal()`/
+  `tempsAttenteGlobalCoherent()` → `calculerPIGlobal()` (Bloc B.2). **Jamais
+  comparé à `tPromise`** — orthogonal à la notion de retard.
+- **`attenteStockOuverte`** : ATTENTE OPÉRATIONNELLE ponctuelle (stock
+  insuffisant), état transitoire, jamais un retard en soi, contribue
+  seulement à `dureeAttenteStockReelleSec` (donc au lead time).
+
+#### 5. Incohérences détectées (non corrigées, documentées uniquement)
+
+1. **Conflation mode industriel / engagement client** : `delaiPromessePourMode()`
+   fait comme si "MTO" ou "ETO" impliquait mécaniquement un délai promis
+   plus long — hypothèse implicite jamais justifiée ni configurable.
+2. **Aucune détection de retard sur commande ouverte** : le seul signal de
+   retard (`EN_RETARD`) n'apparaît qu'à la clôture ; une commande très en
+   retard mais encore ouverte est indiscernable d'une commande à l'heure
+   dans tous les tableaux de bord actuels (`commandesRetardeesCount()`,
+   `verifierFillRate()`, `tauxCommandesLivreesCloses()` — tous ne comptent
+   que les commandes **déjà closes**).
+3. **Double écriture `dureeAttenteStockReelleSec`/`dureeReapproImputeeReelleSec`** :
+   même valeur, deux champs, deux consommateurs différents (runtime vs
+   ABox) — pas un bug, mais une duplication qui mériterait d'être
+   clarifiée/documentée dans le code lui-même si le Bloc C réutilise l'un
+   des deux comme brique du calcul de retard.
+4. **Double écriture de `tPromise`** à la création (L13183 puis L13206,
+   `genererCommande()`) — résultat identique (`modeSCORActif()` ne change
+   pas entre les deux lignes), donc sans conséquence observable, mais une
+   redondance de code pré-existante.
+
+#### 6. Risques de double comptage
+
+- `dureeReelleAccumulee` est incrémenté à 4 sites distincts (retry stock,
+  fin Make, segment Deliver post-production, segment Make) : **additif par
+  construction** (chaque segment représente une portion de temps physique
+  réellement écoulée, jamais le même intervalle compté deux fois) — **aucun
+  double comptage détecté**, cohérent avec le commentaire C14.9 déjà présent
+  dans le code ("DOUBLE COMPTAGE CORRIGE" pour `nbMTS`/`sumLeadTimeMTS`,
+  résolu en amont de ce merge).
+- `dureeAttenteStockReelleSec` : protégé par `client.ordresReapproImputes.add(reappro.idCommande)`
+  (un `Set`), qui empêche d'imputer deux fois la même durée depuis le même
+  REAPPRO. Une commande couverte par **plusieurs** REAPPRO successifs
+  accumule légitimement leurs durées respectives — comportement voulu, pas
+  un bug.
+- Aucun risque de double comptage identifié pour un futur mécanisme de
+  retard continu, **à condition** qu'il lise l'état actuel (`time() - tPromise`)
+  sans additionner un compteur à chaque cycle d'évaluation (piège classique
+  d'un futur `evaluerRetardsCommandesOuvertes()` mal conçu — noté pour le
+  sous-bloc d'implémentation, pas pour C.1).
+
+#### 7. Relation avec SCOR / PI / VSM
+
+- **RL (Reliability)** : `verifierFillRate()` (ponctualité, pondérée dans
+  le PI) et `tauxCommandesLivreesCloses()` (complétude, informative,
+  Bloc B.3-FIX2) lisent tous deux `cmd.statut` — donc indirectement
+  `EN_RETARD`, donc indirectement `tPromise`. **Aucun** des deux ne
+  considère les commandes encore ouvertes.
+- **RS (Responsiveness)** : alimentée par `leadTimeClientReelSec` (lead
+  time), **jamais** par un retard. Un retard et un lead time long sont
+  deux signaux différents aujourd'hui : une commande peut avoir un lead
+  time élevé sans jamais dépasser `tPromise` (si `tPromise` est lui-même
+  large, ex. ETO=3600s), et inversement un `tPromise` très serré (MTS=300s)
+  peut être dépassé même avec un lead time réel modeste.
+- **VSM/ABox** : `cloturerOrderDepuisCommande()` exporte `"LIVREE"` ou
+  `"LIVREE_EN_RETARD"` comme statut d'`Order` ontologique — reflet direct
+  et fidèle de `cmd.statut`, aucune logique supplémentaire.
+- **Aucune métrique actuelle ne mesure un retard EN COURS** (ampleur du
+  dépassement pour une commande encore ouverte) — c'est précisément
+  l'écart que le Bloc C est censé combler.
+
+#### 8. Proposition de source de vérité pour le futur Bloc C (SANS implémentation)
+
+Non appliqué dans ce commit — proposition documentée pour discussion avant
+tout sous-bloc d'implémentation :
+- **Engagement** : `cmd.tPromise` reste la référence unique et déjà
+  existante — pas besoin d'un nouveau champ pour "quand la commande est
+  due", seulement d'une manière de le **qualifier** (`modeEngagementClient`
+  décrirait alors la MÉTHODE — "constante par mode de production" —, pas
+  une nouvelle date).
+- **Retard courant** (commande encore ouverte) :
+  `retardCourantSec = Math.max(0.0, time() - cmd.tPromise)`, calculable à
+  tout instant sans nouvel état cumulatif, en lisant uniquement `tPromise`
+  et `time()` — pas de risque de double comptage puisque rien n'est
+  accumulé.
+- **Retard constaté** (à la clôture, si `Bloc C` veut le figer) :
+  `retardConstateSec = Math.max(0.0, tInstantCloture - cmd.tPromise)`,
+  calculé une seule fois au moment où `cmd.statut` devient terminal —
+  cohérent avec le mécanisme de clôture déjà existant (2 sites identifiés
+  en §2).
+- **Prédicat "commande ouverte"** : négation exacte du prédicat déjà
+  utilisé par `nombreCommandesClosesFiabilite()`/`tauxCommandesLivreesCloses()`
+  (Bloc B, déjà validé runtime) — c'est-à-dire toute commande cliente
+  (`estCommandeClient()`) dont le statut n'est PAS dans
+  `{SERVIE, EN_RETARD, REFUSEE, BLOQUE_CONFIG, BLOQUE_MATIERE, BLOQUE_NOMENCLATURE}`.
+  Réutiliser ce prédicat déjà éprouvé plutôt que d'en inventer un nouveau.
+
+#### 9. Éléments à modifier dans les sous-blocs suivants (liste minimale, non exhaustive)
+
+- Ajouter `CommandeAgent.retardConstate` (ou équivalent) — nouveau champ.
+- Ajouter `modeEngagementClient` — nouvelle variable décrivant la méthode
+  de calcul de l'engagement (pas une nouvelle date codée en dur).
+- Implémenter `evaluerRetardsCommandesOuvertes()` — nouvelle fonction,
+  utilisant le prédicat "commande ouverte" du §8, appelée depuis un timer/
+  événement périodique (à définir).
+- Décider si `retardCourantSec` doit être exposé dans une nouvelle
+  métrique/colonne Dashboard, et si RL doit évoluer pour intégrer les
+  commandes ouvertes en retard (actuellement invisibles).
+- Ne pas toucher `tPromise`/`delaiPromessePourMode()`/`modeSCORActif()`
+  sans décision explicite sur le point d'incohérence n°1 (§5).
+
+#### 10. Verdict
+
+**C.1 = AUDIT COMPLET.**
+
+### Statut Bloc C
+
+- [x] **C.1 — Audit sémantique retards / engagement client : TERMINÉ / AUDIT VALIDÉ**
+- [ ] C.2+ — non commencés
 - [ ] Détection continue
 - [ ] Engagement configurable
 - [ ] Export/PI cohérent
 - [ ] Build + run utilisateur
+
+**BLOC C = EN COURS.** Aucune modification du `.alp` dans ce commit (audit
+uniquement). Le `.alp` contenait déjà, avant ce tour, un bruit de
+sauvegarde automatique AnyLogic pré-existant (`<EmbeddedIcon>`) —
+volontairement laissé non indexé, non commité, conformément à l'instruction.
 
 ## Bloc D — moteur conflictuel
 - [ ] Fonctions communes fusionnées une par une

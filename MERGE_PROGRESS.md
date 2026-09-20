@@ -5643,6 +5643,255 @@ statiquement sur la logique du code, pas exécutés en simulation.
 
 **C.8 = TERMINÉ / VALIDÉ STATIQUEMENT. C.9+ = NON COMMENCÉS. BLOC C = EN COURS.**
 
+### C.9 — Validation intégrée / gate de clôture du Bloc C (préflight statique)
+
+**C.9 n'introduit aucune fonctionnalité. Aucun changement fonctionnel du
+`.alp` ni d'un JSON n'a été nécessaire** — le préflight statique n'a
+révélé aucun défaut bloquant (voir §0 à §8). **C.9 reste néanmoins EN
+ATTENTE des résultats Build/Runs de l'utilisateur** — non clôturé tant
+que ceux-ci ne sont pas fournis (règle explicite de l'énoncé : un
+préflight statique vert ne suffit pas à terminer C.9).
+
+#### 0. Préflight HEAD (C.9.0)
+
+`HEAD = 0029e4d` confirmé (`git rev-parse HEAD`), branche
+`integration/claude-generic-merge`, working tree propre avant audit
+(`git status --porcelain` ne montrait que des artefacts non suivis
+préexistants, aucun fichier suivi modifié). PR #1 reconfirmée
+`isDraft=true, state=OPEN`.
+
+#### 1. Invariants structurels C.8 (C.9.1/C.9.6)
+
+Grep exhaustif sur le fichier final :
+
+```
+.tPromise = ...            -> 2 occurrences :
+    2990  (REAPPRO, declencherProductionAutonome, hors perimetre, inchange)
+    13569 (client, via resoudreEngagementClient(), SEULE ecriture metier)
+.modeEngagementClient = ... -> 1 occurrence :
+    13570 (juste apres 13569, meme bloc, a partir du MEME resultat "engagement")
+LEGACY_MODE_SCOR (affectation) -> 1 occurrence (8452, dans le resolveur)
+resoudreEngagementClient(   -> 1 definition (8439) + 1 appel (13568)
+```
+
+**Confirmé** : une seule écriture métier de `tPromise` côté client,
+REAPPRO inchangé et hors périmètre, `tPromise`/`modeEngagementClient`
+figés ensemble à partir du même `EngagementClientResolution`, une seule
+hiérarchie de résolution (spécifique → défaut → legacy), aucune
+duplication ailleurs dans le master.
+
+#### 2. Audit critique round-trip JSON null/absent (C.9.2)
+
+**Contrôle prioritaire, effectué en 2 temps.**
+
+**a) Ce que fait réellement le sérialiseur** (relecture de
+`SimpleJsonWriter.writeMap()`/`writeValue()`, non modifiées par C.8) :
+`writeMap()` itère **toutes** les clés du `Map` sans exception pour une
+valeur `null`, et `writeValue()` écrit alors le littéral `null`. Comme
+`scenarioToJson()`/`sauverScenarioJSON()` font
+`mp.put("promisedDelaySec", scenario.promisedDelaySec)` /
+`params.put("champDelaiPromesseParDefautSec", champDelaiPromesseParDefautSec)`
+**inconditionnellement** (que la valeur Java soit `null` ou non),
+**la clé N'EST JAMAIS OMISE** : un scénario `{}` legacy sauvegardé
+devient bien `{"promisedDelaySec": null, ...}`, exactement le cas que
+l'énoncé demandait de vérifier.
+
+**b) Ce que fait le loader face à ce `null` explicite** (relecture de
+`lireDelaiPromisSecondesStrict()`, ligne 8472-8475) :
+```java
+if (jmap == null || jkey == null || !jmap.containsKey(jkey)) return null;
+Object v = jmap.get(jkey);
+if (v == null) return null;
+```
+**La clé présente avec valeur JSON `null` explicite retourne `null`,
+exactement comme une clé absente — elle N'EST JAMAIS REJETÉE.** Ce
+comportement était déjà documenté comme tel dans C.8 (§4 de sa section :
+« limite technique du parseur, impossibilité documentée ») : il ne
+s'agit pas d'un oubli découvert ici, mais d'une conséquence assumée et
+déjà actée du design C.8, reconfirmée par cet audit.
+
+**c) Simulation exécutée pour lever tout doute** (script Python
+reproduisant fidèlement `parseObject`/`writeValue`/
+`lireDelaiPromisSecondesStrict`) :
+```
+Round1 load  (clé absente)        -> None
+Round1 saved (clé ecrite = null)  -> {'typeProduit': 'GPL 12kg', 'debitParHeure': 60, 'promisedDelaySec': None}
+Round2 reload (clé presente=null) -> None
+ROUND-TRIP OK
+```
+et pour les valeurs invalides (`0`, `-10`, `"abc"`, `NaN`, `Infinity`) :
+toutes rejetées explicitement, aucune ne passe silencieusement.
+
+**Verdict : la précondition du blocage prévu par l'énoncé
+(« si null explicite est ensuite rejeté par le loader ») NE SE
+PRODUIT PAS** — le loader n'a jamais rejeté ce `null`, par construction
+depuis C.8. **L'invariant round-trip est respecté : charger → sauvegarder
+→ recharger un JSON legacy reste `LEGACY_MODE_SCOR`, sans erreur.**
+**C.9.2 = PASSÉ, pas de blocage.**
+
+Nuance transparente à noter (non bloquante, cosmétique) : un JSON
+legacy authentiquement vierge de ces 2 champs, une fois sauvegardé
+depuis ce master, les acquiert désormais explicitement avec la valeur
+`null` plutôt que de rester totalement absent. Le fichier change donc
+d'apparence textuelle sans que son comportement de chargement ne
+change — comportement jugé acceptable et non corrigé ici (C.9 est une
+gate, pas un bloc de correction ; un futur bloc pourrait, s'il est
+demandé, faire omettre la clé plutôt que d'écrire `null`, mais cela ne
+constitue pas un défaut fonctionnel).
+
+#### 3. Audit du rejet d'un scénario spécifique invalide (C.9.3)
+
+Relecture de `scenarioFromJson()` (ligne 15249-15281) et de son appelant
+dans la boucle `scenarios[]` (ligne 16239-16240) :
+
+- L'objet `ScenarioFlux sc` local est entièrement construit (`typeProduit`,
+  `debitParHeure`, `sequence`, `nomenclature`) **avant** la validation de
+  `promisedDelaySec`. Si celle-ci échoue, l'exception est levée **avant
+  `return sc;`** : l'objet local n'est **jamais retourné**, donc
+  **jamais passé à `scenarios.add(...)`** (Java évalue l'argument d'un
+  appel de méthode avant l'appel lui-même — une exception pendant cette
+  évaluation empêche l'appel).
+  → **(1) Aucun enregistrement partiel : confirmé.**
+- Comme `scenarios.add()` n'est jamais exécuté pour cette entrée, aucune
+  structure Main-level (`scenarios`, `stockInitialParProduit`,
+  compteurs, etc.) ne conserve de référence vers l'objet rejeté.
+  → **(2) Aucune référence résiduelle : confirmé.**
+- `choisirScenarioPourCommande()`/`choisirScenarioProduit()` ne
+  sélectionnent que parmi la liste `scenarios`, qui n'a jamais contenu
+  cette entrée.
+  → **(3) Aucune commande ne peut la sélectionner : confirmé.**
+- Le rejet ne retombe sur AUCUNE valeur par défaut pour cette entrée :
+  elle est purement absente du modèle chargé, pas conservée avec
+  `promisedDelaySec=null` (ce qui aurait été un repli silencieux).
+  → **(4) Aucun fallback legacy silencieux pour cette entrée : confirmé.**
+- Message de log réel : `"[JSON WARN] scénario ignoré : scenario
+  '<typeProduit>' : champ 'promisedDelaySec' present mais invalide
+  (valeur=<X>)"` — `<typeProduit>` est capturé **avant** l'échec (donc
+  toujours renseigné, même pour l'entrée fautive), `<X>` est la valeur
+  numérique ou la représentation texte fautive.
+  → **(5) Scénario + champ + valeur tous identifiés dans le log : confirmé.**
+
+**Rejet ATOMIQUE (tout ou rien sur l'objet local), VISIBLE (`[JSON
+WARN]` journalisé, convention déjà universelle du loader pour toute
+entrée de liste malformée), DÉTERMINISTE (même entrée invalide →
+même rejet à chaque fois). C.9.3 = PASSÉ, pas de configuration
+partielle possible.**
+
+#### 4. Audit des 10 JSON legacy (C.9.4)
+
+Re-vérifié indépendamment de C.8 (grep direct sur les 10 fichiers
+réels du dépôt) :
+
+```
+scenario_2_velo_urbain.json: 0
+scenario_3_automobile_gx5.json: 0
+scenario_M2_multiproduit_AB.json: 0
+scenario_ZENER_SA_Togo_v17.json: 0
+scenario_ZENER_SA_Togo_v2.json: 0
+scenario_ZENER_SA_Togo_v39.json: 0
+scenario_ZENER_SA_Togo_v39_FINALTEST.json: 0
+scenario_ZENER_SA_Togo_v4.json: 0
+scenario_ZENER_SA_Togo_v8.json: 0
+scenario_ZENER_TEST_hierarchie.json: 0
+```
+
+**0/10 contiennent l'un ou l'autre des 2 nouveaux champs** → pour
+chacun, `resoudreEngagementClient()` retombe systématiquement sur
+`source="LEGACY_MODE_SCOR"`. `git status --porcelain -- '*.json'` ne
+montre aucun de ces 10 fichiers modifié.
+
+#### 5. Audit des valeurs legacy et du fallback (C.9.5)
+
+```java
+double delaiPromessePourMode(String mode) {
+    if ("ETO".equalsIgnoreCase(mode)) return 3600.0;
+    if ("MTO".equalsIgnoreCase(mode)) return 1800.0;
+    return 300.0;
+}
+```
+**Inchangé, confirmé.** Fallback du résolveur (ligne 8451) :
+`delaiPromessePourMode(cmd != null ? cmd.typeCommande : null)` — utilise
+bien **`cmd.typeCommande`** (valeur déjà figée), **jamais** un nouvel
+appel à `modeSCORActif()`. **C.9.5 = PASSÉ.**
+
+#### 6. Audit d'immutabilité (C.9.6)
+
+Voir §1 : exactement 2 écritures de `tPromise` dans tout le master (1
+REAPPRO hors périmètre, 1 client) et exactement 1 écriture de
+`modeEngagementClient`, toutes à la création, aucune ailleurs. **Aucune
+réaffectation possible après création pour une commande cliente.
+Invariant `création → engagement figé → jamais recalculé` confirmé par
+grep exhaustif. C.9.6 = PASSÉ.**
+
+#### 7. Non-régression C.2–C.6 (C.9.7)
+
+Diff complet de C.8 (`git diff 9f4febf 0029e4d`) filtré sur les 9 noms
+de fonctions C.3/C.4 + l'Event C.3 + `bilanPeriodique`/C.6 : **0 ligne
+ajoutée ou supprimée ne mentionne l'un de ces identifiants.** Les 9
+hunks du diff sont tous localisés dans : la zone globale
+`isMTS`/`modeSimulationSCOR` (nouveaux champs/résolveur/validation),
+`genererCommande()`, `scenarioToJson`/`scenarioFromJson`,
+`clearScenarioBeforeJsonLoad()`, les 2 blocs `parametresGlobaux`
+(sauvegarde/chargement), et la classe `ScenarioFlux`. **`evtEvaluationRetardsCommandesOuvertes`
+reste à 60s, `bilanPeriodique`/`[RETARD-CLIENT-OUVERT]` toujours
+présents et inchangés (revérifiés directement dans le fichier final).
+C.9.7 = PASSÉ.**
+
+#### 8. Non-régression SCOR/PI (C.9.8)
+
+Même filtrage du diff C.8 sur `calculerPIGlobal`, `verifierFillRate`,
+`tauxCommandesLivreesCloses`, `nombreCommandesClosesFiabilite` : **0
+occurrence.** C.8 ne peut légitimement changer que la **valeur** de
+ponctualité d'une future commande dotée d'un engagement explicite,
+jamais la **formule** RL/RS/AG/CO/AM/PI. **C.9.8 = PASSÉ.**
+
+#### 9. Build AnyLogic runtime (C.9.9)
+
+**BUILD RUNTIME À CONFIRMER PAR UTILISATEUR** — non exécutable depuis
+ce terminal. Tant que ce résultat (0 erreur) n'est pas fourni, C.9 ne
+peut pas être clôturé, conformément à la règle explicite de l'énoncé.
+
+#### 10. Protocole runtime à exécuter par l'utilisateur
+
+Les 14 Runs spécifiés par l'énoncé sont retenus **sans modification** —
+ils correspondent exactement aux mécanismes réellement implémentés en
+C.8 (vérifié ci-dessus) : Runs 1-3 (legacy MTS/MTO/ETO, 300/1800/3600s,
+`LEGACY_MODE_SCOR`), Run 4 (défaut global `900s`,
+`SCENARIO_DEFAULT_SEC`), Run 5 (spécifique `600s` prioritaire sur
+défaut `900s`, `PRODUCT_TYPE_SEC`), Run 6 (indépendance du mode
+industriel — MTS + `900s` explicite ≠ `300s`), Run 7 (défaut global
+invalide `0`/`-10`/`"abc"` → dialogue bloquant, chargement refusé),
+Run 8 (spécifique invalide `0` → rejet atomique de l'entrée `scenarios[]`,
+log `[JSON WARN]`, aucune configuration partielle — cf. §3), Run 9
+(immutabilité), Run 10 (C.3/C.4 avec SLA explicite, `t=300` figé), Run
+11 (bilan C.6 `=== RETARDS CLIENTS OUVERTS ===` / trace
+`[RETARD-CLIENT-OUVERT]`), Run 12 (clôture tardive, sortie du backlog
+ouvert), Run 13 (REAPPRO sans impact sur les 5 métriques C.4), Run 14
+(round-trip legacy et configuré, **à réaliser sur une copie locale non
+commitée**, jamais sur les 10 JSON réels du dépôt — cf. §4).
+
+**Toutes les copies de test utilisées pour les Runs 4/5/6/7/8/9/10/14
+doivent rester locales et non commitées**, conformément à C.8.17/C.9 —
+les 10 JSON réels du dépôt ne doivent jamais être modifiés pour ces
+tests.
+
+#### Validations statiques — synthèse
+
+- `.alp` : **0 diff** (`git status --porcelain -- model/SCONTO_SVU_GENERIC_MASTER.alp` vide avant/après ce bloc)
+- JSON : **0 diff** sur les 10 scénarios réels (audit en lecture seule)
+- Une seule écriture métier de `tPromise` côté client : **confirmé**
+- Une seule fonction/hiérarchie de résolution : **confirmé**
+- Round-trip null/absent : **confirmé sans blocage** (§2)
+- Rejet atomique d'un scénario invalide : **confirmé** (§3)
+- Immutabilité : **confirmé** (§6)
+- C.2–C.6 inchangés : **confirmé** (§7)
+- PI/SCOR inchangés : **confirmé** (§8)
+- Seul `MERGE_PROGRESS.md` modifié dans ce commit
+
+**Build AnyLogic** : **BUILD RUNTIME À CONFIRMER PAR UTILISATEUR.**
+
+**C.9 = EN ATTENTE VALIDATION RUNTIME. BLOC C = EN COURS.**
+
 ### Statut Bloc C
 
 - [x] **C.1 — Audit sémantique retards / engagement client : TERMINÉ / AUDIT VALIDÉ**
@@ -5655,8 +5904,8 @@ statiquement sur la logique du code, pas exécutés en simulation.
 - [x] **C.6 — Observabilité du backlog client en retard : TERMINÉ / VALIDÉ STATIQUEMENT**
 - [x] **C.7 — Audit du contrat d'engagement client / dette `tPromise` : TERMINÉ / AUDIT VALIDÉ**
 - [x] **C.8 — Migration de l'engagement client configurable : TERMINÉ / VALIDÉ STATIQUEMENT**
-- [ ] C.9+ — non commencés
-- [ ] Build + run utilisateur (C.2, C.3, C.3-FIX, C.4, C.4-FIX, C.6 et C.8 — toujours en attente)
+- [ ] **C.9 — Validation intégrée / gate de clôture : PRÉFLIGHT STATIQUE PASSÉ / EN ATTENTE VALIDATION RUNTIME**
+- [ ] Build + run utilisateur (C.2, C.3, C.3-FIX, C.4, C.4-FIX, C.6, C.8 et les 14 Runs C.9 — toujours en attente)
 
 **BLOC C = EN COURS.**
 

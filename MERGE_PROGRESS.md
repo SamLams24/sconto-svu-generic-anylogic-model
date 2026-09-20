@@ -5847,9 +5847,7 @@ jamais la **formule** RL/RS/AG/CO/AM/PI. **C.9.8 = PASSÉ.**
 
 #### 9. Build AnyLogic runtime (C.9.9)
 
-**BUILD RUNTIME À CONFIRMER PAR UTILISATEUR** — non exécutable depuis
-ce terminal. Tant que ce résultat (0 erreur) n'est pas fourni, C.9 ne
-peut pas être clôturé, conformément à la règle explicite de l'énoncé.
+**CONFIRMÉ PAR L'UTILISATEUR : PASS, 0 erreur**, sur `HEAD=939595d`.
 
 #### 10. Protocole runtime à exécuter par l'utilisateur
 
@@ -5875,47 +5873,198 @@ doivent rester locales et non commitées**, conformément à C.8.17/C.9 —
 les 10 JSON réels du dépôt ne doivent jamais être modifiés pour ces
 tests.
 
+#### 11. Résultats runtime officiels (Phase 2 — fournis par l'utilisateur)
+
+**Build AnyLogic** :
+
+```text
+AnyLogic : 0 erreur
+Résultat : PASS
+```
+
+**Compatibilité legacy** :
+
+```text
+MTS = 300 s  : PASS
+MTO = 1800 s : PASS
+ETO = 3600 s : PASS
+modeEngagementClient = LEGACY_MODE_SCOR (scénarios sans engagement explicite) : PASS
+```
+
+**Défaut configurable** : `champDelaiPromesseParDefautSec = 900` →
+`SCENARIO_DEFAULT_SEC` → **PASS** (Run 4).
+
+**Spécifique prioritaire** : défaut `900` + spécifique `600` → `600`
+retenu, `PRODUCT_TYPE_SEC` → **PASS** (Run 5).
+
+**Découplage mode industriel / engagement** : `MTS` + SLA explicite
+`900` → mode industriel reste `MTS`, engagement `= 900` (et non `300`)
+→ **PASS** (Run 6).
+
+**Invalides** : défaut invalide (`0`/`-10`/`"abc"`) → erreur/chargement
+refusé, aucun repli silencieux → **PASS** (Run 7) ; spécifique invalide
+→ rejet atomique de l'entrée `scenarios[]` concernée, journalisé,
+aucune configuration partielle → **PASS** (Run 8).
+
+**Immutabilité** : `tPromise` et `modeEngagementClient` figés après
+création, aucun recalcul observé malgré changement de configuration
+globale ultérieur → **PASS** (Run 9).
+
+**Retard courant C.3/C.4** : franchissement de `tPromise` détecté
+instantanément par `commandeOuverteEstEnRetardMaintenant()`,
+`retardConstate` mémorisé au cycle suivant de
+`evtEvaluationRetardsCommandesOuvertes` → **PASS** (Run 10).
+
+**Observabilité C.6** : bilan `=== RETARDS CLIENTS OUVERTS ===` et
+trace `[RETARD-CLIENT-OUVERT]` conformes → **PASS** (Run 11).
+
+**Clôture tardive** : `retardConstate` conservé après clôture, commande
+retirée du backlog ouvert (`nombreCommandesOuvertes()` et dérivés) sans
+altération de la logique terminale historique → **PASS** (Run 12).
+
+**REAPPRO** : ordre interne autonome confirmé sans impact sur
+`nombreCommandesOuvertes()`, `nombreCommandesOuvertesEnRetard()`,
+`tauxCommandesOuvertesEnRetard()`, `retardCourantTotalOuvertSec()`,
+`retardCourantMoyenCommandesEnRetardSec()` → **PASS** (Run 13).
+
+**Round-trip JSON** : legacy (charger→sauvegarder→recharger, fallback
+préservé) et configuré (défaut `900`/spécifique `600`,
+charger→sauvegarder→recharger, valeurs et sources de résolution
+préservées à l'identique) → **PASS** (Run 14) — confirme en conditions
+réelles la simulation statique du §2.
+
+**Synthèse** : **Build PASS (0 erreur) + Runs 1 à 14 = PASS (14/14)**,
+tous consignés par l'utilisateur sur `HEAD=939595d`.
+
+#### 12. Contrat final `null` / absent / invalide — figé
+
+Sémantique **validée à la fois statiquement (§2) et en conditions
+réelles (Run 14)**, désormais le contrat officiel et définitif des 2
+champs d'engagement client (`scenarios[].promisedDelaySec`,
+`parametresGlobaux.champDelaiPromesseParDefautSec`) :
+
+| Entrée | Effet |
+|---|---|
+| Clé absente | Engagement non configuré à ce niveau → résolution vers le niveau inférieur (défaut, puis legacy) |
+| Clé présente avec `null` | **Identique à absente** : engagement non configuré à ce niveau → résolution vers le niveau inférieur |
+| Clé présente, valeur numérique finie `> 0` | Engagement explicite valide, retenu à ce niveau |
+| Clé présente, valeur non-`null` invalide (`0`, négative, non numérique, `NaN`/`Infinity`) | Erreur / rejet explicite — jamais de repli silencieux |
+
+`null = non configuré` (au même titre qu'absent) est un choix
+**délibéré et validé**, retenu pour rester symétrique avec le
+sérialiseur actuel (`SimpleJsonWriter` écrit systématiquement la clé,
+avec la valeur `null` quand elle n'est pas configurée — §2). Ce n'est
+**pas** une limite subie : c'est le comportement qui rend le round-trip
+correct, confirmé par le Run 14 réel. **Ne plus documenter `null
+explicite = invalide` dans aucun bloc futur** — seule une valeur
+non-`null` et non conforme (`<=0`, non numérique, `NaN`/`Infinity`)
+constitue une entrée invalide.
+
+### Récapitulatif final du Bloc C — Retards / Engagement client
+
+**Engagement client** — résolution canonique unique, une seule
+hiérarchie, jamais dupliquée :
+```
+spécifique (PRODUCT_TYPE_SEC) -> défaut (SCENARIO_DEFAULT_SEC) -> legacy (LEGACY_MODE_SCOR)
+```
+**Promesse** — 1 commande cliente → 1 résolution
+(`resoudreEngagementClient()`) → 1 écriture métier de `tPromise`,
+ensuite strictement immuable (confirmé statiquement et par le Run 9).
+
+**Retard instantané** — `commandeOuverteEstEnRetardMaintenant(cmd)`,
+vérité instantanée, jamais mémorisée avec latence pour la détection.
+
+**Mémoire de retard** — `retardConstate`, monotone (ne redevient
+jamais `false` une fois `true`), synchronisée aux 2 points de clôture
+historiques et par l'Event périodique C.3.
+
+**Terminalité** — `commandeEstTerminale(cmd)`, source canonique unique
+(consolidée depuis C.3-FIX), réutilisée par le Bloc B (fiabilité) et
+tout le Bloc C.
+
+**Mesures du backlog** — `nombreCommandesOuvertes()`,
+`nombreCommandesOuvertesEnRetard()`, `tauxCommandesOuvertesEnRetard()`,
+`retardCourantTotalOuvertSec()`, `retardCourantMoyenCommandesEnRetardSec()`
+— population "commandes clientes ouvertes", REAPPRO exclu partout,
+confirmé sans impact par le Run 13.
+
+**Observabilité** — `bilanPeriodique` (Bloc A.2, étendu en C.6) :
+bilan humain `=== RETARDS CLIENTS OUVERTS ===` et trace structurée
+`[RETARD-CLIENT-OUVERT]`, purement consommateurs des fonctions
+ci-dessus, aucun état stocké propre à l'observabilité.
+
+**Séparation SCOR** — confirmée à chaque sous-bloc (C.5 pour l'audit de
+conception, C.9.8 pour la non-régression finale) : `RL`, `RS`, `Fill
+Rate` et `calculerPIGlobal()` restent strictement inchangés dans leur
+formule ; le backlog ouvert n'est jamais mélangé avec les populations
+historiques réalisées (closes) au sein d'un même calcul.
+
+#### Dette / limites réellement restantes (Bloc C)
+
+- Les engagements explicites sont supportés **exactement** aux 2
+  niveaux implémentés et validés (type/produit, défaut de scénario) —
+  aucun niveau "client" ou "commande" n'existe (non justifié par la
+  structure JSON réelle, audit C.7 §7, non revisité depuis).
+- Les 10 JSON legacy du dépôt continuent d'utiliser exclusivement le
+  fallback `LEGACY_MODE_SCOR` — c'est un fonctionnement normal et
+  attendu, pas une limite à lever.
+- REAPPRO reste hors périmètre d'engagement client par choix de
+  conception (ordres internes, jamais un engagement vis-à-vis d'un
+  client) — confirmé sans impact sur les métriques (Run 13).
+- Aucune intégration du backlog ouvert dans le PI global n'est prévue
+  ni amorcée dans le Bloc C (décision explicite de C.5 §12, reconfirmée
+  non modifiée) — resterait, si un jour souhaitée, une décision de
+  conception dédiée et hors périmètre de ce bloc.
+
+Ces points sont des **choix de périmètre assumés**, pas des tâches
+inachevées : aucun n'est reporté comme "TODO Bloc C".
+
 #### Validations statiques — synthèse
 
 - `.alp` : **0 diff** (`git status --porcelain -- model/SCONTO_SVU_GENERIC_MASTER.alp` vide avant/après ce bloc)
 - JSON : **0 diff** sur les 10 scénarios réels (audit en lecture seule)
 - Une seule écriture métier de `tPromise` côté client : **confirmé**
 - Une seule fonction/hiérarchie de résolution : **confirmé**
-- Round-trip null/absent : **confirmé sans blocage** (§2)
-- Rejet atomique d'un scénario invalide : **confirmé** (§3)
-- Immutabilité : **confirmé** (§6)
+- Round-trip null/absent : **confirmé sans blocage** (§2), **confirmé en runtime réel** (Run 14)
+- Rejet atomique d'un scénario invalide : **confirmé** (§3), **confirmé en runtime réel** (Run 8)
+- Immutabilité : **confirmé** (§6), **confirmé en runtime réel** (Run 9)
 - C.2–C.6 inchangés : **confirmé** (§7)
 - PI/SCOR inchangés : **confirmé** (§8)
 - Seul `MERGE_PROGRESS.md` modifié dans ce commit
 
-**Build AnyLogic** : **BUILD RUNTIME À CONFIRMER PAR UTILISATEUR.**
+**Build AnyLogic** : **PASS, 0 erreur** (confirmé par l'utilisateur).
+**Runs 1 à 14** : **PASS (14/14)** (confirmés par l'utilisateur).
 
-**C.9 = EN ATTENTE VALIDATION RUNTIME. BLOC C = EN COURS.**
+**C.9 = TERMINÉ / VALIDÉ RUNTIME.**
+
+**BLOC C — RETARDS / ENGAGEMENT CLIENT = TERMINÉ / VALIDÉ / FIGÉ.**
 
 ### Statut Bloc C
 
 - [x] **C.1 — Audit sémantique retards / engagement client : TERMINÉ / AUDIT VALIDÉ**
 - [x] **C.2 — Fondation sémantique engagement / retard : TERMINÉ / VALIDÉ**
-- [x] **C.3 — Détection des retards ouverts : TERMINÉ / VALIDÉ STATIQUEMENT**
+- [x] **C.3 — Détection des retards ouverts : TERMINÉ / VALIDÉ (Runs 10-11)**
 - [x] **C.3-FIX — Source canonique des états terminaux : TERMINÉ / VALIDÉ**
-- [x] **C.4 — Indicateurs dérivés du retard courant : TERMINÉ / VALIDÉ STATIQUEMENT**
+- [x] **C.4 — Indicateurs dérivés du retard courant : TERMINÉ / VALIDÉ (Runs 10-11, 13)**
 - [x] **C.4-FIX — Cohérence instantanée du retard courant : TERMINÉ / VALIDÉ**
 - [x] **C.5 — Audit sémantique d'intégration SCOR / PI : TERMINÉ / AUDIT VALIDÉ**
-- [x] **C.6 — Observabilité du backlog client en retard : TERMINÉ / VALIDÉ STATIQUEMENT**
+- [x] **C.6 — Observabilité du backlog client en retard : TERMINÉ / VALIDÉ (Run 11)**
 - [x] **C.7 — Audit du contrat d'engagement client / dette `tPromise` : TERMINÉ / AUDIT VALIDÉ**
-- [x] **C.8 — Migration de l'engagement client configurable : TERMINÉ / VALIDÉ STATIQUEMENT**
-- [ ] **C.9 — Validation intégrée / gate de clôture : PRÉFLIGHT STATIQUE PASSÉ / EN ATTENTE VALIDATION RUNTIME**
-- [ ] Build + run utilisateur (C.2, C.3, C.3-FIX, C.4, C.4-FIX, C.6, C.8 et les 14 Runs C.9 — toujours en attente)
+- [x] **C.8 — Migration de l'engagement client configurable : TERMINÉ / VALIDÉ (Runs 1-9, 14)**
+- [x] **C.9 — Validation intégrée / gate de clôture : TERMINÉ / VALIDÉ RUNTIME**
+- [x] Build AnyLogic utilisateur : **PASS, 0 erreur**
+- [x] Runs 1 à 14 (protocole C.9) : **PASS (14/14)**
 
-**BLOC C = EN COURS.**
+**BLOC C — RETARDS / ENGAGEMENT CLIENT = TERMINÉ / VALIDÉ / FIGÉ.**
 
-## Bloc D — moteur conflictuel
+## Bloc D — moteur conflictuel / exports (NON COMMENCÉ)
+- [ ] Audit dédié préalable (à ouvrir en premier, avant toute modification)
 - [ ] Fonctions communes fusionnées une par une
 - [ ] JSON générique préservé
 - [ ] Export TTL/XLSX préservé
 - [ ] Build + run utilisateur
 
-## Bloc E — ordonnancement
+## Bloc E — ordonnancement MTO (NON COMMENCÉ)
 - [ ] Analyse A/B
 - [ ] Décision validée avant modification
 

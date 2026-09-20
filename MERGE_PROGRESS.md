@@ -6338,10 +6338,60 @@ fonctionnelle) — référence toujours **Build Bloc C = PASS / 0 erreur**.
 
 **D.1 = TERMINÉ / AUDIT VALIDÉ. BLOC D = EN COURS.**
 
+### D.2 — Validation runtime + clôture (protocole prêt, EN ATTENTE)
+
+**Préflight avant transmission du protocole à l'utilisateur** :
+`HEAD=5ba6bdb` reconfirmé, `git status --porcelain` vide sur
+`model/SCONTO_SVU_GENERIC_MASTER.alp` et les 10 JSON réels — aucun
+changement depuis D.1, la matrice de verdict et le CAS 1 restent
+valides tels quels.
+
+**D.2 ne peut pas être exécuté depuis ce terminal** : il n'y a pas
+d'environnement AnyLogic disponible ici pour lancer un Build ou une
+simulation. Conformément à la règle de fonctionnement de toute cette
+mission (Blocs A/M/B/C : chaque Build et chaque Run a toujours été
+exécuté et rapporté par l'utilisateur, jamais simulé ni supposé par
+l'agent), **le protocole ci-dessous est transmis tel quel, prêt à
+exécuter, mais aucun résultat n'est encore consigné.**
+
+#### Protocole à exécuter par l'utilisateur
+
+| Run | Objet | Attendu |
+|---|---|---|
+| **D1** | Build AnyLogic | 0 erreur |
+| **D2** | `chargerScenarioJSON` / `chargerConfig` | JSON réel chargé sans exception, scénarios/acteurs/postes présents |
+| **D3** | `demarrerSimulation` | Simulation démarre, aucune exception, progression normale |
+| **D4** | `genererCommande` / `routerEntite` | Au moins 1 commande cliente réelle créée, produit/scénario associés, routage correct, progression dans le workflow |
+| **D5** | `exporterToutesLesTablesExcel` | Fichier `.xlsx` produit, ouvrable, tables attendues présentes, non vide |
+| **D6** | Export ABox/TTL | Fichier `.ttl` produit, non vide, déclenchement conforme (clôture commande / arrêt) |
+| **D7** | CSV manuel (≥1 des 3 : `exporterCSV`, `exportTableToCSV`, `exporterTracesCSV`) | Fichier créé, contenu cohérent, aucune exception |
+| **D8** | `arreterSimulation` | Arrêt propre, exports de fin exécutés, aucune exception |
+| **D9** | Exports finaux | Excel + ABox/TTL accessibles après arrêt |
+
+**Rappels explicites (non renégociables dans ce bloc)** :
+- `StrategicAgent.deciderTypeCommande()` **reste non câblée** — ce
+  n'est ni testé ni activé dans D.2, conformément au constat D.1 §6
+  (décision produit hors mandat de fusion).
+- Les 6 dettes non bloquantes de D.1 (encodage `FileWriter`
+  hétérogène, `logEvenements` plafonné à 200 et non persisté,
+  `prendreDecisionAHP`/`traiterAlertesTactiques` inactifs,
+  `compteurCyclesExportExcel` non porté, `deciderTypeCommande` non
+  câblée) **restent documentées telles quelles** — aucune n'est
+  corrigée dans D.2, même si un Run les touche incidemment.
+- Aucune des 7 fonctions cibles n'a été ni ne sera modifiée dans ce
+  bloc : D.2 est une validation, pas un développement.
+
+**Statut** : **D.2 = EN ATTENTE VALIDATION RUNTIME UTILISATEUR.** Dès
+réception des résultats réels (Build + D1 à D9), ce commit sera
+complété par les résultats consignés et, si tout est PASS, par la
+clôture officielle du Bloc D — pas avant.
+
 ### Statut Bloc D
 - [x] **D.1 — Audit du moteur conflictuel / exports : TERMINÉ / AUDIT VALIDÉ (CAS 1)**
-- [ ] D.2 — validation runtime + clôture documentaire (à ouvrir sur demande)
+- [ ] **D.2 — Validation runtime + clôture : PROTOCOLE PRÊT / EN ATTENTE VALIDATION RUNTIME UTILISATEUR**
 - [ ] Point de décision produit signalé (§6, `deciderTypeCommande`/`REFUSEE`) — en attente d'arbitrage utilisateur, hors mandat fusion
+
+**BLOC D = EN COURS.**
 
 ## Bloc E — ordonnancement MTO (NON COMMENCÉ)
 - [ ] Analyse A/B

@@ -6381,17 +6381,71 @@ exécuter, mais aucun résultat n'est encore consigné.**
 - Aucune des 7 fonctions cibles n'a été ni ne sera modifiée dans ce
   bloc : D.2 est une validation, pas un développement.
 
-**Statut** : **D.2 = EN ATTENTE VALIDATION RUNTIME UTILISATEUR.** Dès
-réception des résultats réels (Build + D1 à D9), ce commit sera
-complété par les résultats consignés et, si tout est PASS, par la
-clôture officielle du Bloc D — pas avant.
+#### Résultats runtime officiels (fournis par l'utilisateur)
+
+```text
+BUILD : PASS — 0 erreur
+
+D2 JSON/config        : PASS
+D3 démarrage          : PASS
+D4 génération/routage : PASS
+D5 Excel              : PASS
+D6 ABox/TTL           : PASS
+D7 CSV manuel         : PASS
+D8 arrêt              : PASS
+D9 exports finaux     : PASS
+
+Excel généré   : OUI
+TTL/ABox généré : OUI
+CSV généré     : OUI
+
+Anomalies : aucune
+```
+
+**Build PASS (0 erreur) + les 8 Runs D2-D9 = PASS (8/8)**, tous
+consignés par l'utilisateur. Les 3 exports (Excel, ABox/TTL, CSV) ont
+été réellement générés, sans anomalie. Ceci confirme en conditions
+réelles les constats statiques de D.1 : les 7 fonctions de fusion
+(`chargerScenarioJSON`, `chargerConfig`, `demarrerSimulation`,
+`genererCommande`, `routerEntite`, `exporterToutesLesTablesExcel`,
+`arreterSimulation`) sont opérationnelles et les 5 mécanismes d'export
+réels fonctionnent correctement de bout en bout (chargement → run →
+génération de commandes → routage → export → arrêt → exports finaux).
+
+**Note de procédure** : une réouverture du modèle dans AnyLogic pour
+exécuter ce protocole a de nouveau produit le bruit de sauvegarde
+automatique déjà rencontré à plusieurs reprises dans cette mission
+(espace parasite après `<EmbeddedIcon>false</EmbeddedIcon>` près du
+bouton `arreterSimulation()`, et sur 2 balises `<Type>` de variables) —
+détecté via `git status`/`git diff` avant tout audit, confirmé
+strictement cosmétique (aucune ligne fonctionnelle), et annulé via
+`git checkout` avant de documenter ce bloc. Non commité, conformément à
+la pratique constante de cette mission.
+
+**Dettes non bloquantes conservées telles quelles (aucune corrigée)** :
+- encodage `FileWriter` hétérogène sur certains CSV manuels
+  (`exporterCSV`/`exporterTracesCSV` vs `exportTableToCSV` en UTF-8 explicite) ;
+- `board.logEvenements` plafonné à 200 entrées, jamais persisté sur disque ;
+- `prendreDecisionAHP()` inactif (déjà connu, Bloc A.5) ;
+- `traiterAlertesTactiques()` inactif (déjà connu, Bloc A.5) ;
+- `compteurCyclesExportExcel` (throttle collègue) non porté ;
+- `StrategicAgent.deciderTypeCommande()` présente, byte-identique au
+  collègue, toujours **non câblée** — décision produit hors mandat de
+  fusion, non activée ici ni dans aucun bloc futur sans demande
+  explicite.
+
+**D.2 = TERMINÉ / VALIDÉ RUNTIME.**
+
+**BLOC D — MOTEUR CONFLICTUEL / EXPORTS = TERMINÉ / VALIDÉ / FIGÉ.**
 
 ### Statut Bloc D
 - [x] **D.1 — Audit du moteur conflictuel / exports : TERMINÉ / AUDIT VALIDÉ (CAS 1)**
-- [ ] **D.2 — Validation runtime + clôture : PROTOCOLE PRÊT / EN ATTENTE VALIDATION RUNTIME UTILISATEUR**
-- [ ] Point de décision produit signalé (§6, `deciderTypeCommande`/`REFUSEE`) — en attente d'arbitrage utilisateur, hors mandat fusion
+- [x] **D.2 — Validation runtime + clôture : TERMINÉ / VALIDÉ RUNTIME**
+- [x] Build AnyLogic utilisateur : **PASS, 0 erreur**
+- [x] Runs D2 à D9 (protocole D.2) : **PASS (8/8)**
+- [x] Point de décision produit signalé (§6, `deciderTypeCommande`/`REFUSEE`) — reste explicitement hors mandat, non activé, dette documentée
 
-**BLOC D = EN COURS.**
+**BLOC D — MOTEUR CONFLICTUEL / EXPORTS = TERMINÉ / VALIDÉ / FIGÉ.**
 
 ## Bloc E — ordonnancement MTO (NON COMMENCÉ)
 - [ ] Analyse A/B

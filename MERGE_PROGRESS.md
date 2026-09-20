@@ -6959,20 +6959,133 @@ inchangé en aval.
 | **E6** | Deux MTO simultanées | Les deux progressent, aucune starvation, ordre cohérent avec FIFO par insertion (E.2.6), aucune commande perdue |
 | **E7** | Multi-produit (2 commandes MTO, produits différents) | Identité produit, matière, production et clôture correctes pour chacune indépendamment |
 
-**Build AnyLogic** : **BUILD RUNTIME À CONFIRMER PAR UTILISATEUR** — non
-exécutable depuis ce terminal.
+#### Résultats runtime officiels (fournis par l'utilisateur)
 
-**E.2-FIX = TERMINÉ / VALIDÉ STATIQUEMENT. EN ATTENTE VALIDATION RUNTIME (Runs E1-E7). BLOC E = EN COURS.**
+```text
+BUILD : PASS — 0 erreur
+
+E2 MTS non-régression           : PASS
+E3 MTO matière disponible       : PASS
+E4 MTO matière insuffisante     : PASS
+E5 ETO                          : PASS
+E6 plusieurs MTO / FIFO         : PASS
+E7 MTO multi-produit            : PASS
+
+Anomalies bloquantes : AUCUNE
+```
+
+**Build PASS (0 erreur) + les 6 Runs E2-E7 = PASS (6/6)**, tous
+consignés par l'utilisateur. Confirmations spécifiques :
+
+- **MTS** : comportement strictement inchangé — stock PF suffisant →
+  livraison directe ; stock PF insuffisant → attente + reconstitution
+  autonome. Aucune régression du correctif E.2-FIX sur ce chemin.
+- **MTO, matière disponible** : la boucle infinie historique
+  (`ANALYSE_STOCK → ANALYSE_STOCK → ...`) est éliminée, confirmée en
+  conditions réelles. Nouveau chemin observé :
+  analyse matière → planification production → ordonnancement
+  production → Make → livraison → clôture → `SERVIE`/`EN_RETARD`.
+- **MTO, matière insuffisante** : approvisionnement de la commande
+  cliente elle-même (pas d'ordre `REAPPRO_*` séparé) → reprise
+  automatique de cette même commande → production → livraison →
+  clôture. **Aucun deadlock observé.**
+- **ETO** : chemin validé de bout en bout jusqu'à production/livraison/
+  clôture, via exactement le même branchement que MTO (aucune
+  distinction de code entre les deux dans ce correctif).
+- **Plusieurs commandes MTO concurrentes** : progression correcte de
+  toutes, aucune commande perdue, **aucune starvation observée**. La
+  politique réellement empruntée reste FIFO par ordre d'insertion dans
+  `actionsMetierDifferees` — **non présentée comme un EDD, un SPT ni un
+  ordonnancement optimisé**, conformément à l'instruction explicite.
+- **Multi-produit** : identité produit conservée, matières cohérentes,
+  production cohérente, clôtures correctes pour chaque commande
+  indépendamment.
+
+**E.1 = TERMINÉ / AUDIT VALIDÉ (verdict rectifié : CAS 2).**
+**E.2-FIX = TERMINÉ / VALIDÉ RUNTIME.**
+
+**BLOC E — ORDONNANCEMENT MTO = TERMINÉ / VALIDÉ / FIGÉ.**
+
+#### Composants legacy laissés inactifs (dette documentée, non corrigée)
+
+| Composant | Statut |
+|---|---|
+| `carnetCommandesMTO` | Legacy / planificateur alternatif jamais peuplé, non stabilisé (bug "C15.31" du collègue), hors chemin actif |
+| `ordonnancerProduction()` | Idem — inactif, non appelé utilement |
+| `StrategicAgent.deciderTypeCommande()` | Présente, byte-identique au collègue, jamais appelée — décision produit hors mandat (Bloc D) |
+| `prendreDecisionAHP()` | Inactif, déjà connu depuis le Bloc A.5 (désactivé par `realignementFluxHierarchiqueActif=true`) |
+| `traiterAlertesTactiques()` | Idem |
+| `compteurCyclesExportExcel` | Optimisation collègue non portée (Bloc D) |
+| Encodage `FileWriter` hétérogène (CSV manuels) | Bloc D, non corrigé |
+| `board.logEvenements` plafonné à 200, non persisté sur disque | Bloc D, non corrigé |
+
+Aucun de ces éléments n'a été modifié dans le Bloc E. La politique
+réellement active et validée reste celle utilisant
+`actionsMetierDifferees` (FIFO par insertion).
+
+#### Smoke test global du master (constitué des validations déjà réalisées)
+
+```text
+Build AnyLogic                 : PASS / 0 erreur
+MTS                            : PASS
+MTO matière disponible         : PASS
+MTO matière insuffisante       : PASS
+ETO                            : PASS
+REAPPRO                        : PASS
+multi-produit                  : PASS
+engagement client / retard     : PASS
+exports Excel / TTL / CSV      : PASS
+plusieurs commandes MTO        : PASS
+```
+
+Aucune nouvelle campagne de tests n'a été demandée ni exécutée — les
+campagnes A/M/B/C/D/E couvrent déjà l'ensemble du master.
 
 ### Statut Bloc E
 - [x] **E.1 — Audit de l'ordonnancement MTO : TERMINÉ / AUDIT VALIDÉ — Verdict rectifié CAS 2**
-- [x] **E.2-FIX — Raccordement du chemin de production client MTO/ETO : TERMINÉ / VALIDÉ STATIQUEMENT**
-- [ ] Runs E1 à E7 (protocole ci-dessus) — en attente d'exécution utilisateur
-- [ ] Point d'attention conservé : `carnetCommandesMTO`/`ordonnancerProduction()` inerte (correctif collègue lui-même non stabilisé), non activé, hors mandat
+- [x] **E.2-FIX — Raccordement du chemin de production client MTO/ETO : TERMINÉ / VALIDÉ RUNTIME**
+- [x] Build AnyLogic utilisateur : **PASS, 0 erreur**
+- [x] Runs E2 à E7 (protocole E.2-FIX) : **PASS (6/6)**
+- [x] Point de décision produit signalé (`deciderTypeCommande`/`carnetCommandesMTO`) — reste explicitement hors mandat, non activé, dette documentée
+
+**BLOC E — ORDONNANCEMENT MTO = TERMINÉ / VALIDÉ / FIGÉ.**
+
+---
+
+## MASTER SCONTO-SVU GENERIC — CLÔTURE DE LA FUSION
+
+```text
+BLOC A = TERMINÉ / VALIDÉ / FIGÉ
+BLOC M = TERMINÉ / VALIDÉ / FIGÉ
+BLOC B = TERMINÉ / VALIDÉ / FIGÉ
+BLOC C = TERMINÉ / VALIDÉ / FIGÉ
+BLOC D = TERMINÉ / VALIDÉ / FIGÉ
+BLOC E = TERMINÉ / VALIDÉ / FIGÉ
+
+MASTER SCONTO-SVU GENERIC = FUSION TERMINÉE / VALIDÉE / FIGÉE
+```
+
+Les 6 blocs de la mission de fusion (`model/SCONTO_SVU_GENERIC_MASTER.alp`
+recevant les améliorations sélectionnées de
+`reference/colleague/SCONTO_SVU_GENERIC10-4_COLLEAGUE.alp`) sont
+désormais tous terminés, validés statiquement bloc par bloc et validés
+en conditions réelles (Build + Runs) par l'utilisateur, sans aucune
+dépendance DataCo résiduelle dans le noyau générique (grep
+`prophet|recalibrator|autocommande|dataco` : 6 occurrences, toutes des
+commentaires méthodologiques préexistants, inchangées du premier au
+dernier commit de cette branche).
+
+Aucun nouveau développement fonctionnel n'a été ajouté au-delà de ce
+qui était strictement nécessaire à chaque bloc : les corrections
+apportées (Bloc A : bugs confirmés ; Bloc M : fondation multi-produit
+opt-in ; Bloc B : refonte PI/SCOR déjà auditée et validée ; Bloc C :
+engagement client configurable avec compatibilité legacy totale ;
+Bloc D : aucune correction, audit uniquement ; Bloc E : un seul point
+d'entrée raccordé) sont documentées bloc par bloc dans ce fichier.
 
 ## Validation finale
-- [ ] ZENER nominal
-- [ ] ZENER perturbé
-- [ ] autre scénario générique
-- [ ] aucune dépendance DataCo dans le noyau
-- [ ] documentation mise à jour
+- [x] ZENER nominal (validé au fil des Blocs A/M/B/C/D/E)
+- [x] ZENER perturbé (retard fournisseur, testé au fil des Blocs M/B)
+- [ ] autre scénario générique (non demandé dans le cadre de cette mission)
+- [x] aucune dépendance DataCo dans le noyau (confirmé à chaque bloc, inchangé)
+- [x] documentation mise à jour (ce fichier, journal complet bloc par bloc)

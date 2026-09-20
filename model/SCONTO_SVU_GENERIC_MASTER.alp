@@ -3014,7 +3014,22 @@ void analyserStockCommandeOrchestree(CommandeAgent cmd) {
     // Un retry programme avant le reveil peut arriver pendant Deliver ou
     // apres la cloture. Il ne doit ni rouvrir l'attente, ni relancer la
     // politique de stock, ni programmer une nouvelle analyse.
-    if ("EN_LIVRAISON".equals(cmd.statut) || "SERVIE".equals(cmd.statut) || "EN_RETARD".equals(cmd.statut)) return;
+    // Bloc E.2-FIX -- meme garde de reentrance, etendue aux statuts en cours
+    // de traitement matiere/production d'une commande MTO/ETO deja engagee
+    // via analyserMatiereCommandeOrchestree() ci-dessous (EN_APPROVISIONNEMENT,
+    // PRODUCTION_PLANIFIEE, EN_COURS) : sans cette extension, le reveil
+    // "reanalyserStockCommandeOrchestree" declenche par finDeParcours() a la
+    // cloture d'un REAPPRO du MEME produit (ETAPE 3.3, plus bas dans ce
+    // fichier) pourrait relancer une 2e fois analyserMatiereCommandeOrchestree()
+    // sur une commande MTO/ETO deja en vol, et donc planifier un 2e
+    // LANCER_PRODUCTION pour la meme commande (double production). Utilise
+    // commandeEstTerminale() (source canonique unique, Bloc C.3-FIX) pour
+    // SERVIE/EN_RETARD/REFUSEE/BLOQUE_* plutot que de redupliquer cette liste.
+    if (commandeEstTerminale(cmd)
+        || "EN_LIVRAISON".equals(cmd.statut)
+        || "EN_APPROVISIONNEMENT".equals(cmd.statut)
+        || "PRODUCTION_PLANIFIEE".equals(cmd.statut)
+        || "EN_COURS".equals(cmd.statut)) return;
 
     ScenarioFlux sc = scenarioPourCommande(cmd);
     PosteGenericAgent stockFini = (sc != null) ? trouverStockFiniPourScenario(sc) : null;
@@ -3117,13 +3132,25 @@ void analyserStockCommandeOrchestree(CommandeAgent cmd) {
         return;
     }
 
-    // C14.55 -- garde de securite : si le mode configure n'est pas MTS (cas
-    // non couvert par cette refonte, jamais rencontre dans les tests de
-    // cette session), on reessaie quand meme plutot que de laisser la
-    // commande sans suite programmee.
-    board.logEvent("[STOCK] " + cmd.idCommande + " : mode " + cmd.typeCommande
-        + " non couvert par la politique MTS pure, nouvelle tentative programmee par securite.");
-    planifierActionCommande("ANALYSE_STOCK", cmd, 30.0);
+    // Bloc E.2-FIX -- MTO/ETO (audit E.1 : ce cas retombait auparavant dans
+    // une garde de securite qui ne faisait que reprogrammer ANALYSE_STOCK
+    // indefiniment sans jamais atteindre la production -- cmd.typeCommande
+    // est deja garanti non-"MTS" ici, les deux branches MTS ci-dessus ayant
+    // chacune deja retourne). Une commande MTO/ETO ne cherche pas a puiser
+    // dans le stock produit fini (concept MTS) : elle va directement a
+    // l'analyse matiere, exactement le meme point d'entree canonique deja
+    // utilise sans modification par le reapprovisionnement autonome
+    // (declencherProductionAutonome(), Bloc M). analyserMatiereCommandeOrchestree()
+    // gere deja, de facon generique sur cmd/sc (identite produit via
+    // cmd.idScenario/cmd.qte, jamais dupliquee ici) : matiere disponible ->
+    // production directe ; matiere insuffisante -> declencherApprovisionnementCommande()
+    // puis reprise automatique via FINALISER_APPROVISIONNEMENT ;
+    // configuration/nomenclature invalide -> BLOQUE_CONFIG/BLOQUE_NOMENCLATURE
+    // (terminal, inchange). La cloture en aval (finDeParcours(), chemin
+    // non-REAPPRO) est deja generique et productrice de SERVIE/EN_RETARD via
+    // tPromise (Bloc C, inchange) : aucune modification necessaire au-dela
+    // de ce seul point d'entree.
+    analyserMatiereCommandeOrchestree(cmd);
 }
 void analyserMatiereCommandeOrchestree(CommandeAgent cmd) {
     if (cmd == null || !modeExecution) return;

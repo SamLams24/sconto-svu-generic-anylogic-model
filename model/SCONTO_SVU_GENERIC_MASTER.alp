@@ -8390,6 +8390,17 @@ public boolean isMTO = false;
 public boolean isETO = false;
 public String modeSimulationSCOR = "MTS";
 
+// ============================================================
+// ENGAGEMENT CLIENT CONFIGURABLE (BLOC C.8 -- audit C.7)
+// Defaut de delai promis (secondes) issu de parametresGlobaux.
+// champDelaiPromesseParDefautSec, niveau "defaut du scenario charge"
+// dans la hierarchie de resolution (voir resoudreEngagementClient()).
+// null = absent/non configure dans le JSON charge -> le resolveur
+// ignore ce niveau et retombe sur le fallback legacy. Ne JAMAIS
+// utiliser 0 ou -1 comme sentinelle d'absence (C.8.3).
+// ============================================================
+public Double champDelaiPromesseParDefautSec = null;
+
 int indiceModeSCOR() {
     if (isETO) return 3;
     if (isMTO) return 2;
@@ -8404,6 +8415,76 @@ double delaiPromessePourMode(String mode) {
     if ("ETO".equalsIgnoreCase(mode)) return 3600.0;
     if ("MTO".equalsIgnoreCase(mode)) return 1800.0;
     return 300.0;
+}
+
+// Bloc C.8 -- conteneur minimal retourne par resoudreEngagementClient() :
+// le delai promis ET sa source doivent etre produits ENSEMBLE par une seule
+// resolution (jamais deux appels separes qui dupliqueraient la hierarchie
+// specifique->defaut->legacy, cf. audit C.7 §17). Aucune autre donnee
+// (date absolue, historique, client, statut) : strictement le minimum.
+public class EngagementClientResolution implements java.io.Serializable {
+    public double delaiSec = 0.0;
+    public String source = "";
+}
+
+// Bloc C.8 -- resolveur canonique UNIQUE de l'engagement client (audit
+// C.7 §8/§18). Hierarchie strictement dans cet ordre, sans duplication
+// ailleurs dans le master :
+//   1. type/produit specifique  : sc.promisedDelaySec (ScenarioFlux)
+//   2. defaut du scenario charge : champDelaiPromesseParDefautSec
+//   3. fallback legacy           : delaiPromessePourMode(cmd.typeCommande)
+// cmd.typeCommande est deja la valeur figee au moment de l'appel (voir
+// genererCommande()) : on ne relit jamais modeSCORActif() ici, exactement
+// la meme expression que l'ancienne 2e ecriture definitive de tPromise.
+EngagementClientResolution resoudreEngagementClient(CommandeAgent cmd, ScenarioFlux sc) {
+    EngagementClientResolution r = new EngagementClientResolution();
+    if (sc != null && sc.promisedDelaySec != null && sc.promisedDelaySec.doubleValue() > 0.0) {
+        r.delaiSec = sc.promisedDelaySec.doubleValue();
+        r.source = "PRODUCT_TYPE_SEC";
+        return r;
+    }
+    if (champDelaiPromesseParDefautSec != null && champDelaiPromesseParDefautSec.doubleValue() > 0.0) {
+        r.delaiSec = champDelaiPromesseParDefautSec.doubleValue();
+        r.source = "SCENARIO_DEFAULT_SEC";
+        return r;
+    }
+    r.delaiSec = delaiPromessePourMode(cmd != null ? cmd.typeCommande : null);
+    r.source = "LEGACY_MODE_SCOR";
+    return r;
+}
+
+// Bloc C.8 -- validation dediee et minimale pour les 2 nouveaux champs
+// d'engagement client (promisedDelaySec / champDelaiPromesseParDefautSec)
+// UNIQUEMENT. Reutilise le Map deja produit par SimpleJsonParser (aucune
+// seconde infrastructure JSON) mais NE MODIFIE PAS jsonDouble()/jsonInt()/
+// jsonString() : leur convention generique (absent==invalide==fallback
+// silencieux, cf. audit C.7 §3) reste strictement inchangee pour tous
+// leurs autres appelants existants (postes, machines, fiches matiere,
+// poids SCOR, etc.). Trois issues possibles (C.8.1/C.8.2) :
+//   - cle absente                    -> retourne null (fallback autorise)
+//   - cle presente + valeur JSON "null" explicite -> retourne null aussi :
+//     Map.get() ne distingue pas les deux cas (limite technique du
+//     parseur SimpleJsonParser -- impossibilite documentee, C.8.2)
+//   - cle presente + valeur numerique finie > 0 -> retourne la valeur
+//   - cle presente + valeur invalide (non numerique, <=0, NaN, Infinity)
+//     -> leve une RuntimeException explicite (champ + valeur), JAMAIS un
+//     repli silencieux sur le fallback legacy.
+Double lireDelaiPromisSecondesStrict(java.util.Map jmap, String jkey) {
+    if (jmap == null || jkey == null || !jmap.containsKey(jkey)) return null;
+    Object v = jmap.get(jkey);
+    if (v == null) return null;
+    double d;
+    try {
+        d = (v instanceof Number) ? ((Number) v).doubleValue() : Double.parseDouble(v.toString());
+    } catch (Exception ex) {
+        throw new RuntimeException("champ '" + jkey + "' present mais non numerique (valeur='" + v
+            + "') -- attendu un nombre de secondes strictement positif");
+    }
+    if (Double.isNaN(d) || Double.isInfinite(d) || d <= 0.0) {
+        throw new RuntimeException("champ '" + jkey + "' present mais invalide (valeur=" + d
+            + ") -- attendu un nombre fini strictement positif, en secondes");
+    }
+    return Double.valueOf(d);
 }
 
 void appliquerModeSimulationSCOR(String mode) {
@@ -13445,7 +13526,6 @@ cmd.idCommande  = "CMD_" + n;
 cmd.typeCommande = modeSCORActif();
 cmd.qte         = quantitePourNouvelleCommande();
 cmd.tCreation   = time();
-cmd.tPromise    = time() + delaiPromessePourMode(cmd.typeCommande);
 cmd.statut      = "EN_ATTENTE";
 // Les entrées « ZENER CAS 1/2/3 » sont des profils d'état initial et non des
 // produits/scénarios exécutables. Si l'une d'elles reste sélectionnée dans
@@ -13468,18 +13548,26 @@ enregistrerLigneProduitCommande(cmd, scenarioCommande, cmd.qte);
 // Les profils Cas 1/2/3 pilotent uniquement les stocks. Le mode SCOR reste celui choisi au lancement.
 cmd.typeCommande = modeSCORActif();
 
-cmd.tPromise = time() + delaiPromessePourMode(cmd.typeCommande);
-// Bloc C.2 -- fondation semantique engagement/retard (audit C.1). tPromise
-// reste l'unique reference d'engagement, calcul inchange ci-dessus.
-// modeEngagementClient documente desormais explicitement la SOURCE/METHODE
-// ayant produit cette promesse -- ici la politique legacy
-// delaiPromessePourMode(modeSCORActif()) -- plutot que de se contenter du
-// mode industriel brut (MTS/MTO/ETO), qui masquerait la conflation deja
-// identifiee en C.1 entre mode de production et engagement client.
-// retardConstate demarre a false (deja la valeur par defaut du champ) et
-// n'est mis a jour qu'aux 2 points de cloture existants (C.2.3) -- jamais
-// ici, jamais en cours de vie de la commande.
-cmd.modeEngagementClient = "LEGACY_MODE_SCOR";
+// Bloc C.8 -- resolution canonique UNIQUE de l'engagement client (audit
+// C.7, remplace les 2 anciennes ecritures de tPromise : l'une prematuree
+// avant resolution finale du scenario, deja supprimee ci-dessus ; celle-ci
+// est desormais la SEULE ecriture metier de tPromise dans cette fonction).
+// scenarioCommande est ici definitivement connu (bascule Cas 1/2/3 et
+// enregistrerLigneProduitCommande() deja executees), cmd.typeCommande vient
+// d'etre re-confirme : c'est exactement le point de gel identifie par
+// l'audit C.7. Hierarchie appliquee par resoudreEngagementClient() : type
+// de produit specifique -> defaut du scenario charge -> repli legacy
+// (delaiPromessePourMode(cmd.typeCommande), comportement historique
+// strictement inchange pour tout JSON n'exposant aucun des 2 nouveaux
+// champs, cf. C.8.9). tPromise et modeEngagementClient sont figes ENSEMBLE,
+// une seule fois, jamais recalcules ensuite (invariant d'immutabilite,
+// audit C.7 §11 -- verifie par grep, C.8.8). retardConstate demarre a
+// false (deja la valeur par defaut du champ, Bloc C.2) et n'est mis a jour
+// qu'aux 2 points de cloture existants -- jamais ici, jamais en cours de
+// vie de la commande.
+EngagementClientResolution engagement = resoudreEngagementClient(cmd, scenarioCommande);
+cmd.tPromise = time() + engagement.delaiSec;
+cmd.modeEngagementClient = engagement.source;
 cmd.retardConstate = false;
 
 Order order = creerOuSynchroniserOrder(cmd);
@@ -15138,6 +15226,10 @@ for (LigneNomenclature l : scenario.nomenclature) {
     lstNomenc.add(ln);
 }
 mp.put("nomenclature", lstNomenc);
+// Bloc C.8 -- engagement client specifique (PRODUCT_TYPE_SEC), optionnel.
+// null si non configure : SimpleJsonWriter.writeValue() ecrit alors le
+// litteral JSON "null" (round-trip symetrique avec scenarioFromJson()).
+mp.put("promisedDelaySec", scenario.promisedDelaySec);
 return mp;]]></Body>
 				</Function>
 				<Function AccessType="default" StaticFunction="false">
@@ -15171,6 +15263,20 @@ if (nomObj instanceof java.util.List) {
             ));
         }
     }
+}
+// Bloc C.8 -- engagement client specifique (PRODUCT_TYPE_SEC), optionnel.
+// Absent/valeur JSON null -> sc.promisedDelaySec reste null (deja sa valeur
+// par defaut) -> resoudreEngagementClient() ignore ce niveau (fallback vers
+// le defaut du scenario puis vers le legacy). Une valeur presente mais
+// invalide leve une erreur explicite identifiant le produit concerne,
+// plutot que d'etre silencieusement ignoree (C.8.2/C.8.13) ; elle remonte
+// au catch existant qui rejette CETTE entree scenarios[] (comportement
+// deja universel du loader pour toute entree list malformee -- postes,
+// machines, fiches matiere -- non modifie ici, cf. audit C.7 §3).
+try {
+    sc.promisedDelaySec = lireDelaiPromisSecondesStrict(jmap, "promisedDelaySec");
+} catch (RuntimeException ex) {
+    throw new RuntimeException("scenario '" + produit + "' : " + ex.getMessage());
 }
 return sc;]]></Body>
 				</Function>
@@ -15588,6 +15694,11 @@ champScenarioSelectionne = "";
 // les nouveaux paramètres globaux. Les fiches matière détaillées restent conservées.
 champStockInitialProduitFini = 100.0;
 champStockInitialMatiereGlobal = 100.0;
+// Bloc C.8 -- reinitialise le defaut d'engagement client AVANT chargement :
+// sans cela, charger un 2e JSON sans champDelaiPromesseParDefautSec apres
+// un 1er JSON qui le definissait laisserait l'ancienne valeur fuiter dans
+// le nouveau scenario. null = absent, jamais 0/-1 (C.8.3).
+champDelaiPromesseParDefautSec = null;
 
 // 2. Supprimer les OperationalAgents dynamiques
 while (opAgents.size() > 0) remove_opAgents(opAgents.get(opAgents.size() - 1));
@@ -15676,6 +15787,10 @@ kpi_AG_score = 0; kpi_CO_score = 0; kpi_AM_score = 0;]]></Body>
     params.put("champPoidsAM", champPoidsAM);
     params.put("champStockInitialProduitFini", champStockInitialProduitFini);
     params.put("champStockInitialMatiereGlobal", champStockInitialMatiereGlobal);
+    // Bloc C.8 -- defaut d'engagement client (SCENARIO_DEFAULT_SEC), optionnel.
+    // null si non configure : ecrit le litteral JSON "null" (round-trip
+    // symetrique avec le chargement plus bas).
+    params.put("champDelaiPromesseParDefautSec", champDelaiPromesseParDefautSec);
     // Bloc M.1 -- champs multi-produit optionnels : absents d'un ancien JSON, ils
     // se rechargent a leurs valeurs par defaut (false / map vide), comportement
     // historique inchange (voir chargement plus bas).
@@ -15885,6 +16000,15 @@ root.put("fichesMatiere", lstFiches);
         champPoidsAM                   = jsonDouble(pg, "champPoidsAM", champPoidsAM);
         champStockInitialProduitFini   = jsonDouble(pg, "champStockInitialProduitFini", champStockInitialProduitFini);
         champStockInitialMatiereGlobal = jsonDouble(pg, "champStockInitialMatiereGlobal", champStockInitialMatiereGlobal);
+        // Bloc C.8 -- defaut d'engagement client (SCENARIO_DEFAULT_SEC),
+        // optionnel. Absent -> champDelaiPromesseParDefautSec reste null,
+        // resoudreEngagementClient() ignore ce niveau (fallback legacy).
+        // Present mais invalide (<=0, NaN, non numerique) -> exception NON
+        // interceptee ici (bloc parametresGlobaux hors de toute boucle
+        // protegee) : remonte telle quelle jusqu'au catch global de cette
+        // fonction, qui bloque tout le chargement avec un message explicite
+        // identifiant le champ et la valeur fautive (C.8.2/C.8.13).
+        champDelaiPromesseParDefautSec = lireDelaiPromisSecondesStrict(pg, "champDelaiPromesseParDefautSec");
         // Bloc M.1 -- champs multi-produit optionnels. Absents d'un JSON existant
         // (cas ZENER actuel notamment) : modeMultiProduitActif/rotationProduitsActive
         // retombent sur leur defaut false, stockInitialParProduit reste une map
@@ -54645,6 +54769,13 @@ public class ScenarioFlux implements java.io.Serializable {
     // UNE unite de ce produit. Saisie libre, ajoutee via la vue
     // "Configurer nomenclature". Vide par defaut : aucun impact si non utilisee.
     public List<LigneNomenclature> nomenclature = new ArrayList<LigneNomenclature>();
+
+    // Bloc C.8 -- engagement client specifique a ce type de produit (niveau
+    // "PRODUCT_TYPE_SEC" de resoudreEngagementClient()), en secondes. null =
+    // absent du JSON charge -> ce niveau est ignore par le resolveur, qui
+    // retombe sur le defaut du scenario puis sur le fallback legacy. Jamais
+    // 0/-1 comme sentinelle d'absence (C.8.3).
+    public Double promisedDelaySec = null;
 
     public ScenarioFlux() {}
     public ScenarioFlux(String typeProduit, double debitParHeure) {

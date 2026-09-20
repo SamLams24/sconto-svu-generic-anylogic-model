@@ -4811,6 +4811,526 @@ l'utilisateur.
 
 **C.6 = TERMINÉ / VALIDÉ STATIQUEMENT. C.7+ = NON COMMENCÉS. BLOC C = EN COURS.**
 
+### C.7 — Audit du contrat d'engagement client / dette `tPromise`
+
+**Rappel de périmètre** : C.7 est un audit et une conception de contrat
+uniquement. Aucune ligne du `.alp` ni d'un JSON n'a été modifiée dans ce
+bloc — confirmé en §"Validations statiques" ci-dessous.
+
+#### 1. Inventaire exhaustif des lectures/écritures de `CommandeAgent.tPromise`
+
+| Ligne | Fonction | R/W | Moment | Rôle |
+|---|---|---|---|---|
+| 2990 | `declencherProductionAutonome()` | **ÉCRITURE** | création d'un ordre REAPPRO (hors périmètre client) | `tPromise = time() + delaiPromessePourMode("MTS")` — engagement fictif pour un ordre interne, jamais un engagement client réel |
+| 13448 | `genererCommande()` — 1ère écriture | **ÉCRITURE** | juste après `cmd.typeCommande = modeSCORActif()` initial, **avant** la résolution finale du scénario (bascule Cas 1/2/3, ligne 13453-13466) | **calcul mort** : systématiquement écrasé par l'écriture suivante avant toute utilisation |
+| 13469 | `genererCommande()` | (ré-écriture de `typeCommande`, pas de `tPromise`) | après résolution finale du scénario | confirme que `typeCommande` peut encore changer entre les 2 écritures de `tPromise` |
+| 13471 | `genererCommande()` — 2e écriture (réelle) | **ÉCRITURE** | après `enregistrerLigneProduitCommande()` et la 2e affectation de `typeCommande` | **seule valeur qui compte** : c'est celle qui subsiste et qui est utilisée partout ensuite |
+| 5755-5756 | `finaliserReceptionClientDirecte()` | LECTURE (comparaison) | clôture MTS directe | fige `retardConstate` + `statut` ; ne modifie jamais `tPromise` |
+| 13162-13163 | handler de fin Make (MTO/Cas 2-3) | LECTURE (comparaison) | clôture post-production | idem |
+| 6792, 6811 | classe `Order.tPromise` + `synchroniser(cmd)` | LECTURE (copie miroir passive) | à chaque appel `synchroniser()` | simple recopie DTO, jamais une seconde source de vérité |
+| 9437 | export ABox (RDF/Turtle) | LECTURE | fin de run | `run:promisedAtSimulationSecond` |
+| 9984-9985 | `commandeOuverteEstEnRetardMaintenant()` (Bloc C.4-FIX) | LECTURE | chaque appel (Events C.3/C.6, fonctions C.4) | vérité instantanée du dépassement |
+| 10010 | `retardCourantCommandeOuverteSec()` (Bloc C.4) | LECTURE | idem | calcul du retard courant en secondes |
+| 23317 | dashboard superviseur `sM` (affichage EDD) | LECTURE | rafraîchissement UI | conversion `/60` en minutes **pour l'affichage uniquement**, jamais réécrite |
+| 24390 | `publierAERRetardCommande()` | LECTURE | déclenché à la clôture `EN_RETARD` | reconstruit le délai promis d'origine (`tPromise - tCreation`) pour le message AER |
+| 49098 | tri EDD de `carnetCommandesMTO` (Bloc M) | LECTURE | à chaque tentative de libération MTO | clé de tri secondaire, après la priorité explicite |
+| 49103 | `urgent = time() >= prochaine.tPromise` (Bloc M) | LECTURE | idem | **force la libération** même si le Make est en GOULOT/PANNE (anti-famine) |
+| 49580 | déclaration `<Variable>` formelle | déclaration statique | — | `Id=1782000000524`, `double`, valeur initiale `0` |
+
+**Bilan quantifié** : **3 écritures réelles** au total dans tout le master
+(2 pour les commandes clientes dans `genererCommande()`, dont 1 calcul
+mort systématiquement écrasé avant tout usage ; 1 pour les ordres REAPPRO
+dans `declencherProductionAutonome()`, hors périmètre client) et **au
+moins 10 lecteurs distincts**, répartis sur 4 zones fonctionnelles :
+clôture (Bloc C.2), détection/observabilité (Blocs C.3/C.4/C.6),
+**ordonnancement MTO du Bloc M** (tri EDD + levée anti-famine — lecture
+la plus critique fonctionnellement, découverte dans cet audit, absente
+des blocs précédents), et reporting (dashboard, AER, export ABox).
+**Aucun point d'écriture concurrent** n'existe en dehors de
+`genererCommande()` (client) et `declencherProductionAutonome()`
+(REAPPRO) : une future migration ne risque donc pas de laisser un
+second calcul de la promesse actif quelque part.
+
+#### 2. Chaîne exacte de création d'une commande + point de gel recommandé
+
+```
+source de commande (voir §4)
+  -> genererCommande()
+       -> peutGenererNouvelleCommande() [garde]
+       -> n = prochainNumeroCommandeClient()
+       -> scenarioCommande = choisirScenarioProduit(n) | choisirScenarioPourCommande()
+       -> [garde Run A/B : bascule scénario nominal si non productible]
+       -> [garde test retard fournisseur]
+       -> cmd = add_commandes()
+       -> cmd.idCommande = "CMD_" + n
+       -> cmd.typeCommande = modeSCORActif()          [L.13445]
+       -> cmd.qte = quantitePourNouvelleCommande()
+       -> cmd.tCreation = time()
+       -> cmd.tPromise = time() + delaiPromessePourMode(cmd.typeCommande)   [L.13448 -- PRÉMATURÉ]
+       -> cmd.statut = "EN_ATTENTE"
+       -> [bascule Cas 1/2/3 : peut CHANGER scenarioCommande -- L.13453-13466]
+       -> cmd.idScenario = scenarioCommande.typeProduit                     [L.13465]
+       -> enregistrerLigneProduitCommande(cmd, scenarioCommande, cmd.qte)   [L.13467]
+       -> cmd.typeCommande = modeSCORActif()          [L.13469 -- re-confirmation]
+       -> cmd.tPromise = time() + delaiPromessePourMode(cmd.typeCommande)   [L.13471 -- DÉFINITIF]
+       -> cmd.modeEngagementClient = "LEGACY_MODE_SCOR"                     [L.13482]
+       -> cmd.retardConstate = false                                       [L.13483]
+       -> Order order = creerOuSynchroniserOrder(cmd)
+       -> entrée dans le workflow (traçabilité, routage, etc.)
+```
+
+**Réponse à la question posée** : le point unique le plus sûr pour figer
+l'engagement d'une commande est **exactement l'emplacement de l'écriture
+définitive actuelle, ligne 13471** — c'est-à-dire **après** la bascule
+Cas 1/2/3 (qui peut encore changer `scenarioCommande`, donc `idScenario`/
+`typeProduit`) et **après** `enregistrerLigneProduitCommande()`. La
+1ère écriture (ligne 13448) est **prématurée** : elle a lieu avant que
+le scénario final soit connu, et son résultat est silencieusement jeté.
+Ce n'est pas un bug (le comportement final observable est correct,
+`typeCommande` ne changeant en pratique jamais entre les deux
+écritures dans les scénarios actuels), mais c'est une duplication de
+calcul à corriger dans un futur résolveur unique : **un seul appel, à la
+place de la ligne 13471, jamais à la place de la ligne 13448**. Le code
+réel confirme donc la préférence architecturale de l'énoncé
+(« engagement déterminé une fois à la création, puis immuable ») — à
+condition de choisir le bon point des deux écritures existantes.
+
+#### 3. Inventaire des JSON / loaders / classes
+
+- **Fichiers audités** : les 10 scénarios JSON réels du dépôt
+  (`scenario_2_velo_urbain.json`, `scenario_3_automobile_gx5.json`,
+  `scenario_M2_multiproduit_AB.json`, `scenario_ZENER_SA_Togo_v2/v4/v8/v17/v39.json`,
+  `scenario_ZENER_SA_Togo_v39_FINALTEST.json`, `scenario_ZENER_TEST_hierarchie.json`).
+- **Loader** : `chargerScenarioJSON()` (Body, master ligne ~15825) — lit
+  le fichier en `UTF-8`, délègue tout le parsing à un parseur maison
+  **`SimpleJsonParser.parse(jsonText)`** (aucune librairie externe type
+  Gson/`org.json`), vérifie `meta.schemaVersion` (accepte `1.0` à `2.1`),
+  bloque si `modeExecution` est actif, puis peuple les champs Java via 4
+  fonctions utilitaires génériques : `jsonString`, `jsonDouble`,
+  `jsonInt`, `jsonBoolean` (toutes de la forme `(Map jmap, String jkey,
+  T jdef)`).
+- **Comportement des 4 helpers (relu intégralement, ex. `jsonDouble`,
+  master ligne ~14871)** : **absent** (`v == null`) → retourne `jdef` ;
+  **présent mais invalide** (ex. `Double.parseDouble` lève une
+  exception) → `catch (Exception ex) { return jdef; }` → **retourne
+  aussi silencieusement `jdef`**. **Aucune exception à ce pattern n'a
+  été trouvée dans tout le loader** : absent et invalide sont
+  aujourd'hui **strictement équivalents** partout dans ce master.
+- **Schéma racine réel** (vérifié par parsing Python direct d'un
+  scénario réel) : `meta`, `parametresGlobaux`, `acteurs[]`, `postes[]`,
+  `scenarios[]`, `machines[]`, `fichesMatiere[]`. **Aucun objet
+  `commandes` n'existe au niveau JSON** — toutes les commandes sont
+  générées entièrement à l'exécution (§4), jamais chargées depuis un
+  fichier.
+- **`acteurs[]`** : un seul acteur de catégorie `"CLIENT"` par scénario
+  (`"CLIENT GENERIQUE"`, ex. `ACT_5` dans `scenario_ZENER_SA_Togo_v39.json`)
+  — **aucune structure multi-client** dans les scénarios réels du
+  dépôt.
+- **`scenarios[]`** : `typeProduit`, `sequence`, `debitParHeure`,
+  `debitParHeureBase`, `nomenclature` — c'est la structure **par type de
+  produit**, jointe à `cmd.idScenario` (`= scenarioCommande.typeProduit`,
+  ligne 13465).
+- **Recherche exhaustive des mots-clés** `sla`, `deadline`, `promise`,
+  `promised`, `engagement`, `deliveryTime`, `deliveryDelay`,
+  `serviceLevel`, `leadTime`, `dueDate`, `customer`, `client` sur les 10
+  fichiers réels : **seule occurrence trouvée = la valeur d'énumération
+  littérale `"CLIENT"`** (catégorie d'acteur), aucun champ portant l'un
+  de ces noms n'existe. **La conclusion C.1 est reconfirmée à 10/10 sur
+  les scénarios réels du dépôt, sans aucune exception.**
+
+#### 4. Inventaire des sources de commandes
+
+| Source | Mécanisme | Engagement explicite ? | Timestamp exploitable ? | Client identifiable ? | Produit identifiable ? |
+|---|---|---|---|---|---|
+| Génération autonome périodique | Event cyclique 400s (`Id=1782000000911`, actif si `modeExecution && !modePilotageParCommande`) → `genererCommande()` | Non (mode global uniquement) | Oui (`tCreation=time()`) | Non (client générique unique, §3) | Oui (`choisirScenarioPourCommande()`/`choisirScenarioProduit()`) |
+| Pilotage par commande (campagne contrôlée) | `planifierActionMetier("GENERER_COMMANDE", ...)` avec délais configurables (`delaiPremiereCommandeSec`, `delaiCommandeMinSec/MaxSec`) → même `genererCommande()` | Non | Oui | Non | Oui |
+| Pic ponctuel de demande (test manuel) | `declencherPicPonctuelDemande()` — bascule temporaire de la quantité fixe, puis même `genererCommande()` | Non | Oui | Non | Oui |
+| Rafale de demande (test manuel) | boucle de `planifierActionMetier("GENERER_COMMANDE", ...)` à intervalles rapprochés → même `genererCommande()` | Non | Oui | Non | Oui |
+| **DataCo** | **absent du master Generic** — confirmé par grep exhaustif (6 occurrences totales, toutes des commentaires méthodologiques renvoyant à `reference/dataco-multiproduct/`, aucun code fonctionnel) | — | — | — | — |
+| REAPPRO (ordre interne) | `declencherProductionAutonome()` | Non (hardcodé `"MTS"`) | Oui | **N/A — pas un engagement client** (exclu explicitement du périmètre C.7) | Oui (`sc.typeProduit`) |
+
+**Constat** : toutes les sources de commandes **clientes** convergent
+sur l'unique fonction `genererCommande()` — aucune source alternative,
+aucun doublon de logique de création. Aucune ne dispose aujourd'hui
+d'un engagement explicite ni d'un client identifiable au-delà du client
+générique unique du scénario (cohérent avec §3).
+
+#### 5. Unité temporelle canonique
+
+Confirmée : **`<ModelTimeUnit>Second</ModelTimeUnit>`** (en-tête du
+`.alp`, ligne 13) — `time()` retourne nativement des secondes. Les
+constantes `300`/`1800`/`3600` de `delaiPromessePourMode()`, les Events
+cycliques (`Timeout`/`RecurrenceCode` en `SECOND`), `leadTimeClientReelSec`
+et tous les `retardCourant...Sec()` sont **déjà homogènes en secondes,
+sans aucune conversion interne**. La seule conversion trouvée dans tout
+le master est **cosmétique et à sens unique** : le dashboard EDD
+(§1, ligne 23317) divise par 60 pour un affichage en minutes, sans
+jamais réécrire `tPromise`. **Aucune ambiguïté d'unité, aucune
+correction nécessaire — la seconde est déjà l'unité canonique de fait.**
+
+#### 6. Durée promise vs deadline absolue — recommandation
+
+**Recommandation : Option A (durée promise, `promisedDelaySec`).**
+
+Arguments tirés du code réel :
+- le modèle entier raisonne en **temps de simulation relatif**
+  (`time()` démarre à 0 à chaque run) — une deadline absolue
+  (`promisedAt`) n'aurait de sens que rapportée à un instant de
+  simulation, ce qui revient in fine à devoir soustraire `tCreation`
+  pour la comparer à `time()`, soit exactement le calcul qu'une durée
+  évite ;
+- la **reproductibilité** entre runs est facilitée par une durée
+  relative : deux commandes créées à des instants différents avec la
+  même durée promise restent comparables entre scénarios/runs, alors
+  qu'une deadline absolue devrait être recalculée à chaque run selon
+  l'instant de création réel ;
+- les commandes sont **créées à des instants variables et non
+  prévisibles à l'avance** (génération périodique, pics, rafales,
+  Cas 1/2/3) — une deadline absolue par commande n'a pas de source
+  naturelle dans le JSON (§3 : aucun objet `commandes`), alors qu'une
+  durée s'applique uniformément quel que soit l'instant de création ;
+- c'est déjà exactement le modèle actuel (`tPromise = time() +
+  delai`) : Option A est une **généralisation directe du mécanisme
+  existant**, pas un changement de paradigme.
+- DataCo (référence, hors périmètre) ne change pas cette conclusion :
+  son agrégat `dataCoAvgDeliveryScheduledDays` (§13) est lui-même un
+  **nombre de jours** (durée), jamais une date absolue.
+
+#### 7. Niveau(x) de configuration recommandé(s)
+
+| Niveau | Retenu ? | Justification tirée du code réel |
+|---|---|---|
+| **Scénario (défaut global)** | **Oui** | `parametresGlobaux` existe déjà et porte des défauts globaux analogues (`champPoidsRL`, `champDebit`, etc.) — un `champDelaiPromesseParDefautSec` s'insère naturellement dans une structure déjà éprouvée |
+| **Type/produit** | **Oui** | `scenarios[]` est déjà la structure "par type de produit" réellement jointe à `cmd.idScenario` — un champ optionnel par entrée est directement exploitable à la création (`scenarioCommande` est déjà résolu avant l'écriture définitive de `tPromise`, §2) |
+| **Client** | **Non, pas justifié aujourd'hui** | un seul acteur `"CLIENT"` générique par scénario (§3) : un SLA "par client" serait aujourd'hui **strictement redondant** avec le niveau scénario — l'ajouter maintenant créerait une distinction sans objet réel |
+| **Commande** | **Non, pas justifié aujourd'hui** | aucune structure JSON de commande n'existe (§3) — les commandes sont générées à l'exécution, pas déclarées à l'avance ; un engagement "par commande précise" nécessiterait un mécanisme entièrement différent (ex. table de commandes pré-scriptées), hors périmètre de cet audit |
+| **Produit (au sens fiche article, hors scénario)** | **Non** | aucune structure JSON de ce type n'existe indépendamment de `scenarios[]` — le niveau "type/produit" déjà retenu couvre ce besoin |
+
+Conformément à la consigne de ne pas ajouter mécaniquement tous les
+niveaux envisageables, **seuls 2 niveaux sont recommandés** : scénario
+(défaut) et type/produit (précision optionnelle). Client et commande
+sont explicitement rejetés pour l'instant, avec la justification
+correspondante, plutôt que passés sous silence.
+
+#### 8. Hiérarchie de résolution proposée
+
+```
+1. scenarios[].promisedDelaySec (type/produit), SI présent ET valide
+2. parametresGlobaux.champDelaiPromesseParDefautSec (scénario), SI présent ET valide
+3. delaiPromessePourMode(modeSCORActif())  <- fallback legacy, TOUJOURS disponible
+```
+
+Cette hiérarchie découle directement des 2 niveaux retenus en §7 (pas
+plus, pas moins) et respecte l'exemple de l'énoncé en supprimant les
+niveaux "commande explicite" et "client/scénario" fusionnés à tort
+(le scénario reste un seul niveau, pas deux) — la structure réelle du
+JSON (§3) ne justifie que ces 3 échelons. Règle finale : **UNE**
+commande → **UNE** entrée de `scenarios[]` déjà résolue au moment du
+gel (§2) → **UNE** vérification à ce niveau, sinon repli scénario,
+sinon repli legacy → **UN** `tPromise` figé, jamais recalculé.
+
+#### 9. Futures valeurs de `modeEngagementClient`
+
+| Valeur proposée | Correspond à | Justifiée par |
+|---|---|---|
+| `PRODUCT_TYPE_SEC` | résolution via `scenarios[].promisedDelaySec` | niveau retenu en §7 |
+| `SCENARIO_DEFAULT_SEC` | résolution via `champDelaiPromesseParDefautSec` | niveau retenu en §7 |
+| `LEGACY_MODE_SCOR` | repli sur `delaiPromessePourMode(modeSCORActif())` — **valeur actuelle, conservée à l'identique** | comportement historique, déjà en production dans ce master |
+
+**Rejetées explicitement** (sur-conception non justifiée par l'audit) :
+`ORDER_EXPLICIT` (aucune structure JSON de commande, §3/§7),
+`CUSTOMER_SLA` (aucune structure multi-client, §3/§7). Ces catégories
+ne seront à envisager que si un futur bloc introduit réellement les
+structures JSON correspondantes — pas avant. `modeEngagementClient`
+répond ainsi strictement à *« d'où vient la promesse »* (3 sources
+possibles, toutes réelles) et non à *« quel est le mode industriel »*
+(question déjà couverte par `cmd.typeCommande`, inchangée).
+
+#### 10. Politique absent / invalide
+
+- **ABSENT** (champ non présent dans le JSON) → **fallback autorisé**,
+  cohérent avec le comportement déjà universel de `jsonDouble()`/
+  `jsonString()` (§3) : aucune commande existante ne doit être affectée
+  par l'ajout d'un champ optionnel.
+- **PRÉSENT MAIS INVALIDE** (non numérique, `<= 0`, type incorrect) →
+  **erreur de chargement explicite et bloquante** (ex. via
+  `getExperimentHost().showMessageDialog(...)`, pattern déjà utilisé
+  dans `chargerScenarioJSON()` pour un `schemaVersion` non reconnu),
+  **et non un fallback silencieux**.
+
+  **Attention — ceci est une DÉVIATION DÉLIBÉRÉE** de la convention
+  générique actuelle de `jsonDouble()` (§3), où absent et invalide sont
+  aujourd'hui strictement équivalents (tous deux → `jdef` silencieux).
+  Cette déviation doit être un choix de conception explicite et
+  documenté en C.8 — justifié par le fait qu'une promesse client mal
+  configurée a un impact métier direct (statut `EN_RETARD` erroné,
+  ordonnancement Bloc M faussé, §1) contrairement à un champ cosmétique
+  comme `nomEntreprise`. Elle ne doit PAS être implémentée en modifiant
+  `jsonDouble()` lui-même (qui resterait inchangé pour tous ses autres
+  appelants), mais via une validation dédiée, propre aux 2 nouveaux
+  champs uniquement.
+- Valeurs à traiter comme invalides : `SLA = 0`, `SLA < 0`, non
+  numérique, unité incorrecte (aucune unité alternative n'est
+  envisagée, §5, donc toute valeur non interprétable comme secondes
+  positives est invalide). `SLA` trop grand n'est **pas** proposé comme
+  une erreur bloquante (aucune borne supérieure métier n'a été
+  identifiée dans l'audit ; à revisiter en C.8 seulement si un besoin
+  réel apparaît).
+
+#### 11. Invariant d'immutabilité
+
+**Confirmé par l'audit exhaustif du §1** : en dehors des 2 écritures de
+`genererCommande()` (toutes deux à la création, avant toute entrée dans
+le workflow) et de l'écriture équivalente de `declencherProductionAutonome()`
+(REAPPRO, hors périmètre), **aucune ligne du master ne réaffecte
+`cmd.tPromise`** après création — ni en cas de rechargement de
+configuration, ni de retard de production, ni de réapprovisionnement,
+ni de changement de phase/statut. L'invariant *« une fois la commande
+créée, `tPromise` ne change plus »* est **déjà respecté par le code
+réel aujourd'hui**, y compris par le mode global `isMTS/isMTO/isETO`
+(un changement de mode en cours de run, via `appliquerModeSimulationSCOR()`,
+n'affecte que les **futures** commandes créées après le changement,
+jamais les commandes déjà créées, puisque `modeSCORActif()` n'est lu
+qu'au moment de l'écriture de `tPromise`). Aucune correction de code
+n'est nécessaire pour garantir cet invariant — une future migration
+devra simplement **ne pas l'introduire par erreur** (ex. ne jamais
+faire dépendre le résolveur d'un état global relu après création).
+
+#### 12. Stratégie de compatibilité legacy
+
+Le résolveur futur (§8) doit produire, pour **tout JSON actuel du
+dépôt** (aucun ne contenant `promisedDelaySec` ni
+`champDelaiPromesseParDefautSec`, §3), un résultat **strictement
+identique** à l'appel actuel `delaiPromessePourMode(cmd.typeCommande)` :
+`MTS→300s`, `MTO→1800s`, `ETO→3600s`, avec `modeEngagementClient =
+"LEGACY_MODE_SCOR"`. La dette legacy **reste comme fallback final**
+(§8, échelon 3) — elle n'est plus la seule source possible, mais reste
+systématiquement disponible et inchangée dans sa formule
+(`delaiPromessePourMode()` ne serait pas modifiée, seulement appelée
+depuis un nouveau point d'orchestration).
+
+#### 13. Analyse spécifique DataCo (lecture seule, fichier de référence, aucune modification)
+
+Le fichier `reference/dataco-multiproduct/SCONTO_SVU_FINAL_VALIDATED_FORECAST_DATACO_MULTIPRODUCT_CONCURRENT_FIX.alp`
+a été audité en **lecture seule** (grep ciblé, aucune écriture, aucun
+portage). Constats :
+- Cette variante calcule `tPromise` de façon **identique** au master
+  Generic (`cmd.tPromise = time() + delaiPromessePourMode(cmd.typeCommande)`,
+  lignes 2754/12914/12937) — même dette legacy, même conflation
+  mode/engagement, non résolue là non plus.
+- Elle importe cependant, via `chargerCalibrationDataCo()`, un agrégat
+  **mensuel** `dataCoAvgDeliveryScheduledDays[mois]` depuis un fichier
+  Excel externe (`dataco_calibration_quotidienne_2017.xlsx`, colonne 7
+  d'une feuille de calibration), aux côtés d'un
+  `dataCoAvgDeliveryRealDays[mois]` (colonne 6) — soit un couple
+  "délai planifié moyen" / "délai réel moyen" **agrégé par mois**,
+  dérivé du jeu de données DataCo réel.
+- **Ce couple n'est utilisé nulle part pour calculer `tPromise`** —
+  uniquement comme entrée de calibration du moteur de prévision
+  (lignée Prophet/Recalibrator, explicitement hors périmètre Generic).
+  `joursPlanifies = dataCoAvgDeliveryScheduledDays[i]` sert au forecast,
+  jamais à l'engagement client.
+
+**Conclusion explicite** : même dans la lignée DataCo — qui dispose
+pourtant d'un agrégat réellement dérivé de dates de livraison
+planifiées/réelles — ce couple reste une **moyenne mensuelle agrégée**
+(pas une promesse par commande/client) et n'a **jamais été câblé** sur
+`tPromise`, y compris dans ce variant. Ceci renforce la distinction
+demandée par l'énoncé entre *« ce qui s'est réellement passé »*
+(délais observés/calibrés) et *« ce qui avait été promis »* (un
+engagement contractuel par commande, qui n'existe nulle part dans ce
+codebase, Generic ou DataCo). **Le fallback/la configuration scénario
+proposés en §7-§8 restent donc nécessaires** — DataCo ne fournit
+aucune alternative exploitable, et aucun portage n'est proposé ni
+souhaitable.
+
+#### 14. Impact attendu sur C.2–C.6
+
+| Fonction | Impact |
+|---|---|
+| `retardConstate` (C.2) | **Aucun** — reste `time() > cmd.tPromise`, peu importe l'origine de `tPromise` |
+| `commandeOuverteEstEnRetardMaintenant()` (C.4-FIX) | **Aucun** — lit `cmd.tPromise` comme valeur déjà résolue |
+| `evaluerRetardsCommandesOuvertes()` (C.3) | **Aucun** |
+| `retardCourantCommandeOuverteSec()`, `nombreCommandesOuvertesEnRetard()`, `tauxCommandesOuvertesEnRetard()`, `retardCourantTotalOuvertSec()`, `retardCourantMoyenCommandesEnRetardSec()` (C.4) | **Aucun** |
+| Bilan `bilanPeriodique` (C.6) | **Aucun** — consommateur pur de C.4 |
+
+**Hypothèse de l'énoncé confirmée par l'audit** : toutes ces fonctions
+consomment déjà `cmd.tPromise` comme une valeur opaque, déjà figée —
+aucune ne recalcule, n'interprète ni ne suppose l'origine de la
+promesse. **Seule la PRODUCTION de `tPromise` (les 2 lignes d'écriture
+dans `genererCommande()`, §1-§2) devra évoluer en C.8 ; toute la couche
+C.2–C.6 restera un consommateur inchangé** — avantage architectural
+direct de la séparation détection/production déjà actée depuis C.3.
+
+#### 15. Impact indirect sur RL / RS / PI
+
+Aucune modification de `calculerPIGlobal()`, `verifierFillRate()`,
+`tauxCommandesLivreesCloses()` ni `nombreCommandesClosesFiabilite()`
+n'est proposée ou nécessaire. Impact **indirect et légitime** attendu
+en C.8 : si un futur engagement explicite (type/produit ou défaut
+scénario) est **plus ou moins généreux** que le fallback legacy pour un
+scénario donné, la **classification** `SERVIE`/`EN_RETARD` de certaines
+commandes changera en conséquence, ce qui fera mécaniquement bouger
+RL.2.2/RL.3.32/RL.3.33/RL.3.35 — **c'est le comportement recherché**
+(mesurer la ponctualité par rapport à un engagement plus fidèle à la
+réalité métier), pas un effet de bord à corriger. La **formule** de RL
+elle-même ne change pas d'un caractère.
+
+#### 16. Contrat JSON proposé
+
+```json
+{
+  "parametresGlobaux": {
+    "...": "... (champs existants inchangés)",
+    "champDelaiPromesseParDefautSec": 900
+  },
+  "scenarios": [
+    {
+      "typeProduit": "...",
+      "sequence": "... (inchangé)",
+      "debitParHeure": 0,
+      "debitParHeureBase": 0,
+      "nomenclature": [],
+      "promisedDelaySec": 1200
+    }
+  ]
+}
+```
+
+Justification de la forme retenue : `champDelaiPromesseParDefautSec`
+suit la convention de nommage déjà universelle de `parametresGlobaux`
+(`champDebit`, `champPoidsRL`, `champCoutHoraireMainOeuvre`, …) — aucun
+nouveau style introduit. `promisedDelaySec` est un **champ plat**
+directement dans une entrée de `scenarios[]`, cohérent avec le style
+plat déjà utilisé pour `debitParHeure`/`debitParHeureBase` (pas
+d'objet imbriqué type `"customerCommitment": {...}` : aucune autre
+entrée de `scenarios[]` n'utilise ce style, hormis `nomenclature` qui
+est structurellement une liste, pas un objet de configuration
+scalaire). Les deux champs sont **optionnels** (absents des JSON
+actuels, §3) ; leur portée, validation et fallback sont ceux définis en
+§7/§8/§10.
+
+#### 17. Résolveur canonique futur — proposition
+
+**Recommandation : une fonction simple à 2 valeurs de retour, via un
+petit conteneur dédié, plutôt qu'un simple `double`.**
+
+Comparaison :
+- `double resoudreDelaiPromesseSec(CommandeAgent cmd, ScenarioFlux sc)`
+  seule : **insuffisante**, car `modeEngagementClient` (§9) doit
+  refléter **quelle source a été retenue** — avec une simple `double`,
+  déterminer la source nécessiterait soit un second appel (risque de
+  divergence entre les deux résultats si la logique évolue), soit une
+  duplication de la hiérarchie de résolution (§8) à deux endroits —
+  **exactement le risque que §18 cherche à éliminer**.
+- Conteneur minimal à 2 champs (nom indicatif, à trancher en C.8,
+  aucune classe créée en C.7) :
+  ```
+  { double delaiSec; String source; }
+  ```
+  produit par une **unique** fonction `resoudreEngagementClient(cmd,
+  scenarioCommande)` qui applique la hiérarchie du §8 une seule fois et
+  retourne les deux informations ensemble, par construction cohérentes.
+
+Cette seconde option est retenue car c'est la plus simple qui couvre
+réellement le besoin (une `double` seule ne suffit pas ; une classe
+plus riche avec historique/traçabilité supplémentaire serait une
+sur-conception non demandée). **Aucune classe n'est créée en C.7** —
+ceci est une recommandation pour C.8.
+
+#### 18. Une seule source de vérité
+
+```
+scenarios[].promisedDelaySec / parametresGlobaux.champDelaiPromesseParDefautSec
+                    |
+                    v
+    resoudreEngagementClient(cmd, scenarioCommande)   <- FUTUR, C.8, UN SEUL appel
+                    |
+                    v
+        { delaiSec, source }
+                    |
+                    v
+   cmd.tPromise = time() + delaiSec ;  cmd.modeEngagementClient = source
+                    |
+                    v
+         (position exacte : ligne 13471 actuelle -- §2)
+```
+
+Le point de vigilance principal identifié par cet audit (§1-§2) est que
+`genererCommande()` calcule **déjà** `tPromise` deux fois aujourd'hui
+(une fois prématurément, une fois définitivement) — la migration doit
+**supprimer** la première écriture (ligne 13448, calcul mort) et
+**remplacer uniquement** la seconde (ligne 13471) par l'appel au
+résolveur, jamais ajouter un troisième point de calcul. Le chemin
+REAPPRO (`declencherProductionAutonome()`, ligne 2990) reste
+**explicitement hors périmètre** et continue d'utiliser
+`delaiPromessePourMode("MTS")` sans passer par le résolveur (ce ne sont
+pas des engagements clients).
+
+#### 19. Plan de migration C.8 (proposé, à adapter si le code réel diverge d'ici là)
+
+- **Étape A** — ajouter les 2 champs JSON optionnels (`promisedDelaySec`
+  dans `scenarios[]`, `champDelaiPromesseParDefautSec` dans
+  `parametresGlobaux`) au loader, avec des valeurs par défaut absentes
+  (pas de valeur numérique par défaut autre que "non fourni").
+- **Étape B** — parser et valider ces 2 champs spécifiquement (politique
+  §10 : absent → non fourni proprement distingué d'invalide → erreur
+  bloquante), sans modifier `jsonDouble()`/`jsonString()` génériques.
+- **Étape C** — ajouter le résolveur canonique unique
+  `resoudreEngagementClient(cmd, scenarioCommande)` (§17) implémentant
+  la hiérarchie exacte du §8.
+- **Étape D** — dans `genererCommande()` : supprimer la ligne 13448
+  (calcul prématuré), remplacer la ligne 13471 par l'appel au
+  résolveur, affecter `cmd.tPromise`/`cmd.modeEngagementClient` à partir
+  de son résultat.
+- **Étape E** — vérifier que le fallback legacy (échelon 3 du §8)
+  produit un résultat bit-à-bit identique à l'appel actuel pour les 10
+  scénarios réels du dépôt (aucun ne fournissant les nouveaux champs,
+  §3) — non-régression totale garantie par construction.
+- **Étape F** — exécuter la matrice de tests du §20 (statique) puis
+  laisser l'utilisateur exécuter les Runs Build/runtime correspondants.
+
+Le chemin REAPPRO n'entre dans aucune étape ci-dessus (hors périmètre,
+§4/§18).
+
+#### 20. Matrice des futurs tests (préparée pour C.8, non exécutée ici)
+
+| # | Scénario | Entrée | Attendu |
+|---|---|---|---|
+| 1 | JSON legacy MTS | aucun champ engagement | `tPromise = tCreation + 300`, `modeEngagementClient = "LEGACY_MODE_SCOR"` |
+| 2 | JSON legacy MTO | aucun champ engagement | `tPromise = tCreation + 1800`, `LEGACY_MODE_SCOR` |
+| 3 | JSON legacy ETO | aucun champ engagement | `tPromise = tCreation + 3600`, `LEGACY_MODE_SCOR` |
+| 4 | Engagement explicite type/produit | `scenarios[].promisedDelaySec = 900` | `tPromise = tCreation + 900`, `modeEngagementClient = "PRODUCT_TYPE_SEC"`, **indépendamment** du mode MTS/MTO/ETO actif |
+| 5 | Engagement explicite défaut scénario | `champDelaiPromesseParDefautSec = 700`, pas de `promisedDelaySec` produit | `tPromise = tCreation + 700`, `"SCENARIO_DEFAULT_SEC"` |
+| 6 | SLA absent (les 2 champs) | — | fallback legacy (tests 1-3), aucune erreur |
+| 7 | SLA explicitement invalide (`promisedDelaySec = -5` ou non numérique) | valeur invalide fournie | **erreur de chargement bloquante** (§10) — PAS de fallback silencieux |
+| 8 | 2 commandes même mode, engagements différents | 2 entrées `scenarios[]` avec `promisedDelaySec` différents | chaque commande reçoit le délai de **son propre** `typeProduit`/`idScenario`, confirmant que le niveau type/produit (§7) est bien supporté |
+| 9 | Immutabilité | `appliquerModeSimulationSCOR()` ou config rechargée **après** création d'une commande existante | `tPromise` de la commande déjà créée **ne change pas** (§11) |
+| 10 | Consommation C.3/C.4 inchangée | commande créée avec engagement explicite (test 4) | `commandeOuverteEstEnRetardMaintenant()`, `retardConstate`, tous les compteurs C.4 et le bilan C.6 fonctionnent **sans aucune modification de code** (§14) |
+
+**Verdict : C.7 = AUDIT COMPLET.**
+
+#### Ce qui n'a PAS été modifié
+
+Confirmé par `git status`/`git diff` : **le `.alp` est strictement
+inchangé, aucun JSON n'a été modifié, aucun parser n'a été touché,
+aucun champ n'a été ajouté, aucune classe n'a été créée**, `tPromise`,
+`300/1800/3600`, `modeEngagementClient`, les fonctions C.2/C.3/C.4/C.6,
+RL/RS/PI, le dashboard, les statuts et les REAPPRO restent tous
+strictement inchangés.
+
+#### Validations statiques
+
+- `.alp` : **0 diff** (`git status --porcelain -- model/SCONTO_SVU_GENERIC_MASTER.alp` vide avant et après ce bloc)
+- JSON : **0 diff** sur les 10 scénarios réels du dépôt (audit en lecture seule uniquement)
+- Seul `MERGE_PROGRESS.md` modifié dans ce commit
+
+**Build AnyLogic de `01938ea`** : toujours **À CONFIRMER PAR
+L'UTILISATEUR** — non exécutable depuis ce terminal, sans lien avec ce
+bloc d'audit (aucune modification fonctionnelle à builder).
+
+**C.7 = TERMINÉ / AUDIT VALIDÉ. C.8+ = NON COMMENCÉS. BLOC C = EN COURS.**
+
 ### Statut Bloc C
 
 - [x] **C.1 — Audit sémantique retards / engagement client : TERMINÉ / AUDIT VALIDÉ**
@@ -4821,7 +5341,8 @@ l'utilisateur.
 - [x] **C.4-FIX — Cohérence instantanée du retard courant : TERMINÉ / VALIDÉ**
 - [x] **C.5 — Audit sémantique d'intégration SCOR / PI : TERMINÉ / AUDIT VALIDÉ**
 - [x] **C.6 — Observabilité du backlog client en retard : TERMINÉ / VALIDÉ STATIQUEMENT**
-- [ ] C.7+ — non commencés
+- [x] **C.7 — Audit du contrat d'engagement client / dette `tPromise` : TERMINÉ / AUDIT VALIDÉ**
+- [ ] C.8+ — non commencés
 - [ ] Build + run utilisateur (C.2, C.3, C.3-FIX, C.4, C.4-FIX et C.6 — toujours en attente)
 
 **BLOC C = EN COURS.**

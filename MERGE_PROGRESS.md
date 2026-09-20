@@ -6057,12 +6057,291 @@ inachevées : aucun n'est reporté comme "TODO Bloc C".
 
 **BLOC C — RETARDS / ENGAGEMENT CLIENT = TERMINÉ / VALIDÉ / FIGÉ.**
 
-## Bloc D — moteur conflictuel / exports (NON COMMENCÉ)
-- [ ] Audit dédié préalable (à ouvrir en premier, avant toute modification)
-- [ ] Fonctions communes fusionnées une par une
-- [ ] JSON générique préservé
-- [ ] Export TTL/XLSX préservé
-- [ ] Build + run utilisateur
+## Bloc D — moteur conflictuel / exports
+
+### D.1 — Audit du moteur conflictuel / exports
+
+**Périmètre** : audit uniquement, aucune modification du `.alp` ni d'un
+JSON. Toutes les commandes de ce bloc ont été des `Read`/`Grep`/lectures
+`git log`/scripts Python en lecture seule sur `model/SCONTO_SVU_GENERIC_MASTER.alp`
+et `reference/colleague/SCONTO_SVU_GENERIC10-4_COLLEAGUE.alp` — confirmé
+par `git status --porcelain` vide sur ces deux fichiers avant et après
+ce bloc.
+
+#### 0. Clarification préalable — que désigne « moteur conflictuel » ?
+
+Recherche exhaustive (`grep -ci`) des termes littéraux dans tout le
+master :
+
+| Terme | Occurrences |
+|---|---:|
+| `conflit` / `conflict` / `contradiction` | **0 / 0 / 0** |
+| `incohérence` | 2 |
+| `incompatib` | 2 |
+| `violation` | 1 |
+| `contrainte` | 2 |
+| `alerte` | 95 |
+| `ABox` | 485 |
+| `TBox` | 57 |
+| `AER` | 235 |
+| `blackboard` | 75 |
+| `ontolog` | 18 |
+| `règle` / `rule` | 38 / 26 |
+| `validation` | 42 |
+
+**Constat central** : il n'existe **aucun moteur de détection de
+conflits métier** sous ce nom dans le master (0 occurrence littérale de
+"conflit"/"conflict"/"contradiction"). En revanche, la table
+structurelle établie **au tout début de cette mission**
+(`MERGE_PROGRESS.md`, "Audit structurel master ↔ collègue", 2026-09-16)
+classait déjà 7 fonctions — `chargerScenarioJSON`, `chargerConfig`,
+`demarrerSimulation`, `genererCommande`, `routerEntite`,
+`exporterToutesLesTablesExcel`, `arreterSimulation` — comme
+**« ADAPT — Bloc D, fusion manuelle fonction par fonction »**, au motif
+que master et collègue en ont des corps **structurellement différents**
+("schémas/flux propres à chaque lignée"). C'est cette liste précise,
+établie avant tout travail de fusion, qui définit le périmètre réel de
+« moteur conflictuel » pour ce Bloc D — au sens **« fonctions dont les
+deux lignées divergent et nécessitent un arbitrage manuel »**, et non
+un moteur de règles métier de détection de conflits. Les deux lectures
+sont auditées ci-dessous, par souci d'exhaustivité vis-à-vis de
+l'énoncé.
+
+#### 1-2. Inventaire et chaîne — lecture littérale ("conflict/alerte/règle")
+
+Aucune chaîne d'évaluation de règles avec détection/résolution de
+conflit n'existe. Les mécanismes réels les plus proches, tous déjà
+actifs et déjà documentés par des blocs antérieurs (aucun n'est une
+découverte de ce bloc) :
+
+| Élément | Type | Rôle réel | État |
+|---|---|---|---|
+| `diagnostiquerCommandesBloquees()` (Bloc A.2) | Fonction | Détecte les commandes `EN_COURS`/`EN_LIVRAISON` dont le comptage d'unités ne progresse pas ; journalise `[DIAG-BLOQUEE]` | **ACTIF** (Event `bilanPeriodique`, 60s) |
+| Statuts `BLOQUE_CONFIG`/`BLOQUE_MATIERE`/`BLOQUE_NOMENCLATURE` | Statuts commande | Assignés à la création/l'analyse stock (6 sites, lignes ~3133-3421) quand la configuration/matière/nomenclature empêche la production | **ACTIF** |
+| `AERMessage` (AMENDMENT/EXECUTION/REPORT) | Classe + `publierAERRetardCommande()` | Messagerie hiérarchique de trace/alerte (ex. signale un retard de livraison au superviseur Deliver) | **ACTIF** |
+| `BlackboardAgent.logEvenements` | Ring-buffer 200 entrées | Historique des logs holoniques (`[HOLON-*]`, `[GOULOT]`, `[AER]`, `[CONFIG]`) pour affichage live (journal UI) | **ACTIF pour l'affichage**, jamais exporté sur disque (§10) |
+| `prendreDecisionAHP()` / `traiterAlertesTactiques()` / `recevoirAlerteGoulot()` | Fonctions + Events cycliques | Circuit d'arbitrage AHP goulot, **déjà documenté comme désactivé** dès la 1ère ligne de `traiterAlertesTactiques()` quand `realignementFluxHierarchiqueActif=true` (routage "génération 2", actif par défaut) — fait établi en Bloc A.5, reconfirmé inchangé ici (`realignementFluxHierarchiqueActif=true` toujours la valeur par défaut) | **INACTIF en pratique, déjà connu et accepté avant ce bloc** |
+| ABox/TBox (RDF/OWL) | Export | Modélisation ontologique du run (agents, ordres, produits, retards) — pas un moteur de règles, un export structuré | **ACTIF** (voir §exports) |
+
+**Aucune duplication de règle trouvée** dans ce périmètre (D.1.11) :
+`diagnostiquerCommandesBloquees()` (commandes actives bloquées) et les
+statuts `BLOQUE_*` (commandes refusées à la création) portent sur des
+populations et des moments différents, sans se recouvrir.
+
+#### 3-5. Le vrai périmètre Bloc D — les 7 fonctions "ADAPT"
+
+Comparaison structurelle rejouée (taille des corps de fonction,
+extraction automatisée par script Python sur les deux `.alp`) :
+
+| Fonction | Master (car.) | Collègue (car.) | Verdict |
+|---|---:|---:|---|
+| `chargerScenarioJSON` | 27 891 | 24 481 | **Master supérieur** — absorbe déjà M.1 (multi-produit) + C.8 (engagement configurable), fonctionnalité collègue (parsing JSON) intégralement couverte |
+| `chargerConfig` | 10 656 | 10 534 | **Identique** (`SequenceMatcher.ratio()=1.00`, aucune différence de contenu) |
+| `demarrerSimulation` | 8 998 | 6 804 | **Master supérieur** — tous les ajouts sont des réinitialisations pour des mécanismes que le collègue n'a pas (retard fournisseur, PI/SCOR B.1/B.2-FIX, Historique Dashboard A.4, politiques de stock M.3) ; aucun bloc de code présent chez le collègue et absent du master (diff par opcodes : 0 suppression de bloc ≥2 lignes) |
+| `genererCommande` | 7 486 | 5 545 | **Master supérieur pour l'engagement client** (C.2-C.8 intégralement absorbés) — **mais voir constat majeur §6** |
+| `routerEntite` | 1 368 | 1 314 | **Identique fonctionnellement** — master utilise un booléen nommé `diffusionAutomatiqueSuccesseursActive` là où le collègue a un `false &&` en dur : amélioration de maintenabilité côté master, aucune perte |
+| `exporterToutesLesTablesExcel` | 8 299 | 8 185 | **Identique** (`ratio()=1.00`) |
+| `arreterSimulation` | 1 904 | 707 | **Master très supérieur** — `finaliserRunEtExporter()` (A.4-FIX, exports ABox/Excel synchronisés, idempotents) + `finishSimulation()` (A.4-FIX-5B, arrêt réel du moteur AnyLogic) ; le collègue n'a ni l'un ni l'autre |
+
+**Interfaces réellement utilisées avec les Blocs A/M/B/C (D.1.5)** —
+confirmées, aucune modification faite ici :
+- `genererCommande()` appelle `resoudreEngagementClient()` (C.8),
+  `enregistrerLigneProduitCommande()`/`choisirScenarioProduit()` (M),
+  écrit `cmd.retardConstate=false` (C.2) — toutes ces interfaces sont
+  consommées correctement, sans double calcul.
+- `chargerScenarioJSON()` peuple `ScenarioFlux.promisedDelaySec`,
+  `champDelaiPromesseParDefautSec` (C.8), `stockInitialParProduit`
+  (M.1) — cohérent avec l'audit C.9.
+- `demarrerSimulation()` réinitialise les 8 champs PI (B.1), les champs
+  retard fournisseur, les politiques de stock (M.3) — aucune donnée
+  orpheline.
+- `arreterSimulation()`/`finaliserRunEtExporter()` appellent
+  `strategic.calculerPIGlobal()` (B.2) avant export — cohérent.
+
+Aucun de ces 4 points n'a nécessité de modification : ce sont des
+constats de conformité, pas des corrections.
+
+#### 6. Constat majeur (non bloquant au sens strict, mais à porter à la décision de l'utilisateur)
+
+**`StrategicAgent.deciderTypeCommande(CommandeAgent cmd)`** (master,
+`Id=1791000006101`) est une fonction complète, capacité-aware
+(MTS si stock suffisant, MTO sinon, **REFUSEE** si le carnet MTO du
+Coordinateur Make est structurellement saturé), avec ses propres
+compteurs `StrategicAgent.nbDecisionsCommandes`/`nbCommandesRefusees`
+— **copie byte-à-byte** de la fonction collègue du même nom (diff
+textuel : 0 différence). Ces 2 compteurs sont **déjà affichés dans un
+panneau de supervision** (`"Commandes arbitrées : %d"`,
+`"REFUSÉES (capacité) : %d"`, lignes ~23533-23537).
+
+**Mais `deciderTypeCommande()` n'est appelée nulle part dans tout le
+master** (`grep "deciderTypeCommande("` : 0 résultat en dehors de sa
+propre déclaration). `genererCommande()` continue d'utiliser le mode
+global statique `modeSCORActif()` (choisi une fois via le dialogue de
+lancement), jamais cette arbitrage dynamique par commande.
+Conséquences réelles : (a) le statut `REFUSEE` est **actuellement
+inatteignable** dans tout run (bien que `commandeEstTerminale()`, Bloc
+C.3-FIX, le gère toujours défensivement) ; (b) les 2 compteurs du
+panneau de supervision **affichent en permanence 0**, quel que soit le
+run.
+
+`git log -S"deciderTypeCommande" -- model/SCONTO_SVU_GENERIC_MASTER.alp`
+confirme que cette fonction existe **depuis le tout premier commit de
+cette branche** (`4d1a982`, avant tout travail des Blocs A/M/B/C) —
+**ce n'est pas une régression introduite par cette mission**, et ce
+n'est pas non plus une fonctionnalité collègue restant à porter (elle
+est déjà portée, intégralement). C'est un **interrupteur déjà construit
+mais jamais activé**, indépendant du travail de fusion proprement dit.
+
+**Classification** : ni BLOQUANT ni simple DETTE — un **point de
+décision produit** : activer cet arbitrage dynamique changerait le
+comportement observable du modèle (mode MTS/MTO décidé commande par
+commande selon le stock réel, au lieu du mode global figé au
+lancement), ce qui dépasse le mandat strict de "fusion manuelle
+fonction par fonction" de ce Bloc D (les 7 fonctions sont déjà à
+parité ou supérieures au collègue) et constituerait une extension de
+périmètre explicitement proscrite par cet audit. **Non corrigé ici.**
+Recommandation : le signaler à l'utilisateur ; ne l'activer que sur
+décision produit explicite, dans un bloc dédié futur, jamais comme
+sous-produit de D.2.
+
+#### 7-9. Inventaire des exports
+
+| Export | Format | Déclencheur | Données | Fichier | État |
+|---|---|---|---|---|---|
+| `exporterABoxRuntimeTTL(raison)` | RDF/Turtle | **Automatique** : clôture de commande (si `aboxExportSurClotureCommande`, défaut `true`) et arrêt (si `aboxExportSurArret`, défaut `false`) | Agents, ordres (client/REAPPRO), produits, retards (`run:promisedAtSimulationSecond`), ISA-95 | `SCONTO_SVU_ABOX_<Client>_RUN_<t1>_<t2>.ttl` | **ACTIF** |
+| `exporterToutesLesTablesExcel()` | XLSX | Automatique, mêmes déclencheurs que ci-dessus | Dashboards, KPI par poste/macro, catalogue SCOR, PI | `SCONTO_SVU_RESULTS_<Client>_RUN_<t1>_<t2>.xlsx` | **ACTIF**, identique au collègue |
+| `exporterCSV(nomEntreprise)` | CSV (`;`) | **Manuel** — bouton dédié sur `CoordinatorAgent` | KPI cycle/attente/lead time, PCE%, rebuts/rework, PI global | `export_<Client>.csv` | **B — manuel disponible**, fonctionnel |
+| `exportTableToCSV(filename, columns, rows)` | CSV (`;`), UTF-8 explicite | **Manuel** — bouton "Exporter CSV" présent sur toute table affichée en popup (dashboard, KPI, etc.) | Contenu de la table affichée au moment du clic | `export_<TitreTable>.csv` | **B — manuel disponible**, générique et réutilisé |
+| `exporterTracesCSV()` | CSV (`;`) | **Manuel** — bouton dédié | Trace hiérarchique complète (`TraceData` : id, t, niveau, émetteur, entité, poste, codeSCOR, événement, mesure, valeur brute/agrégée, formule, commentaire) | `traces_<Client>.csv` | **B — manuel disponible**, le plus riche des 3 CSV |
+
+**Aucun export mort/jamais appelé trouvé** (D.1.7 catégorie C) : les 5
+mécanismes ont chacun au moins un déclencheur réel (automatique ou
+bouton UI câblé). **Aucun export incomplet** (catégorie D) au sens où
+chacun couvre correctement sa propre finalité (D.1.8) — `exporterCSV`
+ne contient pas les données de retard/engagement du Bloc C, mais sa
+finalité est un résumé KPI/VSM, pas un export retard ; il n'y a pas
+lieu de lui en demander (conforme à la consigne "ne pas demander qu'un
+export contienne tout").
+
+**Note mineure (dette, non bloquante)** : `exporterCSV()` et
+`exporterTracesCSV()` utilisent `new java.io.FileWriter(...)` sans
+charset explicite (encodage plateforme par défaut), alors que
+`exportTableToCSV()` spécifie explicitness `StandardCharsets.UTF_8` —
+incohérence mineure d'encodage entre 3 mécanismes d'export CSV
+préexistants (aucun lié à ce Bloc D ni aux Blocs A-C).
+
+#### 9bis. Export du "moteur conflictuel" (question explicite de l'énoncé)
+
+> Les conflits détectés sont-ils exportables ou seulement affichés ?
+
+**Réponse** : n'existant pas sous forme de moteur de règles, il n'y a
+rien de tel à exporter en tant que "conflits". Les mécanismes
+apparentés (`[DIAG-BLOQUEE]`, `[HOLON-STRAT]`, statuts `BLOQUE_*`) sont
+soit des **statuts de commande** (déjà exportés via ABox/Excel, car
+`cmd.statut` fait partie des champs commande exportés), soit des
+**lignes de log libre** (`board.logEvenements`, `[DIAG-BLOQUEE]`
+compris) qui ne sont **jamais persistées sur disque** — uniquement un
+ring-buffer de 200 entrées pour l'affichage live (§10). **Absence
+jugée non bloquante** : les données structurées pertinentes (statut,
+retard, engagement) sont déjà exportées ; seul le flux de logs libres
+ne l'est pas, et rien dans les Blocs A-C n'en a jamais eu besoin pour
+sa propre validation runtime.
+
+#### 10. Audit des traces
+
+Les traces les plus riches (`exporterTracesCSV`, `tracerFluxHierarchique`)
+contiennent déjà : identifiant d'entité/commande, poste, code SCOR,
+type d'événement, mesure, valeur, formule et commentaire — largement
+suffisant pour une validation manuelle. **Lacune réelle identifiée** :
+`board.logEvenements` (le canal générique `[DIAG-BLOQUEE]`/`[HOLON-*]`/
+`[JSON WARN]`/`[RETARD-CLIENT-OUVERT]`/etc.) est plafonné à 200
+entrées en mémoire et **jamais écrit sur disque** — au-delà de 200
+événements (atteint en quelques minutes de run réel), les plus anciens
+sont perdus définitivement. Ceci limite la reconstitution a posteriori
+d'un historique de diagnostic complet, mais n'empêche pas la
+validation courante (affichage live + CSV/Excel/ABox structurés
+disponibles). **Classé DETTE NON BLOQUANTE.**
+
+#### 12. Dead code / legacy (D.1.12)
+
+| Élément | Classement |
+|---|---|
+| `deciderTypeCommande()` + compteurs associés | **Incertain / décision produit** — voir §6, non "mort" au sens habituel (fonctionne parfaitement s'il était appelé), simplement jamais invoqué |
+| `prendreDecisionAHP()`/`traiterAlertesTactiques()`/`recevoirAlerteGoulot()` | **Legacy mort en pratique**, déjà documenté avant ce bloc (Bloc A.5), reconfirmé inchangé — remplacé par le routage "génération 2" |
+| `compteurCyclesExportExcel` (throttle d'écriture Excel du collègue) | **Non porté** — absent du master (0 occurrence), colleague l'utilise pour limiter la fréquence d'écriture disque ; optimisation de performance, aucun impact sur la correction fonctionnelle. **DETTE NON BLOQUANTE.** |
+| `exporterCSV()` | **Legacy utile** — fonctionnel, disponible via bouton dédié, mais rôle largement recouvert par l'export Excel automatique plus complet |
+
+Rien n'a été supprimé, conformément à la consigne.
+
+#### 13. Build/Runtime
+
+Aucun nouveau Build requis (aucune modification du `.alp`). Référence :
+**Build Bloc C final = PASS / 0 erreur** (`HEAD=939595d`, reconfirmé en
+C.9), toujours la référence courante puisque `HEAD` n'a pas bougé
+fonctionnellement depuis (`f71411c` = documentation uniquement).
+
+#### 14. Matrice de verdict
+
+| Composant | État | Bloquant ? | Action minimale |
+|---|---|---:|---|
+| `chargerScenarioJSON` | COMPLET (supérieur au collègue) | Non | Aucune |
+| `chargerConfig` | COMPLET (identique) | Non | Aucune |
+| `demarrerSimulation` | COMPLET (supérieur au collègue) | Non | Aucune |
+| `genererCommande` (engagement/traçabilité) | COMPLET (C.2-C.8 absorbés) | Non | Aucune |
+| `genererCommande` (arbitrage MTS/MTO/REFUSEE) | PRÉSENT MAIS INACTIF | **Non** (décision produit, hors mandat fusion) | Signalement à l'utilisateur uniquement |
+| `routerEntite` | COMPLET (identique, légère amélioration master) | Non | Aucune |
+| `exporterToutesLesTablesExcel` | COMPLET (identique) | Non | Aucune |
+| `arreterSimulation` | COMPLET (très supérieur au collègue) | Non | Aucune |
+| `diagnostiquerCommandesBloquees` / statuts `BLOQUE_*` | COMPLET, actif | Non | Aucune |
+| AER / `publierAERRetardCommande` | COMPLET, actif | Non | Aucune |
+| ABox/Excel (auto, clôture+arrêt) | COMPLET, actif | Non | Aucune |
+| CSV manuels (×3) | PARTIEL MAIS SUFFISANT (encodage FileWriter incohérent, mineur) | Non | Aucune (dette notée) |
+| `board.logEvenements` (persistance logs libres) | PARTIEL MAIS SUFFISANT (non exporté sur disque, plafonné à 200) | Non | Aucune (dette notée) |
+| `prendreDecisionAHP`/`traiterAlertesTactiques` | INACTIF, déjà connu (Bloc A.5) | Non | Aucune |
+| `compteurCyclesExportExcel` | LEGACY NON PORTÉ, non bloquant | Non | Aucune |
+
+**0 élément classé BLOQUANT.**
+
+#### 15. Décision rapide pour la suite
+
+**CAS 1 — D est déjà fonctionnellement complet** au sens strict du
+mandat de ce Bloc (fusion manuelle des 7 fonctions master/collègue
+divergentes) : les 7 fonctions sont toutes à parité ou supérieures à
+la version collègue, aucune fonctionnalité collègue non portée n'a été
+trouvée, tous les exports réels sont fonctionnels et correctement
+déclenchés, aucune duplication de règle trouvée, aucune interface avec
+les Blocs A/M/B/C n'est rompue ou incorrecte.
+
+**Point d'attention explicite, non bloquant, à trancher par
+l'utilisateur avant de considérer le Bloc D "clos" au sens large** :
+le constat §6 (`deciderTypeCommande()`/`REFUSEE` dormant) — action
+possible uniquement si l'utilisateur le demande explicitement, dans un
+bloc dédié séparé, jamais en filigrane de D.2.
+
+**→ D.2 = validation runtime + clôture documentaire. Pas de
+développement supplémentaire proposé.**
+
+#### Ce qui n'a PAS été modifié
+
+`.alp` : 0 diff. JSON : 0 diff. Aucune fonction A/M/B/C touchée. Aucune
+règle ajoutée. Aucun export créé. Aucun refactoring de legacy non
+bloquant effectué.
+
+#### Validations statiques
+
+- `.alp` : **0 diff** (`git status --porcelain -- model/SCONTO_SVU_GENERIC_MASTER.alp` vide avant/après)
+- JSON : **0 diff**
+- Seul `MERGE_PROGRESS.md` modifié dans ce commit
+
+**Build AnyLogic** : sans objet pour ce bloc (aucune modification
+fonctionnelle) — référence toujours **Build Bloc C = PASS / 0 erreur**.
+
+**D.1 = TERMINÉ / AUDIT VALIDÉ. BLOC D = EN COURS.**
+
+### Statut Bloc D
+- [x] **D.1 — Audit du moteur conflictuel / exports : TERMINÉ / AUDIT VALIDÉ (CAS 1)**
+- [ ] D.2 — validation runtime + clôture documentaire (à ouvrir sur demande)
+- [ ] Point de décision produit signalé (§6, `deciderTypeCommande`/`REFUSEE`) — en attente d'arbitrage utilisateur, hors mandat fusion
 
 ## Bloc E — ordonnancement MTO (NON COMMENCÉ)
 - [ ] Analyse A/B

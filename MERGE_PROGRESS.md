@@ -6447,9 +6447,322 @@ la pratique constante de cette mission.
 
 **BLOC D — MOTEUR CONFLICTUEL / EXPORTS = TERMINÉ / VALIDÉ / FIGÉ.**
 
-## Bloc E — ordonnancement MTO (NON COMMENCÉ)
-- [ ] Analyse A/B
-- [ ] Décision validée avant modification
+## Bloc E — ordonnancement MTO
+
+### E.1 — Audit de l'ordonnancement MTO
+
+**Périmètre** : audit uniquement, aucune modification du `.alp` ni d'un
+JSON. Confirmé par `git status --porcelain` vide sur
+`model/SCONTO_SVU_GENERIC_MASTER.alp` avant et après ce bloc. Toutes
+les commandes ont été des `Read`/`Grep`/scripts Python en lecture seule
+sur le master et `reference/colleague/SCONTO_SVU_GENERIC10-4_COLLEAGUE.alp`.
+
+#### 1. Chaîne MTO réelle, tracée dans le code (E.1.1)
+
+| Étape | Fonction | Données utilisées | Critère de décision | État |
+|---|---|---|---|---|
+| Création | `genererCommande()` | `modeSCORActif()` (mode global figé au lancement) | `cmd.typeCommande = "MTS"/"MTO"/"ETO"` | ACTIF |
+| Réception | `traiterCommande()` (via `RECEPTION_COMMANDE` différée) | — | trace hiérarchique, aucune décision | ACTIF |
+| Analyse stock | `analyserStockCommandeOrchestree()` (via `ANALYSE_STOCK`) | `cmd.typeCommande`, stock fini disponible | **`pullDepuisStock` exige `"MTS".equals(cmd.typeCommande)`** | **ACTIF pour MTS SEULEMENT** |
+| — branche MTS, stock suffisant | (même fonction) | — | livraison directe, `EN_LIVRAISON` | ACTIF |
+| — branche MTS, stock insuffisant | (même fonction) | — | attente + retry `ANALYSE_STOCK` +30s, `verifierPolitiqueStockProduit()` réveillé | ACTIF (dépend de REAPPRO, Bloc M) |
+| — branche MTO/ETO | (même fonction, garde de sécurité "cas non couvert") | — | **retry `ANALYSE_STOCK` +30s, indéfiniment, sans jamais déclencher de production dédiée** | **INACTIF — boucle sans issue** |
+| Déclenchement production (le seul chemin réel) | `declencherProductionAutonome()` (Bloc M, autonome, jamais depuis une commande cliente) | point de commande / Q* | appelle `analyserMatiereCommandeOrchestree(cmd)` **directement**, hors de toute analyse stock | ACTIF |
+| Vérification matière | `analyserMatiereCommandeOrchestree()` | nomenclature, `FicheMatiere` | matière suffisante → Make ; sinon → Source (délai fournisseur) ou `BLOQUE_*` (config/nomenclature, terminal) | ACTIF |
+| Réception matière | `finaliserApprovisionnementCommande()` | — | matière reçue → `tracerEtPlanifierProductionCommande()` | ACTIF |
+| Lancement production | `tracerEtPlanifierProductionCommande()` | — | **aucune arbitration** : `statut="PRODUCTION_PLANIFIEE"`, planifie `LANCER_PRODUCTION` à délai fixe | ACTIF, **sans ordonnancement** |
+| Production réelle | `lancerProductionCommande()` → `lancerProductionCommandeOrchestree()` | — | exécution physique dans la chaîne de postes | ACTIF |
+| Routage | `routerEntite()` | `e.prochainPoste()` (séquence figée du scénario) | ordre de postes fixé par `ScenarioFlux.sequence` | ACTIF, identique au collègue |
+| Clôture | closure Bloc C (`finaliserReceptionClientDirecte`/handler Make) | `tPromise` | `SERVIE`/`EN_RETARD` | ACTIF (Bloc C, inchangé) |
+
+#### 2. Constat central (E.1.2) — dans quel ordre plusieurs MTO sont-elles traitées ?
+
+**Réponse tracée dans le code, pas déduite des noms** : dans le master
+actuel, **aucune commande cliente MTO n'atteint jamais la production**.
+`analyserStockCommandeOrchestree()` ne gère que la branche `"MTS"` —
+la branche "sinon" (commentaire du code lui-même, "C14.55") reprogramme
+indéfiniment une nouvelle analyse de stock +30s, **sans jamais
+déclencher `ANALYSE_MATIERE`/`LANCER_PRODUCTION` pour cette commande**.
+Confirmé par lecture directe des 3 branches de la fonction (§1). Ce
+n'est pas une question d'ordre de traitement entre plusieurs MTO : **il
+n'existe actuellement aucun ordre, parce qu'il n'existe aucun
+traitement.**
+
+Pour les seuls ordres qui atteignent réellement la production —
+les ordres `REAPPRO_*` autonomes du Bloc M — la politique réelle est :
+**aucune arbitration explicite**. `tracerEtPlanifierProductionCommande()`
+planifie `LANCER_PRODUCTION` à délai fixe pour chaque ordre dès que sa
+matière est disponible ; l'ordre d'exécution entre plusieurs ordres
+simultanément prêts est déterminé uniquement par l'ordre d'insertion
+dans la file `actionsMetierDifferees` (voir §11) — **pas** par
+priorité, EDD, `tPromise`, produit ou capacité.
+
+#### 3. Files / queues (E.1.3)
+
+| File | Type | Discipline réelle | Peuplée ? |
+|---|---|---|---|
+| `actionsMetierDifferees` (Main) | `ArrayList<ActionMetierDifferee>` | FIFO par insertion parmi les actions dont `tExecution` est échu (voir §11-12) | **OUI — la vraie file de contrôle du modèle** |
+| `carnetCommandesMTO` (CoordinatorAgent CA-sM2) | `ArrayList<CommandeAgent>` | Triée par priorité puis EDD (`tPromise`) dans `ordonnancerProduction()`, avec porte goulot/panne et levée d'urgence anti-famine | **NON — jamais peuplée (0 appel `.add()` dans tout le master)** |
+| Files physiques par poste (`PosteGenericAgent.enter`, AnyLogic natif) | Queue AnyLogic standard | FIFO physique du flux de production | OUI, mais hors périmètre "ordonnancement de commandes" (flux d'entités déjà en production) |
+
+**Aucun tri par `HashSet`/`HashMap` trouvé** dans la chaîne de
+scheduling — toutes les structures ci-dessus sont des `List` à ordre
+stable.
+
+#### 4. Constat majeur — `carnetCommandesMTO` jamais peuplé (E.1.2/E.1.3/E.1.7)
+
+`ordonnancerProduction()` (CoordinatorAgent, appelée cycliquement via
+Event) est une fonction complète : tri priorité+EDD, porte
+goulot/panne, levée d'urgence anti-famine, libération cadencée à un
+ordre par cycle — **déjà documentée dans l'audit D.1 comme "RISKY —
+Bloc E" dès le tout premier audit de cette mission**. Elle démarre
+systématiquement par `if (carnetCommandesMTO.isEmpty()) return;` et
+**rien, nulle part dans le master, n'appelle
+`carnetCommandesMTO.add(...)`** — confirmé par grep exhaustif. Cette
+fonction ne s'exécute donc jamais utilement.
+
+**Comparaison avec le collègue (E.1.7)** — le collègue a exactement la
+même fonction `ordonnancerProduction()`, mais avec une règle de charge
+plus simple (libère tout le carnet sans porte goulot, déjà noté "RISKY"
+dans l'audit structurel initial de cette mission). **Différence
+réelle** : le collègue possède un correctif identifié dans son propre
+historique de commentaires ("C15.3") qui **ajoute l'appel manquant**
+(`coordMake.carnetCommandesMTO.add(cmd)`), avec le commentaire du
+collègue lui-même : *« Ce carnet est déjà ordonnancé par
+`ordonnancerProduction()` [...], déjà actif sur un événement cyclique,
+mais reste jusqu'ici vide car rien n'y insérait de commande »* —
+**confirmation, par le collègue lui-même, qu'il s'agit d'un correctif
+tardif à un problème identique à celui observé ici dans master.**
+
+**Mais ce correctif collègue n'est pas un fusion "propre" à porter
+aveuglément** : le collègue documente lui-même, juste à côté
+("DIAG C15.31"), un bug non résolu à la date du fichier de référence —
+des commandes observées `EN_COURS` en fin de run sans trace
+`ExecutionStart`, c'est-à-dire perdues quelque part après leur entrée
+dans le carnet. Porter ce correctif reviendrait à porter un mécanisme
+que le collègue lui-même n'avait pas fini de valider.
+
+**Ce que fait le fallback collègue si le coordinateur est introuvable**
+(`"on ne bloque pas la commande et on revient au lancement direct comme
+avant C15.3"`, `planifierAvecEchelle("LANCER_PRODUCTION", ...)`) est
+**exactement le comportement actuel et unique de
+`tracerEtPlanifierProductionCommande()` dans master** — master est donc
+figé sur le chemin de secours du collègue, jamais sur son chemin
+"ordonnancé". Master n'a perdu aucune fonctionnalité déjà validée du
+collègue ; il n'a simplement jamais reçu un correctif que le collègue
+lui-même n'avait pas fini de stabiliser.
+
+#### 5. Multi-produit (E.1.4)
+
+Comme seuls les ordres `REAPPRO_*` (Bloc M) atteignent réellement la
+production, et que le Bloc M isole déjà correctement chaque produit
+(`reapproActifPourProduit()`, `stockFiniParProduit`, validé runtime en
+Bloc M.3), la compatibilité multi-produit du chemin **réellement
+actif** est déjà assurée par le Bloc M — **aucune modification**, Bloc
+M non touché. Le comparateur mort de `ordonnancerProduction()` ne
+distingue pas les produits dans son tri (seulement priorité + EDD),
+mais c'est sans effet puisqu'il ne s'exécute jamais.
+
+#### 6. Sélection poste/machine (E.1.5)
+
+Le routage est entièrement déterminé par `ScenarioFlux.sequence` (liste
+ordonnée de postes par produit), consommée par `routerEntite()`
+(identique au collègue, §D.1). Les `machines[]` du JSON sont en
+correspondance 1:1 avec un poste (`idMicroActivite`), pas un pool de
+machines interchangeables à arbitrer. **Il n'existe donc pas de
+problème de "sélection de machine" au sens ordonnancement** — le
+scheduling, dans la mesure où il existe, se fait au niveau de la
+commande (quand la lancer), pas au niveau de la machine (laquelle
+choisir).
+
+#### 7. Rôle de `tPromise` (E.1.6)
+
+Confirmé : `tPromise`/`promisedDelaySec`/`modeEngagementClient` (Bloc C,
+figé) ne participent **qu'au tri mort de `ordonnancerProduction()`**
+(EDD) — **aucun rôle dans le chemin réellement actif** de la
+production (`declencherProductionAutonome()` → ... →
+`tracerEtPlanifierProductionCommande()` ne lit `tPromise` nulle part).
+Conformément à la consigne explicite de l'énoncé, **ceci n'est pas
+présenté comme un manque à corriger** : le Bloc C a délibérément gardé
+`tPromise` hors de toute logique de production (audit C.5/C.7), et rien
+dans cet audit E.1 ne recommande de l'y introduire.
+
+#### 8. Relation de `deciderTypeCommande()` avec E (E.1.8)
+
+`StrategicAgent.deciderTypeCommande()` (constat D.1) décide uniquement
+`MTS`/`MTO`/`REFUSEE` **avant** toute question d'ordonnancement — elle
+ne participe à aucune décision de séquencement une fois le type fixé.
+**Confirmé HORS PÉRIMÈTRE E** : c'est un arbitrage stratégique
+(faire ou puiser du stock), pas un ordonnanceur. Non auditée davantage
+ici, non activée, conformément à la consigne.
+
+#### 9. États bloquants et reprise (E.1.9/E.1.10)
+
+- `BLOQUE_CONFIG`/`BLOQUE_NOMENCLATURE`/`BLOQUE_MATIERE` (assignés dans
+  `analyserMatiereCommandeOrchestree()`/`finaliserApprovisionnementCommande()`)
+  sont **délibérément terminaux** (`commandeEstTerminale()`, Bloc
+  C.3-FIX) — attribués uniquement pour des erreurs de configuration
+  réelles (nomenclature/fiche matière absente ou incohérente), jamais
+  pour un manque transitoire de capacité. **Ce n'est pas un deadlock** :
+  c'est un arrêt volontaire "fail-closed" sur configuration invalide,
+  qui n'est pas censé se résorber tout seul.
+- Le cas transitoire réel — matière manquante mais nomenclature/config
+  valides — est géré par `analyserMatiereCommandeOrchestree()` qui
+  déclenche Source (délai fournisseur, y compris le mécanisme de test
+  de retard fournisseur déjà existant) puis reprend automatiquement via
+  `finaliserApprovisionnementCommande()` → `tracerEtPlanifierProductionCommande()`.
+  **La reprise REAPPRO → matière disponible → production fonctionne**,
+  confirmée par la chaîne tracée en §1 et déjà exercée par les Runs
+  Build/run des Blocs M et D (aucun REAPPRO resté bloqué signalé).
+- **Aucun risque de deadlock identifié** pour le chemin réellement
+  actif. Le seul "blocage sans reprise" trouvé est la boucle
+  `ANALYSE_STOCK` infinie pour les commandes clientes MTO/ETO (§2) —
+  qui n'est pas un deadlock au sens strict (pas d'attente circulaire),
+  mais une impasse fonctionnelle assumée par la conception "MTS PUR"
+  partagée avec le collègue (§4).
+
+#### 10. Politique d'ordonnancement actuelle — description exacte (E.1.11)
+
+```text
+Pour toute commande atteignant la production (en pratique : REAPPRO_*
+uniquement) :
+    dès que la matière est confirmée disponible,
+    planifier LANCER_PRODUCTION a un delai fixe (dureeReelleChaine)
+    -> executer des que ce delai est ecoule, SANS verifier :
+       - la charge du Make (goulot/panne)
+       - la priorite de la commande
+       - le due date (tPromise)
+       - la presence d'autres commandes en attente
+    -> l'ordre relatif entre plusieurs commandes simultanement pretes
+       est celui de leur insertion dans actionsMetierDifferees
+       (essentiellement l'ordre chronologique de declenchement de
+       chaque REAPPRO, donc de facto proche d'un FIFO par ordre
+       d'apparition du besoin de reapprovisionnement).
+```
+
+Ce n'est ni un FIFO explicite, ni un EDD, ni une priorité : c'est une
+**absence d'arbitrage**, où l'ordre observé est un sous-produit de
+l'ordre d'insertion dans la file d'actions différées.
+
+#### 11. Déterminisme (E.1.12)
+
+Aucun `HashMap`/`HashSet` ni tirage aléatoire (`Math.random()`,
+`getDefaultRandomGenerator()`) trouvé dans la chaîne de scheduling
+(`actionsMetierDifferees`, `analyserStockCommandeOrchestree`,
+`analyserMatiereCommandeOrchestree`, `tracerEtPlanifierProductionCommande`).
+`traiterActionsMetierDifferees()` itère `actionsMetierDifferees` (une
+`ArrayList`, ordre d'insertion stable) et exécute dans cet ordre les
+actions dont `tExecution` est échu — **nuance identifiée** : cet ordre
+est celui de l'**insertion**, pas strictement celui de `tExecution` ;
+si une action insérée plus tard avait un délai plus court et devenait
+échue en même temps qu'une action insérée plus tôt mais avec un délai
+plus long, l'action insérée en premier s'exécuterait quand même en
+premier. Ce comportement est générique à toute l'orchestration du
+master (pas spécifique à MTO), préexistant à cette mission. **Classé
+PROBABLEMENT DÉTERMINISTE** : déterministe à seed/données fixées côté
+modèle (aucune source d'aléa dans cette chaîne), sous réserve du
+comportement de résolution des événements strictement simultanés du
+moteur AnyLogic lui-même, non vérifiable depuis ce terminal.
+
+#### 12. Starvation (E.1.13)
+
+Pour le chemin réellement actif (REAPPRO), aucune commande n'est jamais
+réinsérée en fin de file ni ne subit de priorité permanente d'une
+autre : chaque ordre REAPPRO progresse indépendamment dès que sa
+matière est prête, sans compétition explicite pour une ressource
+partagée au niveau commande (la compétition physique a lieu au niveau
+des postes eux-mêmes, hors périmètre commande). **Classé AUCUN RISQUE
+IDENTIFIÉ** pour le chemin actif. Pour le chemin mort
+(`carnetCommandesMTO`), la question ne s'applique pas (rien n'y entre
+jamais).
+
+#### 13. Observabilité (E.1.14)
+
+Les traces déjà en place (`tracerFluxHierarchique`, `[STOCK]`,
+`[SOURCE]`, `[MAKE]`, `board.logEvenements`) identifient déjà
+commande/produit/poste/étape/timestamp pour chaque transition
+(cohérent avec l'audit D.1 §10). **Suffisant pour un test runtime** du
+chemin actif (REAPPRO) — déjà exercé implicitement par tous les Build/
+Run des Blocs M/B/C/D. Aucun log supplémentaire nécessaire pour ce
+périmètre. **OK.**
+
+#### 14. Ce qui est réellement requis (E.1.15)
+
+| Catégorie | Éléments |
+|---|---|
+| **REQUIS POUR LE MERGE** | Aucun — le master n'est en retard sur aucune amélioration collègue **validée** en matière d'ordonnancement |
+| **AMÉLIORATION POSSIBLE (hors mandat, décision produit)** | Porter le correctif collègue C15.3 (peuplement du carnet) — mais ce correctif est lui-même non stabilisé côté collègue (bug C15.31 documenté) ; restaurer un chemin de production dédié pour les commandes clientes MTO/ETO (retiré des deux lignées par le refactor partagé "C14.55") |
+| **HORS PÉRIMÈTRE** | `deciderTypeCommande()` (arbitrage stratégique, pas scheduling, cf. D.1) ; introduction de `tPromise` dans la production (jamais demandé par aucun bloc) ; toute nouvelle règle EDD/SPT/FIFO explicite |
+
+#### 15. Matrice de verdict
+
+| Composant | État | Bloquant ? | Action minimale |
+|---|---|---:|---|
+| Classification MTO (`genererCommande`) | COMPLET (mode global, inchangé) | Non | Aucune |
+| Queue/attente (`actionsMetierDifferees`) | ACTIF, FIFO par insertion | Non | Aucune |
+| Priorisation/EDD (`carnetCommandesMTO`/`ordonnancerProduction`) | **MORT — jamais peuplé** | **Non** (comportement partagé avec le fallback documenté du collègue, pas une régression du merge) | Signalement à l'utilisateur uniquement |
+| Sélection poste/machine | COMPLET (routage fixe par scénario) | Non | Aucune |
+| Multi-produit | COMPLET (délégué au Bloc M, déjà validé) | Non | Aucune |
+| REAPPRO / reprise après matière | COMPLET, actif, validé (Blocs M/D) | Non | Aucune |
+| Chemin client MTO/ETO (`analyserStockCommandeOrchestree`) | **INACTIF — boucle sans issue, partagé avec le collègue (C14.55)** | **Non** (pas un fusion gap : les deux lignées ont la même limitation intentionnelle) | Signalement à l'utilisateur uniquement |
+| Déterminisme | PROBABLEMENT DÉTERMINISTE | Non | Aucune |
+| Starvation | AUCUN RISQUE IDENTIFIÉ (chemin actif) | Non | Aucune |
+| Observabilité | OK, suffisant | Non | Aucune |
+
+**0 élément classé BLOQUANT pour le mandat de fusion.**
+
+#### 16. Décision rapide pour la suite (E.1.16)
+
+**CAS 1 — l'ordonnancement, au sens strict du mandat de fusion (« master
+a-t-il pris du retard sur une amélioration collègue validée ? »), est
+déjà fonctionnellement équivalent.** Le seul élément que le collègue
+possède et que master n'a pas (`carnetCommandesMTO` peuplé) est un
+correctif que le collègue lui-même documente comme non stabilisé
+(bug C15.31 non résolu à la date de la référence) ; master reste sur le
+chemin de secours explicitement prévu par le collègue lui-même pour ce
+cas, donc n'a rien perdu de validé.
+
+**Deux points d'attention majeurs, non bloquants, à porter à la
+décision de l'utilisateur (non corrigés ici, hors mandat de fusion,
+mêmes garde-fous que pour `deciderTypeCommande()` en Bloc D)** :
+1. Le chemin de production dédiée par commande cliente MTO/ETO est
+   **non fonctionnel** dans les deux lignées (retiré par le refactor
+   partagé "C14.55") — une commande cliente taguée MTO/ETO ne peut
+   actuellement jamais être servie tant que le mode global reste sur
+   MTO/ETO, quel que soit le niveau de stock. Ceci est un comportement
+   **hérité, partagé, antérieur à toute cette mission** — pas une
+   régression du merge, mais un fait qu'il serait risqué de laisser
+   l'utilisateur découvrir sans l'avoir signalé.
+2. `ordonnancerProduction()`/`carnetCommandesMTO` restent un
+   sous-système complet mais totalement inerte — à activer uniquement
+   sur décision produit explicite et après stabilisation du bug
+   d'origine que le collègue lui-même n'avait pas résolu.
+
+**→ E.2 = validation runtime + clôture documentaire. Pas de
+développement supplémentaire proposé.**
+
+#### Ce qui n'a PAS été modifié
+
+`.alp` : 0 diff. JSON : 0 diff. Aucune fonction A/M/B/C/D touchée.
+`deciderTypeCommande()` non activée. Aucun ordonnanceur EDD/SPT/FIFO
+créé. Aucune correction du chemin mort `carnetCommandesMTO` tentée.
+
+#### Validations statiques
+
+- `.alp` : **0 diff** (`git status --porcelain -- model/SCONTO_SVU_GENERIC_MASTER.alp` vide avant/après)
+- JSON : **0 diff**
+- Seul `MERGE_PROGRESS.md` modifié dans ce commit
+
+**Build AnyLogic** : sans objet pour ce bloc (aucune modification
+fonctionnelle) — référence toujours **Build Bloc D = PASS / 0 erreur**.
+
+**E.1 = TERMINÉ / AUDIT VALIDÉ (CAS 1, avec 2 points d'attention majeurs signalés). BLOC E = EN COURS.**
+
+### Statut Bloc E
+- [x] **E.1 — Audit de l'ordonnancement MTO : TERMINÉ / AUDIT VALIDÉ (CAS 1)**
+- [ ] E.2 — validation runtime + clôture documentaire (à ouvrir sur demande)
+- [ ] Point d'attention signalé : chemin de production dédiée MTO/ETO non fonctionnel (partagé avec le collègue, hérité, non corrigé)
+- [ ] Point d'attention signalé : `carnetCommandesMTO`/`ordonnancerProduction()` inerte (correctif collègue lui-même non stabilisé), non activé
 
 ## Validation finale
 - [ ] ZENER nominal

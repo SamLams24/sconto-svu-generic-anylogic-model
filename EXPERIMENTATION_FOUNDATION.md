@@ -8,6 +8,14 @@ Cette passe ne touche ni Prophet, ni DataCo, ni E4/E5. Elle prépare le socle
 commun (graine reproductible, condition terminale opérationnelle,
 diagnostic, traçabilité export) requis avant toute campagne d'optimisation.
 
+**EXP-0.1 (micro-passe de vérification, même branche)** a audité trois
+ambiguïtés avant le build manuel : la sémantique exacte de
+`nombreCommandesOuvertes()` (§4), la couverture de `generationDemandeTerminee()`
+pour le scénario E2/E4 et la garde anti-dépassement de quota (§4bis), et la
+précision de la persistance JSON de la graine (§3, corrigée). Aucune de ces
+vérifications n'a nécessité d'implémenter E4/E5 ni de modifier une règle
+métier.
+
 ## 1. Sources d'aléatoire trouvées
 
 Une seule source réelle : le générateur par défaut du moteur AnyLogic,
@@ -73,10 +81,30 @@ public String seedExperimentSource = "NON_INITIALISEE";
 - Persisté dans le scénario JSON (`parametresGlobaux.seedExperiment`), pour
   permettre « Configuration A / Seed 1001 » puis « Configuration B / Seed
   1001 » par simple édition/duplication de fichier JSON, sans reconstruire
-  le modèle.
+  le modèle. **EXP-0.1** : sérialisé via `String.valueOf(seedExperiment)`
+  et relu via `jsonString(...)` + `Long.parseLong(...)` (repli sur un parse
+  `double` pour compatibilité avec un JSON écrit par une version antérieure
+  du champ) — un aller-retour par `(double) seedExperiment` /
+  `jsonDouble(...)` perdrait la précision entière au-delà de 2^53 ; aucun
+  helper `jsonLong` n'existe dans ce modèle (seuls `jsonString`,
+  `jsonDouble`, `jsonInt`, `jsonBool`, `jsonStringList`).
 - N'agit **que** sur `getDefaultRandomGenerator()`. Aucune règle SCOR,
   MTS/MTO/ETO, planification, KPI, stock ou AER n'est modifiée par ce
   paramètre — vérifié par relecture de chaque site d'insertion.
+- **EXP-0.1 — preuve qu'aucun tirage n'a lieu avant `setSeed()`.** Audité :
+  le `<StartupCode>` racine de `Main` (exécuté une fois au lancement de
+  l'expérience, avant tout clic sur « Démarrer ») ne contient aucun appel à
+  `getDefaultRandomGenerator()`/`Random`/`genererCommande()` — uniquement de
+  la mise en place d'interface (messages, vues, listes de combo-box).
+  L'événement périodique `verifierPanne` (qui déclenche `gererPanne()`,
+  seul site hors `LoiTemps`/génération de commande consommant le générateur
+  pour les pannes machine) porte la condition explicite
+  `((Main) getOwner()).modeExecution` : il ne s'exécute donc jamais tant que
+  `modeExecution` est `false`. Or `demarrerSimulation()` force
+  `modeExecution = false` dès son entrée (juste après l'injection de la
+  graine) et ne le repasse à `true` que plus loin dans la même fonction,
+  après l'injection de la graine. Aucun chemin de code trouvé ne permet un
+  tirage stochastique métier avant `getDefaultRandomGenerator().setSeed(...)`.
 
 ## 4. Condition terminale — définition exacte
 
@@ -106,6 +134,70 @@ etatTerminalOperationnelAtteint() // (B) (A) ET aucun encours métier identifié
 5. `nombreActionsMetierDiffereesPertinentes() == 0` — voir §5.
 
 Volontairement **fondé sur l'état du système**, jamais sur `time() > X`.
+
+### 4bis. EXP-0.1 — `nombreCommandesOuvertes()` et couverture de E2/E4
+
+**Sémantique exacte de `nombreCommandesOuvertes()` (lue dans le code, pas
+déduite du nom) :**
+
+```java
+public int nombreCommandesOuvertes() {
+    int n = 0;
+    for (CommandeAgent cmd : commandes) {
+        if (cmd == null || estOrdreStockAutonome(cmd)) continue;
+        if (!commandeEstTerminale(cmd)) n++;
+    }
+    return n;
+}
+```
+
+`estOrdreStockAutonome(cmd)` (préfixe `REAPPRO_`) est explicitement exclu
+avant le comptage : cette fonction ne compte **que** les commandes
+clientes ouvertes (cas A de l'audit demandé), exactement le périmètre
+attendu de `run:openCustomerOrders`. Aucun doublon créé : `diagnosticEtatTerminal()`
+continue d'utiliser `nombreCommandesOuvertes()` tel quel pour
+`commandesClientesOuvertes`, et `etatTerminalOperationnelAtteint()` vérifie
+déjà séparément `nombreCommandesOuvertes() == 0` (clientes) ET
+`nombreReapprovisionnementsOuverts() == 0` (REAPPRO), donc aucune commande
+n'est ni oubliée ni comptée deux fois entre ces deux compteurs.
+
+**Génération de E2 (baseline de E4) — mécanisme réel.** Aucun identifiant
+littéral « E2 »/« E4 » n'existe dans le `.alp` (les campagnes E1-E5 sont une
+numérotation de documentation, pas un objet codé). Le mécanisme de
+perturbation identifié est le déclenchement manuel d'un « choc de demande »
+(`declencherPicPonctuelDemande(int)` — pic ponctuel, appelle `genererCommande()`
+directement — et `declencherRafaleCommandes(int,double)` — rafale, planifie
+des actions différées `GENERER_COMMANDE`). Dans les deux cas, la commande
+supplémentaire passe par `genererCommande()`, dont la toute première ligne
+est :
+
+```java
+if (!peutGenererNouvelleCommande()) return;
+```
+
+et `peutGenererNouvelleCommande()` applique exactement les mêmes conditions
+que `generationDemandeTerminee()` (`modeExecution`, `modePilotageParCommande`,
+`limiterNombreCommandes`, `nombreCommandesATester`). Il n'existe donc aucun
+chemin — normal ou choc de demande — qui crée une commande cliente hors de
+ce garde unique.
+
+**Conclusion : la définition actuelle couvre E4.** Sous réserve que la
+campagne E2/E4 soit paramétrée en mode borné (`modePilotageParCommande=true`,
+`limiterNombreCommandes=true`, `nombreCommandesATester` fixé) — condition
+déjà nécessaire pour qu'une campagne soit comparable/répétable, et déjà la
+convention observée sur toutes les campagnes existantes (ZENER Cas 1/2/3,
+campagnes DataCo 365 commandes). `generationDemandeTerminee()` n'a donc pas
+été généralisée ni modifiée.
+
+**Garde `GENERER_COMMANDE` au-delà du quota (audit demandé au point 3) :**
+le garde exact est `peutGenererNouvelleCommande()`, appelé en tête de
+`genererCommande()` — identifié ci-dessus. Une action différée
+`GENERER_COMMANDE` exécutée après que le quota est atteint aboutit donc à un
+`genererCommande()` qui retourne immédiatement sans créer de commande.
+Aucune commande supplémentaire n'est possible au-delà du quota par ce
+chemin. L'exclusion de `GENERER_COMMANDE` du compteur
+`nombreActionsMetierDiffereesPertinentes()` (§5) reste donc correcte et n'a
+pas été modifiée.
 
 ## 5. Structures vérifiées par le terminal, et exclusions justifiées
 
@@ -147,12 +239,30 @@ run:demandGenerationFinished    -- OUI/NON
 run:terminalReached             -- OUI/NON
 run:openCustomerOrders          -- entier
 run:openReplenishments          -- entier
-run:entitiesInProcessAtPosts    -- entier
+run:entitiesInProcessAtPosts    -- entier (voir EXP-0.1 ci-dessous : nombre d'occupations, pas garanti comme un compte d'agents uniques)
 run:pendingBusinessActions      -- entier
 run:terminalDiagnosticText      -- texte, cause(s) si non terminal
 ```
 
 Aucun calcul de PI, de KPI SCOR, de WIP affiché ou de coût n'a été modifié.
+
+### 7bis. EXP-0.1 — sémantique de `entitiesInProcessAtPosts`
+
+Audité : pour un même poste, le code de `lotEnCours` (`lotEnCours.add(agent)`)
+n'intervient qu'après que l'entité a quitté le traitement du `delay` de ce
+poste (commentaire du modèle : « elle a bien été traitée par CE poste, mais
+n'est pas encore relâchée vers la suite ») — `queue`, `delay` et `lotEnCours`
+représentent donc des états séquentiels, pas concurrents, **pour un même
+poste**. Une entité de flux (`FluxEntity`) ne peut par ailleurs se trouver
+que sur un seul poste à la fois dans le graphe de flux (routage séquentiel
+d'un poste au suivant). Ces deux observations rendent un double comptage
+peu probable, mais aucune preuve exhaustive (à l'échelle de tout le modèle,
+tous chemins de routage/duplication compris) n'a été produite dans le temps
+de cette micro-passe. Le champ `entitiesInProcessAtPosts` est donc décrit
+et documenté comme **un nombre d'occupations/présences** dans les
+structures de traitement des postes (`queue`+`delay`+`lotEnCours`), et non
+présenté comme un nombre d'agents métier uniques garanti — conformément au
+principe de prudence demandé.
 
 ## 8. Protocole de reproductibilité (à exécuter manuellement dans AnyLogic)
 

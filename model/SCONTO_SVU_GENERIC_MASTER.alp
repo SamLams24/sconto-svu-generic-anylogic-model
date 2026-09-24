@@ -10216,6 +10216,11 @@ public int nombreReapprovisionnementsOuverts() {
 // machine (MTBF/MTTR, tProchainePanne) : une panne future est un risque
 // stochastique sur la capacite, pas un encours metier deja engage --
 // exclusion documentee dans EXPERIMENTATION_FOUNDATION.md.
+// EXP-0.1 -- ce compteur additionne des OCCUPATIONS dans queue/delay/
+// lotEnCours, pas un nombre d'agents metier garanti unique : voir l'audit
+// (EXPERIMENTATION_FOUNDATION.md, §7bis) sur le caractere sequentiel de
+// ces etats pour un meme poste. A ne pas presenter comme un decompte
+// d'entites distinctes sans cette reserve.
 public int nombreEntitesEnTraitementPostes() {
     int n = 0;
     if (postes == null) return 0;
@@ -16014,11 +16019,16 @@ kpi_AG_score = 0; kpi_CO_score = 0; kpi_AM_score = 0;]]></Body>
     params.put("seqResponsabilite", seqResponsabilite);
     params.put("seqMachineSim", seqMachineSim);
     params.put("seqTrace", seqTrace);
-    // EXP-0 -- graine experimentale explicite, persistee dans le scenario JSON
-    // pour permettre "Configuration A / Seed 1001" vs "Configuration B / Seed 1001"
-    // par simple duplication/edition de fichier, sans reconstruire le modele.
-    // -1 (absent ou non renseigne) = comportement inchange (SeedValue natif).
-    params.put("seedExperiment", (double) seedExperiment);
+    // EXP-0-FIX -- graine experimentale explicite, persistee dans le scenario
+    // JSON pour permettre "Configuration A / Seed 1001" vs "Configuration B /
+    // Seed 1001" par simple duplication/edition de fichier, sans reconstruire
+    // le modele. -1 (absent ou non renseigne) = comportement inchange
+    // (SeedValue natif). Serialisee en String (pas jsonDouble/double) : un
+    // aller-retour par double perdrait la precision entiere au-dela de 2^53,
+    // aucun helper jsonLong n'existant dans ce modele (seuls jsonString/
+    // jsonDouble/jsonInt/jsonBool/jsonStringList). String.valueOf(long) est
+    // exact pour toute valeur representable par un long.
+    params.put("seedExperiment", String.valueOf(seedExperiment));
     root.put("parametresGlobaux", params);
 
     // ── 2bis. Echelles bottom/perfect du pipeline de performance C14 ───────────────
@@ -16231,10 +16241,25 @@ root.put("fichesMatiere", lstFiches);
         // vide -- comportement mono-produit historique strictement inchange.
         modeMultiProduitActif  = jsonBool(pg, "modeMultiProduitActif", false);
         rotationProduitsActive = jsonBool(pg, "rotationProduitsActive", false);
-        // EXP-0 -- graine experimentale explicite. Absente d'un JSON existant :
-        // retombe sur -1 (comportement inchange, SeedValue natif de l'experience).
-        // N'est appliquee au generateur aleatoire qu'au prochain demarrerSimulation().
-        seedExperiment = (long) jsonDouble(pg, "seedExperiment", -1.0);
+        // EXP-0-FIX -- graine experimentale explicite. Lue via jsonString()
+        // (pas jsonDouble()) pour eviter toute perte de precision entiere au
+        // chargement, symetrique de l'ecriture (voir params.put ci-dessus).
+        // Repli sur un parse double pour rester compatible avec un JSON
+        // eventuellement ecrit par une version anterieure de ce champ
+        // (format "1001.0"). Absente d'un JSON existant : retombe sur -1
+        // (comportement inchange, SeedValue natif de l'experience). N'est
+        // appliquee au generateur aleatoire qu'au prochain demarrerSimulation().
+        {
+            String seedTxt = jsonString(pg, "seedExperiment", "-1");
+            long seedLue = -1L;
+            try {
+                seedLue = Long.parseLong(seedTxt.trim());
+            } catch (Exception ex1) {
+                try { seedLue = (long) Double.parseDouble(seedTxt.trim()); }
+                catch (Exception ex2) { seedLue = -1L; }
+            }
+            seedExperiment = seedLue;
+        }
         stockInitialParProduit.clear();
         Object sipObj = pg.get("stockInitialParProduit");
         if (sipObj instanceof java.util.Map) {

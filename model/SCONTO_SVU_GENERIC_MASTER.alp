@@ -2166,6 +2166,25 @@ public double pauseApresArriveeAnimationSec = 3.0;
 // - timer lisible affiche dans l'interface et mis a jour en execution.
 // ============================================================
 public double simToRealSeconds = 600.0; // 1 seconde de simulation = 600 secondes reelles par defaut
+
+// ============================================================
+// EXP-0 -- FONDATION EXPERIMENTALE : GRAINE ALEATOIRE EXPLICITE
+// Parametre EXPERIMENTAL uniquement : pilote getDefaultRandomGenerator()
+// (source unique de toutes les sources stochastiques du modele -- voir
+// audit EXP-0), jamais les regles SCOR/MTS/MTO/ETO/PI/stocks/AER. -1 =
+// non renseignee : le generateur garde la graine native de l'experience
+// AnyLogic (<SimulationExperiment><SeedValue>), non modifiee par ce champ.
+// Valeur >= 0 : appliquee par setSeed() en tete de demarrerSimulation(),
+// avant toute reinitialisation de generateur/timer (voir ce bloc).
+// ============================================================
+public long seedExperiment = -1;
+// Traces de provenance de la graine effectivement utilisee pour CE run,
+// exportees telles quelles (Bloc EXP-0, exporterABoxRuntimeTTL) : la
+// valeur native du SeedValue de l'experience n'est pas lisible depuis
+// Main (limite connue, documentee EXPERIMENTATION_FOUNDATION.md).
+public long seedExperimentEffective = -1;
+public String seedExperimentSource = "NON_INITIALISEE";
+
 public java.time.LocalDateTime userStartDate = java.time.LocalDateTime.of(2026, 3, 10, 8, 0, 0);
 public long simStartRealMillis = 0L;
 public String realTimer = "Temps simule non demarre";
@@ -9507,9 +9526,29 @@ public String exporterABoxRuntimeTTL(String raison) {
         aboxTriple(pw,run,"run:supplierDelayFactor",aboxDec(facteurRetardFournisseur));
         aboxTriple(pw,run,"run:firstReceiptOnly",aboxLit(retardFournisseurUneSeuleReception ? "OUI" : "NON"));
         aboxTriple(pw,run,"run:randomSeed",aboxLit("NON_ACCESSIBLE_DANS_MAIN"));
+        // EXP-0 -- graine experimentale explicite (champ existant run:randomSeed
+        // conserve tel quel ci-dessus, format non casse ; ces trois champs sont
+        // additifs). Voir seedExperiment/seedExperimentEffective/
+        // seedExperimentSource, appliques en tete de demarrerSimulation().
+        aboxTriple(pw,run,"run:experimentSeed",aboxLit(seedExperiment>=0 ? String.valueOf(seedExperiment) : "NON_RENSEIGNEE"));
+        aboxTriple(pw,run,"run:experimentSeedEffective",aboxLit(seedExperimentEffective>=0 ? String.valueOf(seedExperimentEffective) : "NON_APPLICABLE"));
+        aboxTriple(pw,run,"run:experimentSeedSource",aboxLit(seedExperimentSource==null?"":seedExperimentSource));
         aboxTriple(pw,run,"run:closureTimestamp",aboxLit(aboxIsoAt(time()))+"^^xsd:dateTime");
         aboxTriple(pw,run,"run:jsonPresetName",aboxLit(scenarioJsonFileName()));
         aboxTriple(pw,run,"run:modelArtifact",aboxLit("SCONTO_SVU_FINAL_VSM_FIX_CANDIDATE.alp"));
+        // EXP-0 -- condition terminale operationnelle (Bloc EXP-0.1 a EXP-0.7) :
+        // distincte de la fin de generation de la demande. diagnosticEtatTerminal()
+        // reste la source unique de ces compteurs (aucun recalcul ici).
+        {
+            java.util.Map<String,Object> diagTerm = diagnosticEtatTerminal();
+            aboxTriple(pw,run,"run:demandGenerationFinished",aboxLit(generationDemandeTerminee()?"OUI":"NON"));
+            aboxTriple(pw,run,"run:terminalReached",aboxLit(Boolean.TRUE.equals(diagTerm.get("terminalAtteint"))?"OUI":"NON"));
+            aboxTriple(pw,run,"run:openCustomerOrders",aboxDec((Integer)diagTerm.get("commandesClientesOuvertes")));
+            aboxTriple(pw,run,"run:openReplenishments",aboxDec((Integer)diagTerm.get("reapprovisionnementsOuverts")));
+            aboxTriple(pw,run,"run:entitiesInProcessAtPosts",aboxDec((Integer)diagTerm.get("entitesEnTraitementPostes")));
+            aboxTriple(pw,run,"run:pendingBusinessActions",aboxDec((Integer)diagTerm.get("actionsMetierDiffereesPertinentes")));
+            aboxTriple(pw,run,"run:terminalDiagnosticText",aboxLit(diagnosticEtatTerminalTexte()));
+        }
         aboxTriple(pw,net,"rdf:type","core:SupplyChainNetwork");
         aboxTriple(pw,net,"rdfs:label",aboxLit("Supply chain - "+nomEntreprise));
         aboxTriple(pw,run,"run:network",net);
@@ -10130,6 +10169,137 @@ public int nombreCommandesOuvertes() {
         if (!commandeEstTerminale(cmd)) n++;
     }
     return n;
+}
+
+// ============================================================
+// EXP-0 -- FONDATION EXPERIMENTALE : CONDITION TERMINALE OPERATIONNELLE
+// Reutilise exclusivement les predicats/structures canoniques deja
+// existants (commandeEstTerminale(), estOrdreStockAutonome(),
+// nombreCommandesOuvertes(), postes[].queue/delay/lotEnCours,
+// actionsMetierDifferees) : aucune nouvelle classification de statut
+// metier n'est introduite par ce bloc. Voir EXPERIMENTATION_FOUNDATION.md
+// pour l'audit complet ayant motive chaque choix ci-dessous.
+// ============================================================
+
+// Bloc EXP-0.1 -- generation de la demande EXTERNE terminee : aucune
+// nouvelle commande CLIENTE ne sera plus planifiee pour cette campagne.
+// Distinct de la terminalite operationnelle (Bloc EXP-0.5) : repond a
+// "plus rien n'arrivera", pas a "tout est fini". Une generation continue
+// (non bornee par nombreCommandesATester) n'est par construction jamais
+// consideree comme terminee.
+public boolean generationDemandeTerminee() {
+    if (!modeExecution) return false;
+    if (!modePilotageParCommande) return false;
+    if (!limiterNombreCommandes) return false;
+    return commandesGenereesDepuisDemarrage >= Math.max(1, nombreCommandesATester);
+}
+
+// Bloc EXP-0.2 -- nombre d'ordres REAPPRO_* encore ouverts (ni SERVIE ni
+// EN_RETARD). Meme filtre exact que existeReapproOuvert() (Bloc M.3,
+// non modifie), mais expose un compte plutot qu'un simple booleen pour
+// alimenter le diagnostic.
+public int nombreReapprovisionnementsOuverts() {
+    if (commandes == null) return 0;
+    int n = 0;
+    for (CommandeAgent c : commandes) {
+        if (c == null || !estOrdreStockAutonome(c)) continue;
+        if (commandeEstTerminale(c)) continue;
+        n++;
+    }
+    return n;
+}
+
+// Bloc EXP-0.3 -- travail physique encore engage au niveau des postes :
+// meme source que le WIP deja affiche ailleurs (p.queue.size()+
+// p.delay.size()), complete par p.lotEnCours (Bloc de batching/jonction
+// multi-amont, non couvert par le WIP affiche). N'inclut PAS les pannes
+// machine (MTBF/MTTR, tProchainePanne) : une panne future est un risque
+// stochastique sur la capacite, pas un encours metier deja engage --
+// exclusion documentee dans EXPERIMENTATION_FOUNDATION.md.
+public int nombreEntitesEnTraitementPostes() {
+    int n = 0;
+    if (postes == null) return 0;
+    for (PosteGenericAgent p : postes) {
+        if (p == null) continue;
+        try { if (p.queue != null) n += p.queue.size(); } catch (Throwable ignored) {}
+        try { if (p.delay != null) n += p.delay.size(); } catch (Throwable ignored) {}
+        try { if (p.lotEnCours != null) n += p.lotEnCours.size(); } catch (Throwable ignored) {}
+    }
+    return n;
+}
+
+// Bloc EXP-0.4 -- actions metier differees PERTINENTES pour la
+// terminalite : exclut GENERER_COMMANDE (releve de
+// generationDemandeTerminee(), pas d'un encours de traitement) et
+// ANIM_RETOUR_VEHICULE (animation de presentation, sans effet metier).
+// Les autres types (RECEPTION_COMMANDE, ANALYSE_STOCK, ANALYSE_MATIERE,
+// FINALISER_APPROVISIONNEMENT, LANCER_PRODUCTION, LIVRAISON_DIRECTE,
+// RECEPTION_CLIENT_DIRECTE, cf. executerActionMetierDifferee()) sont des
+// etapes d'orchestration liees a une commande reelle encore ouverte.
+public int nombreActionsMetierDiffereesPertinentes() {
+    if (actionsMetierDifferees == null) return 0;
+    int n = 0;
+    for (ActionMetierDifferee a : actionsMetierDifferees) {
+        if (a == null) continue;
+        String t = a.type == null ? "" : a.type;
+        if ("GENERER_COMMANDE".equals(t) || "ANIM_RETOUR_VEHICULE".equals(t)) continue;
+        n++;
+    }
+    return n;
+}
+
+// Bloc EXP-0.5 -- etat terminal operationnel : generation externe
+// terminee ET aucun encours metier identifie par l'audit EXP-0 (commandes
+// clientes, reapprovisionnements, postes, actions differees pertinentes).
+// Volontairement fonde sur l'etat du systeme, jamais sur time()/une duree
+// simulee ecoulee.
+public boolean etatTerminalOperationnelAtteint() {
+    if (!generationDemandeTerminee()) return false;
+    if (nombreCommandesOuvertes() > 0) return false;
+    if (nombreReapprovisionnementsOuverts() > 0) return false;
+    if (nombreEntitesEnTraitementPostes() > 0) return false;
+    if (nombreActionsMetierDiffereesPertinentes() > 0) return false;
+    return true;
+}
+
+// Bloc EXP-0.6 -- diagnostic structure, source unique reutilisee par
+// l'export (exporterABoxRuntimeTTL) et par toute vue future. N'introduit
+// aucun nouveau calcul : assemble les compteurs des blocs EXP-0.1 a
+// EXP-0.5 ci-dessus.
+public java.util.Map<String,Object> diagnosticEtatTerminal() {
+    java.util.Map<String,Object> d = new java.util.LinkedHashMap<String,Object>();
+    boolean genTerminee = generationDemandeTerminee();
+    int commandesOuvertes = nombreCommandesOuvertes();
+    int reapprosOuverts = nombreReapprovisionnementsOuverts();
+    int enTraitement = nombreEntitesEnTraitementPostes();
+    int actionsPertinentes = nombreActionsMetierDiffereesPertinentes();
+    boolean terminal = genTerminee && commandesOuvertes == 0 && reapprosOuverts == 0
+        && enTraitement == 0 && actionsPertinentes == 0;
+    d.put("generationTerminee", genTerminee);
+    d.put("commandesClientesOuvertes", commandesOuvertes);
+    d.put("reapprovisionnementsOuverts", reapprosOuverts);
+    d.put("entitesEnTraitementPostes", enTraitement);
+    d.put("actionsMetierDiffereesPertinentes", actionsPertinentes);
+    d.put("terminalAtteint", terminal);
+    return d;
+}
+
+// Bloc EXP-0.7 -- rendu texte du diagnostic ci-dessus : indique la ou les
+// causes de non-terminalite (Bloc EXP-0.6), utile pour un log ou un
+// panneau de suivi sans dupliquer la logique de diagnosticEtatTerminal().
+public String diagnosticEtatTerminalTexte() {
+    java.util.Map<String,Object> d = diagnosticEtatTerminal();
+    if (Boolean.TRUE.equals(d.get("terminalAtteint"))) return "Etat terminal operationnel atteint.";
+    java.util.List<String> causes = new java.util.ArrayList<String>();
+    if (!Boolean.TRUE.equals(d.get("generationTerminee"))) causes.add("generation de la demande non terminee");
+    if ((Integer) d.get("commandesClientesOuvertes") > 0) causes.add(d.get("commandesClientesOuvertes") + " commande(s) cliente(s) ouverte(s)");
+    if ((Integer) d.get("reapprovisionnementsOuverts") > 0) causes.add(d.get("reapprovisionnementsOuverts") + " reapprovisionnement(s) ouvert(s)");
+    if ((Integer) d.get("entitesEnTraitementPostes") > 0) causes.add(d.get("entitesEnTraitementPostes") + " entite(s) encore en traitement aux postes");
+    if ((Integer) d.get("actionsMetierDiffereesPertinentes") > 0) causes.add(d.get("actionsMetierDiffereesPertinentes") + " action(s) metier differee(s) pertinente(s)");
+    StringBuilder sb = new StringBuilder("Etat non terminal : ");
+    for (int i = 0; i < causes.size(); i++) { if (i > 0) sb.append(", "); sb.append(causes.get(i)); }
+    sb.append(".");
+    return sb.toString();
 }
 
 // Bloc C.4-FIX -- BUG D'INCOHERENCE CORRIGE : cette fonction comptait sur
@@ -12660,7 +12830,21 @@ return true;]]></Body>
 					<PublicFlag>false</PublicFlag>
 					<PresentationFlag>true</PresentationFlag>
 					<ShowLabel>true</ShowLabel>
-					<Body><![CDATA[synchroniserListeProduits();
+					<Body><![CDATA[// EXP-0 -- graine experimentale explicite, appliquee avant toute autre
+// initialisation de run : ne modifie que le generateur aleatoire par
+// defaut de l'experience (getDefaultRandomGenerator()), jamais les regles
+// metier. Place avant validerConfig()/tout reset pour garantir qu'aucun
+// tirage stochastique n'a encore eu lieu depuis ce point pour ce run.
+if (seedExperiment >= 0) {
+    getDefaultRandomGenerator().setSeed(seedExperiment);
+    seedExperimentEffective = seedExperiment;
+    seedExperimentSource = "PARAMETRE_EXPLICITE_seedExperiment";
+} else {
+    seedExperimentEffective = -1;
+    seedExperimentSource = "SEEDVALUE_NATIF_EXPERIENCE_ANYLOGIC";
+}
+
+synchroniserListeProduits();
 if (!validerConfig()) return;
 
 // Panneau de depart : date simulee, echelle temps et budgets.
@@ -15830,6 +16014,11 @@ kpi_AG_score = 0; kpi_CO_score = 0; kpi_AM_score = 0;]]></Body>
     params.put("seqResponsabilite", seqResponsabilite);
     params.put("seqMachineSim", seqMachineSim);
     params.put("seqTrace", seqTrace);
+    // EXP-0 -- graine experimentale explicite, persistee dans le scenario JSON
+    // pour permettre "Configuration A / Seed 1001" vs "Configuration B / Seed 1001"
+    // par simple duplication/edition de fichier, sans reconstruire le modele.
+    // -1 (absent ou non renseigne) = comportement inchange (SeedValue natif).
+    params.put("seedExperiment", (double) seedExperiment);
     root.put("parametresGlobaux", params);
 
     // ── 2bis. Echelles bottom/perfect du pipeline de performance C14 ───────────────
@@ -16042,6 +16231,10 @@ root.put("fichesMatiere", lstFiches);
         // vide -- comportement mono-produit historique strictement inchange.
         modeMultiProduitActif  = jsonBool(pg, "modeMultiProduitActif", false);
         rotationProduitsActive = jsonBool(pg, "rotationProduitsActive", false);
+        // EXP-0 -- graine experimentale explicite. Absente d'un JSON existant :
+        // retombe sur -1 (comportement inchange, SeedValue natif de l'experience).
+        // N'est appliquee au generateur aleatoire qu'au prochain demarrerSimulation().
+        seedExperiment = (long) jsonDouble(pg, "seedExperiment", -1.0);
         stockInitialParProduit.clear();
         Object sipObj = pg.get("stockInitialParProduit");
         if (sipObj instanceof java.util.Map) {

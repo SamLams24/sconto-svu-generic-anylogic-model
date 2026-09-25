@@ -12,9 +12,17 @@ diagnostic, traçabilité export) requis avant toute campagne d'optimisation.
 ambiguïtés avant le build manuel : la sémantique exacte de
 `nombreCommandesOuvertes()` (§4), la couverture de `generationDemandeTerminee()`
 pour le scénario E2/E4 et la garde anti-dépassement de quota (§4bis), et la
-précision de la persistance JSON de la graine (§3, corrigée). Aucune de ces
-vérifications n'a nécessité d'implémenter E4/E5 ni de modifier une règle
-métier.
+précision de la persistance JSON de la graine (§3, corrigée).
+
+**EXP-0.2 (§11, suite au premier test runtime T1)** a corrigé un défaut de
+reproductibilité réel, mis en évidence par deux runs à graine identique
+dont les trajectoires divergeaient : plusieurs événements métier cycliques
+étaient phasés sur le temps absolu du moteur AnyLogic plutôt que sur le
+début logique du run. Rephasés via `restart()` (API AnyLogic standard),
+sans modification d'aucune règle métier, période, MTBF/MTTR ni logique de
+décision.
+
+Aucune de ces vérifications/corrections n'a nécessité d'implémenter E4/E5.
 
 ## 1. Sources d'aléatoire trouvées
 
@@ -328,3 +336,131 @@ diagnostic = « Etat terminal opérationnel atteint. »
 - E4 et E5 ne sont pas implémentés par cette passe : aucune variable de
   décision, aucun espace de 144 configurations, aucune boucle Pareto/AHP
   n'a été ajoutée.
+
+## 11. EXP-0.2 — Reproductibilité runtime : rephasage des événements métier cycliques
+
+Suite à l'exécution manuelle du test T1 (deux runs A/B, `seedExperiment=1001`
+identique, même JSON, même scénario) : la graine s'applique correctement
+(mêmes 236 s / 194 s d'intervalle CMD1→CMD2→CMD3 dans les deux runs), mais
+les trajectoires divergent à partir du traitement de REAPPRO_1
+(`createdAt` = 75 s en T1-A, 45 s en T1-B — deux valeurs sur la même grille
+de 15 s), ce qui inverse l'ordre de traitement REAPPRO_1/livraison directe
+CMD_1 et fait diverger les durées tirées en aval.
+
+### 11.1. Cause exacte
+
+Confirmée par lecture du code (pas supposée) : l'événement `cycleArbitrage`
+(`TacticalAgent`) est configuré `TriggerType="timeout" Mode="cyclic"` avec
+`OccurrenceAtTime=true`, `OccurrenceDate`/`OccurrenceTime=0`,
+`RecurrenceCode=15s`, et surtout **`Condition: true`** (aucune garde). En
+AnyLogic, ce mode de déclenchement ancre la première occurrence — et donc
+toute la grille récurrente — sur le temps **absolu** du moteur (0, 15, 30,
+45, 60, 75 s, …), indépendamment de l'instant où `modeExecution` devient
+vrai. `verifierPolitiqueStockProduit()` (déclencheur effectif de REAPPRO_*)
+est appelée depuis la branche `sM` de `cycleArbitrage`. Le délai réel entre
+le lancement du moteur AnyLogic et le clic sur « Démarrer » variant d'un
+test manuel à l'autre, le premier tick de `cycleArbitrage` ayant un effet
+métier (après que `modeExecution` passe à `true`) tombe à un instant
+relatif différent selon le run — d'où t=75 s vs t=45 s, deux points
+différents de la même grille absolue.
+
+### 11.2. Mécanisme déclenchant REAPPRO_1
+
+`verifierPolitiqueStockProduit()` (Main) → `verifierPolitiqueStockPourUnProduit()`
+→ `declencherProductionAutonome()`, appelée depuis deux chemins :
+
+1. **Immédiat/événementiel** : dès qu'une commande MTS trouve le stock
+   insuffisant (`traiterCommande()`), la politique est réévaluée
+   immédiatement (« ETAPE 3.3 »). Ce chemin est intrinsèquement relatif au
+   déroulé du run (déclenché par une commande déjà créée relativement au
+   run), pas absolu.
+2. **Filet de sécurité périodique** : le cycle tactique `sM` (15 s, via
+   `cycleArbitrage`) réévalue aussi la politique, **indépendamment de toute
+   commande** — c'est ce chemin, ancré sur l'horloge absolue du moteur, qui
+   cause la divergence observée.
+
+### 11.3. Inventaire exhaustif des événements cycliques métier (22 au total)
+
+| Événement | Classe | Période | 1ʳᵉ occ. | Condition | RNG direct | Effet métier | Rephasé |
+|---|---|---|---|---|---|---|---|
+| `cycleArbitrage` | TacticalAgent | 15 s | absolue (t=0) | `true` | Non (mais déclenche indirectement REAPPRO → RNG en aval) | Oui — déclenche `calculerBesoinsNets()`/`verifierPolitiqueStockProduit()` | **Oui** |
+| `verifierPanne` | PosteGenericAgent | 30 s | absolue (t=30) | `modeExecution` | Oui (MTBF/MTTR) | Oui — panne/réparation, capacité poste | **Oui** |
+| `evaluerGoulots` | CoordinatorAgent | 5 s | absolue (t=1) | `modeExecution` | Non | Oui — `prendreDecisionAHP()` | **Oui** |
+| `evtTraitementAlertesTactiques` | CoordinatorAgent | 10 s | absolue (t=1) | `modeExecution` | Non | Oui — `traiterAlertesTactiques()`, chaîne AER | **Oui** |
+| `evtOrdonnancement` | CoordinatorAgent | 15 s | absolue (t=1) | `modeExecution` | Non | Oui — `ordonnancerProduction()` | **Oui** |
+| `analyseStrategique` | StrategicAgent | 30 s | absolue (t=30) | `true` | Non | Oui — `detecterGoulot(); piloterSource();` | **Oui** |
+| `prevoirEtAjuster` | StrategicAgent | 60 s | absolue (t=1) | `modeExecution && tempsDebutSimulation>=0` | Non | Oui — `prevoirDemande(); ajusterDebits();` | **Oui** |
+| `evtEvaluationRetardsCommandesOuvertes` | Main | 60 s | absolue (t=60) | `modeExecution` | Non | Oui — écrit `cmd.retardConstate` (KPI fiabilité) | **Oui** |
+| `recalculPI` | CoordinatorAgent | 600 s | absolue (t=600) | `modeExecution` | Non | **Non** — écrit uniquement `strategic.piGlobalCourant` (affichage) | Non |
+| `observerPoste` | OperationalAgent | 2 s | absolue (t=1) | `modeExecution` | Non | **Non** — commentaire modèle explicite (Bloc A.5/C14.54) : « aucun changement de routage/production, uniquement de la représentation d'état » | Non |
+| `bilanPeriodique` | Main | 60 s | absolue (t=60) | `modeExecution` | Non | **Non** — commentaire modèle explicite : « Purement OBSERVATEUR… aucun changement de statut, de stock, de production, de PI ni de routage » | Non |
+| `DashboardHistoryManager` | Main | `champIntervalleExportExcel` | absolue | `modeExecution` | Non | **Non** — capture d'historique pour graphiques uniquement (commentaire A.4-FIX-2) | Non |
+| `ExcelExportManager` | Main | `champIntervalleExportExcel` | absolue | `modeExecution && exportExcelActif && !c14SnapshotFinalEffectue` | Non | **Non** — écriture de fichier Excel uniquement | Non |
+| `AnimationMessagesManager` | Main | 1 s | absolue | `true` | Non | **Non** — animation de présentation uniquement (nom explicite) | Non |
+| `arrivee` | Main | RNG (exponentielle) | absolue | `modeExecution && !modePilotageParCommande` | Oui | Sans objet pour une campagne pilotée par commande (mode continu uniquement, désactivé dans le scénario testé) | Non (hors mode) |
+| `generateurCommandes` | Main | 400 s | absolue | `modeExecution && !modePilotageParCommande` | Non | Sans objet, mode continu uniquement | Non (hors mode) |
+| `tickAppro` | Main | `LAYOUT_TICK_APPRO_SEC` | absolue | `modeExecution && !modePilotageParCommande` | Non | Sans objet, mode continu uniquement | Non (hors mode) |
+| `event` (id 1780965648...) | Main | 1 s | absolue | `false` | — | Désactivé (condition toujours fausse) | Non (inactif) |
+| `rafraichir` | Main | 1 s | absolue | `false` | — | Désactivé | Non (inactif) |
+| `snapshotWIP` | BlackboardAgent | 10 s | absolue | `false` | — | Désactivé | Non (inactif) |
+| `cycleDecision` | OperationalAgent | 10 s | absolue | `false` | — | Désactivé | Non (inactif) |
+| `event` (Movable) | Movable | 1 s | absolue | `false` | — | Désactivé | Non (inactif) |
+
+Les événements « sans objet » (`arrivee`, `generateurCommandes`, `tickAppro`)
+partagent la même architecture d'ancrage absolu mais sont exclus par leur
+propre condition (`!modePilotageParCommande`) du mode de campagne testé
+(piloté par commande) : ils ne peuvent pas avoir causé la divergence
+observée. Ils partageraient le même risque structurel pour une campagne en
+mode continu — non rephasés ici faute d'évidence runtime et pour respecter
+le périmètre de cette passe ; à traiter si une campagne en mode continu
+devait un jour requérir la reproductibilité.
+
+### 11.4. Correction appliquée
+
+Dans `demarrerSimulation()`, immédiatement après `tempsDebutSimulation = time();`
+(qui sert déjà d'« origine logique du run », aucun nouveau champ
+`runStartSimulationTime` créé) et avant toute autre initialisation :
+chaque événement métier-pertinent listé ci-dessus est rephasé par
+`nomEvenement.restart()` — méthode standard AnyLogic 8.9.5 des événements
+`Timeout`/cycliques, qui recalcule la prochaine occurrence à partir de
+l'instant courant en réutilisant le délai/la période déjà configurés dans
+le modèle (aucune période, aucun MTBF/MTTR, aucune logique métier
+modifiée ; uniquement la phase temporelle). `tacticals` et
+`supervisorsMacro` sont recréés à chaque `demarrerSimulation()` (donc déjà
+« neufs »), mais leurs événements `OccurrenceAtTime` restent ancrés sur le
+temps absolu indépendamment de l'instant de création de l'agent — le
+`restart()` est donc nécessaire même pour ces populations. `postes` et
+`strategic` sont persistants d'un run à l'autre (jamais détruits/recréés) :
+sans `restart()`, leurs événements resteraient phasés sur le tout premier
+lancement du moteur AnyLogic dans la session.
+
+### 11.5. Traçabilité ajoutée
+
+`run:runStartSimulationTime` dans `exporterABoxRuntimeTTL`, valeur de
+`tempsDebutSimulation` (déjà l'instant où `modeExecution` passe à `true` et
+où la graine est appliquée) — aucun nouveau champ de référence temporelle,
+réutilisation de l'existant comme demandé.
+
+### 11.6. Test attendu après correction (à exécuter manuellement)
+
+Rejouer T1-A/T1-B avec `seedExperiment=1001` sur les deux runs, sans
+contrainte de clic simultané. Attendu, après normalisation
+`t_rel = t - tempsDebutSimulation` (ou directement en valeur absolue
+puisque les événements rephasés partent désormais tous de
+`tempsDebutSimulation`) : mêmes temps relatifs de création CMD_1…CMD_10 et
+REAPPRO_1, même ordre de traitement, mêmes durées tirées, mêmes décisions
+probabilistes, mêmes KPI à un même état terminal/snapshot.
+
+### 11.7. Non traité dans cette passe
+
+Le problème `demandGenerationFinished` observé à `RUN_FINALIZED` (mentionné
+par l'utilisateur) n'a pas été investigué ici — aucune dépendance technique
+démontrée avec le rephasage ci-dessus, traitement différé comme demandé.
+Un état latent distinct a été repéré sans être corrigé (hors périmètre) :
+`tProchainePanne`/`enPanne` (par poste) ne sont pas explicitement réinitialisés
+en tête de `demarrerSimulation()` ; une panne programmée lors d'un run
+précédent dans la même session AnyLogic pourrait laisser un état obsolète
+pour le run suivant. Non observé dans le test T1 (probablement parce que
+`tProchainePanne` restait à sa valeur initiale `-1` avant le premier run),
+mais à garder en tête si une session enchaîne plusieurs runs successifs
+sans rouvrir le modèle.

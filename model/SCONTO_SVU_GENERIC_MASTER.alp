@@ -9533,6 +9533,11 @@ public String exporterABoxRuntimeTTL(String raison) {
         aboxTriple(pw,run,"run:experimentSeed",aboxLit(seedExperiment>=0 ? String.valueOf(seedExperiment) : "NON_RENSEIGNEE"));
         aboxTriple(pw,run,"run:experimentSeedEffective",aboxLit(seedExperimentEffective>=0 ? String.valueOf(seedExperimentEffective) : "NON_APPLICABLE"));
         aboxTriple(pw,run,"run:experimentSeedSource",aboxLit(seedExperimentSource==null?"":seedExperimentSource));
+        // EXP-0.2 -- origine logique du run (audit T1-A/T1-B), pour diagnostiquer
+        // un futur ecart de reproductibilite : reutilise tempsDebutSimulation
+        // (deja l'instant ou modeExecution passe a true / graine appliquee),
+        // aucun nouveau champ de reference temporelle introduit.
+        aboxTriple(pw,run,"run:runStartSimulationTime",aboxDec(tempsDebutSimulation));
         aboxTriple(pw,run,"run:closureTimestamp",aboxLit(aboxIsoAt(time()))+"^^xsd:dateTime");
         aboxTriple(pw,run,"run:jsonPresetName",aboxLit(scenarioJsonFileName()));
         aboxTriple(pw,run,"run:modelArtifact",aboxLit("SCONTO_SVU_FINAL_VSM_FIX_CANDIDATE.alp"));
@@ -12976,6 +12981,44 @@ modeExecution = true;
 aboxRunId = "";
 dernierFichierABox = "";
 tempsDebutSimulation = time();
+
+// EXP-0.2 -- rephasage des evenements metier cycliques absolus (audit
+// EXPERIMENTATION_FOUNDATION.md, divergence runtime T1-A/T1-B a
+// seedExperiment identique). Ces evenements sont configures en AnyLogic
+// avec une premiere occurrence ancree sur le temps ABSOLU du moteur
+// (OccurrenceAtTime), independamment de l'instant ou l'utilisateur clique
+// sur Demarrer : deux runs strictement identiques (meme graine, meme JSON)
+// peuvent donc voir l'un de ces evenements se declencher a un instant
+// relatif different, ce qui modifie l'ordre des appels consommateurs du
+// RNG en aval (cas observe : cycleArbitrage/REAPPRO_1). restart() sans
+// argument reutilise le Timeout/la periode deja configures sur chaque
+// evenement, mais recalcule sa prochaine occurrence a partir de MAINTENANT
+// (tempsDebutSimulation ci-dessus) : aucune periode, aucun MTBF/MTTR,
+// aucune logique metier n'est modifiee, uniquement la phase temporelle.
+// Limite au sous-ensemble identifie comme metier-pertinent (mutation
+// d'etat ou de decision affectant le flux) dans EXPERIMENTATION_FOUNDATION.md ;
+// les evenements purement d'observation/export (recalculPI, observerPoste,
+// DashboardHistoryManager, bilanPeriodique, ExcelExportManager,
+// AnimationMessagesManager) ne sont pas rephases : preuve documentee qu'ils
+// ne modifient ni routage, ni production, ni stock, ni PI, ni RNG.
+for (TacticalAgent t : tacticals) {
+    if (t != null) t.cycleArbitrage.restart();
+}
+for (CoordinatorAgent c : supervisorsMacro) {
+    if (c == null) continue;
+    c.evaluerGoulots.restart();
+    c.evtTraitementAlertesTactiques.restart();
+    c.evtOrdonnancement.restart();
+}
+for (PosteGenericAgent p : postes) {
+    if (p != null) p.verifierPanne.restart();
+}
+if (strategic != null) {
+    strategic.analyseStrategique.restart();
+    strategic.prevoirEtAjuster.restart();
+}
+evtEvaluationRetardsCommandesOuvertes.restart();
+
 simStartRealMillis = 0L;
 initialiserHorlogeSimulation();
 actualiserTempsSimulation();

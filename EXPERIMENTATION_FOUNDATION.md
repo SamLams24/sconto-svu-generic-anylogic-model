@@ -1,5 +1,11 @@
 # EXP-0 — Fondation expérimentale (graine + condition terminale)
 
+**Statut : EXP-0 CLÔTURÉ** (voir §16 pour le résumé de clôture et le
+détail des validations runtime). Branche `feature/experimentation-foundation`
+non fusionnée vers `integration/claude-generic-merge` : prochaine étape
+prévue, hors périmètre de ce document, audit de complétude post-merge du
+master générique avant toute implémentation de E4.
+
 Branche `feature/experimentation-foundation`, créée à partir de
 `integration/claude-generic-merge` @ `ba05f348729ec607ae4716abf97db1f7b4a7cce6`.
 Fichier modifié : `model/SCONTO_SVU_GENERIC_MASTER.alp`.
@@ -1086,3 +1092,188 @@ Aucun mécanisme artificiel de restart moteur n'a été ajouté ni n'est
 recommandé pour forcer ce protocole : si l'étape 5 révèle un Cycle C, ce
 protocole est simplement rejoué avec cette information documentée, sans
 modification du modèle.
+
+### 14.8. Résultat runtime confirmé (Run 01, seed 1001) — clôt l'incertitude des §14.4/14.5
+
+**Étape 5 du protocole ci-dessus exécutée par l'utilisateur : résultat net,
+Cycle C.** Observations runtime rapportées :
+
+- `arreterSimulation()` se termine bien par `finishSimulation()`, comme
+  documenté en §14.1 ;
+- après `FINISHED`, le bouton natif Run de l'expérience AnyLogic reste
+  grisé ;
+- aucune action métier (y compris un nouvel appel à `demarrerSimulation()`)
+  ne permet de remettre le moteur en exécution sur la même instance ;
+- pour obtenir un nouveau run, l'utilisateur doit lancer une **nouvelle
+  exécution de l'expérience** — ce qui recrée `Main` et toutes ses
+  populations (`postes`, `opAgents`, etc.).
+
+**Conclusion définitive, remplaçant l'incertitude documentée en §14.4/14.5 :**
+**le Cycle B (`finishSimulation()` → rappel de `demarrerSimulation()` sur
+les mêmes `Main`/agents) n'est PAS accessible dans le workflow UI actuel.**
+Le workflow réellement utilisé est le **Cycle C** (nouvelle exécution de
+l'expérience → nouvelle instance de modèle, agents systématiquement neufs).
+Ceci confirme, sans l'avoir supposé à l'avance, la branche basse du tableau
+CYCLE A/B/C (§14.4) : sur Cycle C, la contamination d'état inter-run est
+structurellement impossible, `PosteGenericAgent` comme `OperationalAgent`.
+
+**Run 01 — preuves terminales (seed 1001, exécuté sur ce Cycle C) :**
+
+Démarrage :
+
+```
+[PANNE-RESET] postes=64 ; enPanne=0 ; echeancesInitialisees=0 ;
+nbPannesCumule=0 ; tempsArretCumule=0
+```
+
+Fin de run, ABox `RUN_FINALIZED` (`simulationTime=4984.900`) :
+
+```
+demandGenerationFinished = OUI
+terminalReached           = OUI
+openCustomerOrders        = 0
+openReplenishments        = 0
+entitiesInProcessAtPosts  = 0
+pendingBusinessActions    = 0
+terminalDiagnosticText    = "Etat terminal operationnel atteint."
+experimentSeed            = 1001
+experimentSeedEffective   = 1001
+experimentSeedSource      = PARAMETRE_EXPLICITE_seedExperiment
+runStartSimulationTime    = 54.4
+```
+
+Le WIP est descendu naturellement à 0 (dernière unité de réapprovisionnement,
+`REAPPRO_1_F_50` : étape sM1.5.1 à T=4754.595, sM1.6.1 à T=4764.595 ;
+historique final à T=4984.9 : Work In Process=0, Finished Stock=130) —
+aucun deadlock observé sur les dernières unités en cours de run. Ce résultat
+valide de façon combinée, sur un run réel complet : le reset EXP-0.4 au
+démarrage, la terminalité EXP-0.3 (`demandGenerationFinished`/`terminalReached`
+à `OUI` alors que `modeExecution` est nécessairement déjà `false` à l'export
+`RUN_FINALIZED`, cf. §12), et l'absence de régression sur le reste de la
+chaîne métier (stocks, réapprovisionnement, clôture de commandes).
+
+**Limite explicitement conservée — absence de panne observée pendant Run 01 :**
+aucune panne effective ne s'est produite pendant ce run. La machine
+concernée est configurée avec `MTBF=28800 s`, `MTTR=1800 s` ; la durée du
+run (`simulationTime=4984.9 s`, run start à `t=54.4`, soit ~4930 s
+d'activité) reste nettement inférieure au MTBF configuré — **ceci n'est pas
+une anomalie**, c'est le comportement statistiquement attendu d'une loi
+exponentielle de moyenne 28800 s sur une fenêtre ~6 fois plus courte.
+**MTBF/MTTR et le modèle de panne n'ont pas été modifiés pour provoquer
+artificiellement une panne**, conformément à la consigne. Conséquence
+directe pour la portée de la validation :
+
+- **VALIDÉ** — le reset initial `reinitialiserEtatPannePourNouveauRun()`
+  s'exécute correctement en tout début de run, sur une population réelle
+  de 64 postes, avec un diagnostic `[PANNE-RESET]` vierge conforme à
+  l'attendu ;
+- **VALIDÉ** — l'ensemble de la chaîne métier après ce reset (stocks,
+  réapprovisionnement, clôture de commandes, terminalité) est non
+  régressif et atteint l'état terminal sur un run réel complet ;
+- **NON APPLICABLE AU WORKFLOW ACTUEL** — le scénario que le reset protège
+  spécifiquement (panne en cours ou état panne hérité d'un run précédent
+  sur les mêmes agents, Cycle B) n'est pas accessible dans le workflow UI
+  actuel (Cycle C confirmé, §14.8 ci-dessus) : le risque qu'il neutralise
+  n'est donc pas actif aujourd'hui ;
+- **NON OBSERVÉ** — la dynamique panne → réparation elle-même
+  (`gererPanne()`, transition `enPanne=false→true→false`, incrément de
+  `nbPannes`/`tempsArretCumule`) n'a pas été exercée pendant Run 01, faute
+  de panne survenue dans la fenêtre du run ; elle reste donc non testée en
+  runtime par cette passe, sans lien avec le reset lui-même ;
+- `reinitialiserEtatPannePourNouveauRun()` reste une **protection
+  défensive**, correcte et sans effet indésirable, pour toute future
+  architecture qui réutiliserait la même instance `Main`/`PosteGenericAgent`
+  entre plusieurs runs (cf. §14.6, option E4 « boucle scriptée ») — ce
+  chemin de réutilisation n'a pas pu être exercé en runtime dans cette
+  passe car il n'est pas accessible aujourd'hui, pas parce que le reset
+  serait en défaut.
+
+**Statut final EXP-0.4 : EXP-0.4 VALIDÉ POUR LE WORKFLOW RUNTIME ACTUEL.**
+Aucune séquence panne → réparation → second run sur la même instance n'a
+été testée, et ce document ne prétend pas le contraire : cette combinaison
+spécifique reste non exercée, explicitement documentée comme telle.
+
+## 15. Points reportés pour l'audit de complétude post-merge
+
+Deux incohérences de métadonnées observées sur le manifeste/ABox du Run 01,
+**non corrigées dans cette passe** (documentation uniquement, portée hors
+EXP-0) :
+
+**A. Graine non reflétée dans le manifeste legacy.** Le manifeste de run
+continue d'exporter `graineAleatoire = NON_ACCESSIBLE_DANS_MAIN` (champ
+préexistant, antérieur à EXP-0, jamais modifié par cette fondation
+expérimentale — cf. §7, `run:randomSeed` documenté comme conservé à
+l'identique), alors que l'ABox EXP-0 exporte désormais, dans le même run,
+`experimentSeed=1001`, `experimentSeedEffective=1001`,
+`experimentSeedSource=PARAMETRE_EXPLICITE_seedExperiment`. Candidat d'audit
+post-merge : harmoniser le manifeste legacy avec la fondation
+expérimentale, sans décider ici lequel des deux champs doit changer.
+
+**B. Nom d'artefact obsolète dans le manifeste.** Le manifeste/ABox
+continue de porter `SCONTO_SVU_FINAL_VSM_FIX_CANDIDATE.alp` (champ
+`run:modelArtifact`, déjà documenté ailleurs — cf. audit DataCo — comme une
+étiquette codée en dur, non fiable comme preuve d'identité) alors que
+l'artefact générique réellement utilisé est `model/SCONTO_SVU_GENERIC_MASTER.alp`.
+Probable métadonnée legacy/figée, à vérifier pendant l'audit de complétude
+post-merge du master générique.
+
+Aucun des deux points n'a été corrigé ici : ni `.alp`, ni logique de
+manifeste, ni valeur exportée n'ont été modifiés dans cette passe.
+
+## 16. Clôture d'EXP-0
+
+**EXP-0 est clôturé.** Résumé des quatre passes :
+
+- **EXP-0** — fondation graine/RNG explicite (`seedExperiment`), condition
+  terminale opérationnelle, diagnostic, traçabilité export ; aucun mécanisme
+  E4/E5.
+- **EXP-0.1** — vérification de trois ambiguïtés : sémantique exacte de
+  `nombreCommandesOuvertes()`, couverture de la campagne bornée par
+  `generationDemandeTerminee()`, précision de la persistance JSON de la
+  graine (sérialisation en chaîne plutôt qu'en nombre à virgule flottante).
+- **EXP-0.2** — rephasage de huit événements métier cycliques relativement
+  au début logique du run (`restart()`), corrigeant une divergence de
+  trajectoire réelle observée à graine identique.
+- **EXP-0.3** — découplage de `generationDemandeTerminee()` vis-à-vis de
+  `modeExecution`, corrigeant `demandGenerationFinished`/`terminalReached`
+  restés à `NON` après `RUN_FINALIZED` malgré un run réellement vidé.
+- **EXP-0.4** — reset défensif de l'état runtime de panne par poste
+  (`reinitialiserEtatPannePourNouveauRun()`), audit exhaustif du cycle de
+  vie AnyLogic (EXP-0.4V), et validation runtime confirmant le workflow
+  Cycle C (nouvelle instance par exécution de l'expérience).
+
+**Validations runtime cumulées, toutes passes confondues :**
+
+- reproductibilité `seedExperiment=1001` vs `1001` : trajectoire métier
+  reproductible (EXP-0.2, après rephasage) ;
+- `seedExperiment=1002` : trajectoire stochastique différente, comme
+  attendu (EXP-0.3/EXP-0.4) ;
+- rephasage des événements métier cycliques : PASS ;
+- `demandGenerationFinished` : PASS (EXP-0.3) ;
+- `terminalReached` : PASS (EXP-0.3, confirmé à nouveau sur Run 01) ;
+- Run 01 final (seed 1001, terminal) : `openCustomerOrders=0`,
+  `openReplenishments=0`, `entitiesInProcessAtPosts=0`,
+  `pendingBusinessActions=0`.
+
+**EXP-0.5 n'est pas créé.** Les champs `OperationalAgent.etatHolon`,
+`tEntreeEtatCourant`, `nbGoulotsDetectes`, `nbAlertesEmises` restent
+identifiés (§13.9, précisé en §14.5) comme potentiellement run-scoped si
+une future architecture réutilise les mêmes agents — mais le workflow
+confirmé aujourd'hui est Cycle C, qui recrée systématiquement les agents :
+aucune correction n'est donc requise maintenant. Cette question est
+**reportée au choix d'architecture de la campagne E4** (§14.6) : si E4
+utilise des instances fraîches par réplication (Parameter Variation native,
+cohérent avec le Cycle C déjà confirmé comme workflow réel), aucune
+contamination inter-run n'est possible et le sujet reste clos ; si une
+future implémentation choisissait malgré tout une boucle scriptée
+réutilisant `Main`/les populations, un audit exhaustif de tous les états
+run-scoped (dont ces quatre champs) devra précéder cette campagne.
+
+**E4 et E5 restent non implémentés.** Aucune variable de décision, aucune
+boucle Pareto/AHP de campagne d'optimisation, aucune structure DataCo
+(`genererCommandeDataCoPourDate()`/`recalibrerPrevisionPourDate()`,
+absentes du master générique) n'a été introduite à aucune étape d'EXP-0.
+
+**Prochaine étape (hors périmètre de cette passe, non commencée ici) :**
+audit de complétude post-merge du master générique, avant toute
+rédaction/implémentation de E4 — incluant les deux points reportés en §15.

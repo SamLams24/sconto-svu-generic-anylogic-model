@@ -861,3 +861,228 @@ champs holoniques partagés avec la détection de goulots, pas des champs
 panne exclusifs, et les toucher engagerait une logique proche de
 l'ordonnancement/AER explicitement exclue de cette passe. À évaluer dans
 une éventuelle EXP-0.5, si le besoin est confirmé par un cas d'usage réel.
+**Précisé par l'audit EXP-0.4V (§14.5) : ces champs partagent exactement le
+même mécanisme de non-recréation que les champs panne de
+`PosteGenericAgent`, donc le même risque d'héritage inter-run, sous réserve
+du cycle réel confirmé en §14.**
+
+## 14. EXP-0.4V — Audit du cycle de vie et validation du protocole de test
+
+Passe strictement d'audit (aucune règle métier, RNG, MTBF/MTTR, terminalité
+EXP-0.3 ni ordonnancement touchés), visant à déterminer, par lecture du
+code et de la définition XML de l'expérience — jamais par supposition —
+quels scénarios de relance sont réellement accessibles avec le modèle et
+l'expérience `Simulation` actuels, avant de considérer EXP-0.4 comme validé.
+
+### 14.1. Chemin de finalisation audité (exhaustif)
+
+Recherche exhaustive dans tout le `.alp` des API de cycle de vie moteur
+(`finishSimulation`, `.finish(`, `stopSimulation`, `.stop(`,
+`runSimulation`, `.run(`, `pauseSimulation`, `.pause(`) : **un seul appel
+trouvé dans tout le fichier**, `finishSimulation()` en toute fin du corps
+de `arreterSimulation()`. Aucun autre appel d'API d'expérience nulle part
+ailleurs dans le modèle (le seul autre résultat, `suiviTempsReelTimer.stop()`,
+est un `javax.swing.Timer` d'affichage UI, sans rapport avec le moteur
+AnyLogic).
+
+Ordre exact du corps de `arreterSimulation()` (inchangé depuis EXP-0.3,
+relu intégralement pour cette passe) :
+
+1. `modeExecution = false;`
+2. `arrivee.reset();`
+3. `strategic.piGlobalCourant = strategic.calculerPIGlobal();`
+4. `board.logEvent("=== SIMULATION ARRETEE ...")`
+5. `finaliserRunEtExporter();` (capture Dashboard, export ABox `RUN_FINALIZED` si configuré, export Excel si actif — cf. §12.2)
+6. `boolean finishOk = finishSimulation();`
+7. `board.logEvent("[FINALIZE] finishSimulation demande = " + finishOk);`
+
+Le commentaire A.4-FIX-5B (préexistant, non modifié) documente une
+observation empirique antérieure à l'ajout de `finishSimulation()` : sans
+cet appel, le moteur AnyLogic continuait réellement de tourner après
+`modeExecution=false` (« [HOLON-STRAT]/[DIAG-BLOQUEE] observés ~9 s après
+"SIMULATION ARRETEE", interface active jusqu'à ~t+86 s ») — preuve directe
+que le flag métier `modeExecution` et l'état du moteur AnyLogic sont deux
+choses distinctes, et que seul `finishSimulation()` agit réellement sur le
+second. Le même commentaire indique explicitement que la disponibilité et
+le comportement précis de cette API pour AnyLogic 8.9.x n'ont **jamais été
+vérifiés par compilation locale**, seulement déduits de la documentation
+Agent — limite déjà connue et assumée avant cette passe, confirmée
+toujours vraie : aucun élément du dépôt (ni ce fichier, ni
+`reference/colleague/`) ne rapporte un test ayant vérifié ce qui se passe
+après `FINISHED`.
+
+### 14.2. Expérience `Simulation` auditée (définition XML)
+
+Une seule expérience existe dans tout le `.alp` : `<SimulationExperiment>`
+nommée `Simulation` (`Id=1780965648305`). Aucune `Parameter Variation`, ni
+Monte Carlo, ni expérience personnalisée. Éléments pertinents relus
+intégralement :
+
+- Aucun bloc `BeforeSimulationRunCode`/`AfterSimulationRunCode` (ou
+  équivalent) trouvé dans cette définition : l'expérience elle-même ne
+  contient aucun code de démarrage/fin automatique, aucun mécanisme de
+  relance ou de recréation programmée de `Main`.
+- `<RandomNumberGenerationType>fixedSeed</RandomNumberGenerationType>`,
+  `<SeedValue>1</SeedValue>` — configuration native déjà documentée en §2,
+  inchangée.
+- `<StopOption>Never</StopOption>` — le moteur n'a **aucune condition
+  d'arrêt automatique** (le `FinalTime=100.0` du panneau est sans effet
+  avec cette option) : le seul arrêt possible est manuel, via les
+  contrôles natifs AnyLogic ou via `arreterSimulation()`/`finishSimulation()`.
+- `<ExecutionMode>realTimeScaled</ExecutionMode>` — exécution en temps réel
+  mis à l'échelle, cohérent avec une session interactive où l'utilisateur
+  clique lui-même sur les boutons du modèle.
+- `<EnableDeveloperPanel>true</EnableDeveloperPanel>`,
+  `<ShowDeveloperPanelOnStart>false</ShowDeveloperPanelOnStart>` : le panneau
+  développeur AnyLogic (contrôles natifs Run/Pause/Step/**Restart**,
+  inspecteur de variables) est disponible mais pas affiché par défaut —
+  l'utilisateur peut l'ouvrir et déclencher un **Restart natif complet**
+  (destruction/recréation de `Main`) indépendamment des boutons du modèle,
+  mais rien dans le `.alp` ne force ni n'empêche ce choix.
+
+Aucun mécanisme, dans cette définition d'expérience, ne recrée ni ne
+détruit automatiquement `Main` entre deux clics sur les boutons du modèle.
+
+### 14.3. Boutons du modèle audités
+
+Deux `<Control Type="Button">` trouvés, tous deux sur la vue de présentation
+de `Main` (pas sur celle de l'expérience) :
+
+- `button2`, libellé « Demarrer simulation », `<Enabled>true</Enabled>`
+  (statique, non conditionné dans le XML), `ActionCode=demarrerSimulation();`
+- `button3`, libellé « Arreter et voir resultats », `<Enabled>true</Enabled>`
+  (statique), `ActionCode=arreterSimulation();`
+
+`demarrerSimulation()` n'est appelée depuis **aucun autre endroit** du
+modèle (ni `StartupCode`, ni aucune autre fonction) : le tout premier run
+requiert déjà un clic manuel sur ce bouton, exactement comme un éventuel
+second run. `demarrerSimulation()` elle-même ne contient **aucune garde
+sur l'état du moteur** (pas de test `if (isFinished()) ...` ou équivalent) :
+son exécution est purement conditionnée à la possibilité, pour AnyLogic,
+d'exécuter du code Java sur l'agent `Main` suite au clic — la question
+ouverte n'est pas « le bouton peut-il être cliqué » mais « les actions
+qu'il déclenche (notamment les `.restart()` sur les événements `Timeout`,
+non protégés par `try/catch` dans le bloc EXP-0.2) peuvent-elles réussir
+après `FINISHED` ».
+
+**Marqueur de diagnostic utile, identifié par cet audit (à utiliser dans le
+protocole §14.7) :** le `StartupCode` de `Main` (exécuté une seule fois, à
+la création de l'agent) journalise
+`"SCONTO-VSM pret. Configurez vos postes puis vos scenarios."` et navigue
+vers `viewEdition`. Si un « Run B » est précédé de la réapparition de ce
+message et de cette navigation dans le journal, cela prouve empiriquement
+qu'un nouveau `Main` a été recréé (Restart natif ou nouvelle exécution de
+l'expérience, Cycle C) — pas une simple réutilisation. Si ce message
+n'apparaît pas entre l'arrêt de Run A et le démarrage de Run B, cela
+constitue une preuve empirique forte de réutilisation du même `Main`
+(Cycle A ou B).
+
+### 14.4. CYCLE A / B / C
+
+| Cycle | Description | Réellement accessible aujourd'hui | Mêmes `Main`/`PosteGenericAgent` | Reset EXP-0.4 utile | Test runtime pertinent |
+|---|---|---|---|---|---|
+| **A** — relance avant `finishSimulation()` | Moteur encore RUNNING/PAUSED (ex. clic sur « Démarrer » alors que « Arrêter » n'a pas encore été cliqué, ou après une simple pause native) et `demarrerSimulation()` rappelée | Oui, chemin trivialement accessible (aucun garde n'empêche un second clic sur le bouton pendant que le moteur tourne) | Oui | Oui — un tel appel repasserait par `demarrerSimulation()` sans qu'aucune panne n'ait pu se réinitialiser autrement | Oui, mais ne correspond pas au protocole T1/EXP-0.3 déjà rapporté (qui implique un arrêt explicite entre les runs) |
+| **B** — relance après `finishSimulation()`, mêmes agents | Moteur `FINISHED` ; `demarrerSimulation()` rappelée sur le même `Main` sans Restart natif ni fermeture d'AnyLogic | **Probable mais non prouvé par le seul code** — aucune garde bloquante trouvée côté modèle (§14.1/14.3) ; comportement du moteur AnyLogic lui-même après `FINISHED` non vérifiable par lecture statique (limite déjà documentée en A.4-FIX-5B, §14.1) | Oui (si accessible) | Oui — c'est exactement le scénario que le reset EXP-0.4 protège | **Le seul qui restait réellement à confirmer en runtime** |
+| **C** — nouvelle exécution de l'expérience | Restart natif AnyLogic (panneau développeur) ou relance complète de l'expérience `Simulation` | Oui, toujours accessible (fonctionnalité native AnyLogic, indépendante du modèle) | Non — `Main` et toutes ses populations (dont `postes`, `opAgents`) sont recréés, tous les champs reprennent leur valeur initiale déclarée | Non nécessaire sur ce chemin (mais sans effet négatif si présent) | Non pertinent pour valider EXP-0.4 spécifiquement (la contamination inter-run est structurellement impossible sur ce chemin) |
+
+### 14.5. Conclusion sur l'ancien test P2
+
+**P2 n'est ni confirmé inapplicable, ni prouvé applicable par le seul
+audit statique** — il reste conditionné à la confirmation runtime du Cycle
+B (§14.4). Contrairement à une supposition prématurée, rien dans le code
+n'indique que `finishSimulation()` bloque un second appel à
+`demarrerSimulation()` sur les mêmes agents (aucune garde, aucun
+`try/catch` autour des appels sensibles qui auraient pu signaler un échec
+anticipé) — mais rien ne le garantit non plus, la seule zone d'incertitude
+étant le comportement interne du moteur AnyLogic lui-même après `FINISHED`,
+hors de portée d'une lecture de fichier `.alp`. **Élément indirect en
+faveur de l'accessibilité du Cycle B** : les tests runtime déjà rapportés
+par l'utilisateur pour EXP-0.2 (T1-A/T1-B) et EXP-0.3 (seed 1001 vs 1001,
+puis 1002) décrivent plusieurs runs successifs « dans la même session »,
+sans mention de fermeture/réouverture d'AnyLogic ni de Restart natif, et
+sans qu'aucune exception ou blocage n'ait été rapporté — cohérent avec un
+Cycle B fonctionnel, mais non équivalent à une preuve directe (les
+divergences observées en EXP-0.2/0.3 étaient des bugs logiques, pas des
+échecs d'exécution). **Le protocole P1/P2/P3 (§14.7) reste donc le test à
+exécuter pour trancher définitivement**, avec le marqueur `StartupCode`
+(§14.3) comme preuve empirique immédiate du cycle réellement emprunté.
+
+**Champ `OperationalAgent` (§13.9, rappel) :** confirmé par cet audit —
+`opAgents` (population réelle, distincte des listes dérivées
+`agentsSuperviseurs`/`agentsExecution`) est détruit/recréé exactement au
+même endroit et par la même fonction que `postes`
+(`clearScenarioBeforeJsonLoad()`, section « 2. Supprimer les
+OperationalAgents dynamiques » / « 3. Supprimer les postes »), jamais par
+`demarrerSimulation()`. `etatHolon`/`tEntreeEtatCourant`/
+`nbGoulotsDetectes`/`nbAlertesEmises` partagent donc structurellement
+exactement le même risque d'héritage inter-run que les six champs panne
+corrigés en EXP-0.4, sous réserve du même Cycle B à confirmer. Toujours
+non modifié dans cette passe (hors périmètre, cf. §13.9) — aucune EXP-0.5
+créée automatiquement, conformément à la consigne.
+
+### 14.6. Futures campagnes E4 (réponse architecturale, sans implémentation)
+
+Aucune expérience `Parameter Variation`/Monte Carlo/personnalisée n'existe
+aujourd'hui dans le `.alp` (§14.2) : l'infrastructure d'une campagne
+automatisée 144 configurations × réplications reste entièrement à créer,
+quel que soit le choix retenu. Deux options architecturales réelles, ni
+choisies ni implémentées ici :
+
+- **Option C (Parameter Variation / expérience multi-run AnyLogic native)**
+  — approche idiomatique standard d'AnyLogic pour ce type d'étude
+  factorielle : crée par construction une nouvelle instance de modèle par
+  run (donc équivalente à l'option A côté cycle de vie), avec des agents
+  systématiquement neufs. Sur ce chemin, le reset EXP-0.4 est **une
+  protection défensive**, pas une nécessité stricte (la contamination
+  inter-run y est structurellement impossible).
+- **Option B (boucle scriptée réutilisant les mêmes agents dans une seule
+  expérience `Simulation`)** — architecturalement possible avec le code
+  actuel (rien n'empêche d'appeler `demarrerSimulation()`/`arreterSimulation()`
+  en boucle), mais non idiomatique pour 144 configurations et plus fragile.
+  Sur ce chemin, le reset EXP-0.4 est **une nécessité stricte** : sans lui,
+  une contamination d'état panne entre configurations fausserait
+  silencieusement les résultats de la campagne.
+
+**Conclusion : réponse D nuancée, pas un choix tranché.** Impossible de
+conclure à ce stade lequel des deux sera retenu pour E4 (décision hors
+périmètre de cette passe). Le reset EXP-0.4 est donc, selon l'option future
+retenue, soit une protection défensive (option C), soit une nécessité
+stricte (option B) — jamais inutile dans les deux cas, ce qui justifie de
+le garder tel quel indépendamment de ce choix futur.
+
+### 14.7. Protocole runtime retenu
+
+Le code ne permet pas d'exclure ni de confirmer formellement le Cycle B
+(§14.4/14.5) : le protocole **CAS 1** (mêmes agents réellement
+réutilisables) reste donc le protocole à exécuter, complété par le
+marqueur `StartupCode` (§14.3) comme premier contrôle immédiat :
+
+1. Démarrer Run A (`seedExperiment=1001`). Vérifier `[PANNE-RESET]` vierge
+   (`enPanne=0 ; echeancesInitialisees=0 ; nbPannesCumule=0 ;
+   tempsArretCumule=0`).
+2. Laisser tourner assez longtemps pour observer au moins une panne
+   (`[PANNE]` dans le journal, `nbPannes`/`tempsArretCumule` > 0 sur au
+   moins un poste).
+3. Cliquer « Arrêter et voir résultats ».
+4. Cliquer à nouveau « Démarrer simulation » (Run B, même
+   `seedExperiment=1001`), **sans fermer AnyLogic ni utiliser Restart**.
+5. **Premier contrôle, avant tout autre** : le message
+   `"SCONTO-VSM pret. Configurez vos postes puis vos scenarios."` est-il
+   réapparu dans le journal entre l'étape 3 et l'étape 4 ?
+   - **Si oui** : `Main` a été recréé (Cycle C, pas Cycle B) — le test tel
+     que formulé ne s'applique pas ; documenter cette observation et noter
+     que la contamination inter-run est de toute façon structurellement
+     impossible sur ce chemin (§14.4).
+   - **Si non** : Cycle B confirmé empiriquement — poursuivre.
+6. Vérifier `[PANNE-RESET]` de Run B : doit être vierge, identique à
+   l'étape 1, malgré la panne observée en Run A.
+7. Sous réserve de l'ordre global des appels RNG déjà validé par EXP-0.2,
+   comparer les premières échéances de panne de Run B à celles d'un run
+   frais seed 1001 : doivent correspondre.
+8. Run C, même session, `seedExperiment=1002` : `[PANNE-RESET]` vierge,
+   échéances stochastiques différentes de 1001.
+
+Aucun mécanisme artificiel de restart moteur n'a été ajouté ni n'est
+recommandé pour forcer ce protocole : si l'étape 5 révèle un Cycle C, ce
+protocole est simplement rejoué avec cette information documentée, sans
+modification du modèle.

@@ -35,6 +35,20 @@ d'exporter la TTL `RUN_FINALIZED`. Corrigé en retirant la garde
 rephasage EXP-0.2, règles métier, stocks, KPI et ordonnancement non
 touchés.
 
+**EXP-0.4 (§13, après validation runtime complète d'EXP-0.3)** a corrigé un
+troisième défaut réel, distinct des deux précédents : l'état RUNTIME de
+panne par poste (`enPanne`, `tProchainePanne`, `tFinPanne`, `nbPannes`,
+`tempsArretCumule`, `tDebutPanneCourante`) n'était jamais réinitialisé entre
+deux runs successifs de la même session AnyLogic, `postes` n'étant détruit/
+recréé qu'au chargement d'un nouveau scénario JSON, jamais par
+`demarrerSimulation()`. Un 2ᵉ run pouvait donc hériter d'une panne en cours
+ou d'échéances/compteurs du run précédent, avec un impact démontré sur
+`calculerDisponibiliteMachinesOEE()` (donc l'OEE/AM). Corrigé par une
+fonction dédiée `reinitialiserEtatPannePourNouveauRun()`, appelée avant
+`modeExecution=true` et avant `verifierPanne.restart()` ; MTBF/MTTR, RNG,
+rephasage EXP-0.2, terminalité EXP-0.3, KPI/SCOR et ordonnancement non
+touchés.
+
 Aucune de ces vérifications/corrections n'a nécessité d'implémenter E4/E5.
 
 ## 1. Sources d'aléatoire trouvées
@@ -490,7 +504,7 @@ pour le run suivant. Non observé dans le test T1 (probablement parce que
 `tProchainePanne` restait à sa valeur initiale `-1` avant le premier run),
 mais à garder en tête si une session enchaîne plusieurs runs successifs
 sans rouvrir le modèle. **Toujours non traité après EXP-0.3** : reporté à
-EXP-0.4, pour la même raison de séparation des causes.
+EXP-0.4. **Traité en EXP-0.4, §13.**
 
 ## 12. EXP-0.3 — Découplage de la fin de génération de demande vis-à-vis de `modeExecution`
 
@@ -616,4 +630,234 @@ l'état du système, pas l'état du bouton Exécution.
 
 `tProchainePanne`/`enPanne` entre runs successifs (§11.7) reste un point
 latent distinct, non corrigé ici. Reporté à EXP-0.4, pour garder une cause
-par changement.
+par changement. **Traité en EXP-0.4, §13.**
+
+## 13. EXP-0.4 — Réinitialisation de l'état runtime de panne entre runs successifs
+
+Réalisée après validation runtime complète d'EXP-0.3 (build PASS ; seed
+1001 vs 1001 reproductible ; seed 1002 divergent ; rephasage EXP-0.2 PASS ;
+`demandGenerationFinished`/`terminalReached` PASS ; `RUN_FINALIZED` sur run
+vidé : `openCustomerOrders=openReplenishments=entitiesInProcessAtPosts=
+pendingBusinessActions=0`). Portée strictement limitée à l'état runtime de
+panne par poste ; RNG, `seedExperiment`, rephasage EXP-0.2, terminalité
+EXP-0.3, MTBF/MTTR, KPI/SCOR, E4/E5 et ordonnancement non touchés.
+
+### 13.1. État panne audité
+
+**Champs runtime confirmés sur `PosteGenericAgent`** (six champs, IDs
+consécutifs `1791000007005`–`1791000007010` dans le `.alp`, ajoutés comme un
+bloc cohérent) :
+
+| Champ | Type | Valeur initiale déclarée | Sites d'écriture | Sites de lecture (hors le champ lui-même) | Réinitialiser par run ? |
+|---|---|---|---|---|---|
+| `enPanne` | `boolean` | `false` | `gererPanne()` (passe à `true`/`false`) | `capacité du delay` (0 si en panne), diagnostic dialogue (état poste), `calculerDisponibiliteMachinesOEE()` | **Oui** — sinon un poste peut démarrer un nouveau run déjà déclaré en panne |
+| `tProchainePanne` | `double` | `-1` | `gererPanne()` (tirage MTBF, `getDefaultRandomGenerator()`) | `gererPanne()` (garde `if (tProchainePanne < 0)` déclenchant le tout premier tirage) | **Oui** — sinon aucune nouvelle première échéance n'est jamais retirée pour le nouveau run |
+| `tFinPanne` | `double` | `-1` | `gererPanne()` (tirage MTTR) | `gererPanne()`, diagnostic dialogue (temps avant reprise affiché) | **Oui** — échéance de fin de panne héritée du run précédent, sans rapport avec le nouveau |
+| `nbPannes` | `int` | `0` | `gererPanne()` (incrément à la réparation) | diagnostic dialogue, alimente potentiellement dashboard/exports (aucun export ABox/Excel dédié trouvé au-delà du dialogue de diagnostic) | **Oui** — compteur cumulatif, doit repartir à 0 |
+| `tempsArretCumule` | `double` | `0` | `gererPanne()` (incrément à la réparation) | diagnostic dialogue, **`calculerDisponibiliteMachinesOEE()`** (numérateur de l'indisponibilité) | **Oui** — impact KPI démontré, voir §13.5 |
+| `tDebutPanneCourante` | `double` | `-1` | `gererPanne()` (à l'entrée en panne) | `gererPanne()` (calcul de la durée à la réparation), `calculerDisponibiliteMachinesOEE()` (arrêt en cours) | **Oui** — sinon une durée d'arrêt aberrante peut être calculée (delta avec un instant d'un run antérieur) |
+
+**Configuration machine, volontairement NON touchée** (état A, distincte de
+l'état runtime B) : `mtbfHeures`, `mttrHeures` — `Parameter`/`Variable`
+chargés depuis le JSON de scénario (`p.mtbfHeures = jsonDouble(pm,
+"mtbfHeures", 0.0);`, et symétriquement `mttrHeures`), jamais réécrits
+ailleurs dans le `.alp`. Ces champs appartiennent à `clearScenarioBeforeJsonLoad()`
+(rechargement de scénario), pas à `demarrerSimulation()`.
+
+**Recherche élargie au-delà des six noms fournis** (grep exhaustif sur les
+racines `panne`/`Panne`/`PANNE`, `mtbf`/`MTBF`, `mttr`/`MTTR`, `arret`/`ARRET`,
+`disponib`/`DISPONIB`, `reparation`/`Reparation`) : aucun autre champ
+d'état runtime de panne au niveau `PosteGenericAgent` n'a été trouvé.
+`moyenneMTBF`/`moyenneMTTR` dans `gererPanne()` sont des variables locales
+recalculées à chaque appel depuis `mtbfHeures`/`mttrHeures`, pas des champs
+d'agent — rien à réinitialiser.
+
+**Trouvaille distincte, hors périmètre de cette passe :**
+`signalerPanne(PosteGenericAgent, double)` sur `OperationalAgent` (appelée
+par `gererPanne()` à l'entrée en panne) écrit `etatHolon = "PANNE"`,
+`tEntreeEtatCourant = time()`, `nbGoulotsDetectes++`, `nbAlertesEmises++`.
+Ces quatre champs vivent sur `OperationalAgent`, pas `PosteGenericAgent`,
+et sont **partagés avec la détection de goulots** (`etatHolon` prend aussi
+les valeurs `"ACTIF"`, `"EN_PAUSE"`, `"PRIORITAIRE"`, `"IDLE"` ailleurs dans
+le même agent ; `nbGoulotsDetectes`/`nbAlertesEmises` sont incrémentés une
+seconde fois par un autre chemin, non lié aux pannes). Ce ne sont donc pas
+des champs *exclusivement* panne, et les toucher reviendrait à modifier un
+état holonique/AER plus large — explicitement hors scope de cette passe
+(« ne pas toucher... ordonnancement »). **Non corrigé ici, à traiter dans
+une passe dédiée (EXP-0.5) si le besoin est confirmé**, avec le même souci
+de séparation des causes que pour EXP-0.2/0.3/0.4.
+
+### 13.2. Reset appliqué
+
+Nouvelle fonction `reinitialiserEtatPannePourNouveauRun()` (Main), au même
+niveau et juste après `reinitialiserPolitiquesStockPourRun()` (fonction
+existante suivant exactement le même patron : état runtime remis à l'état
+d'un agent neuf, état de configuration non touché) :
+
+```java
+void reinitialiserEtatPannePourNouveauRun() {
+    for (PosteGenericAgent p : postes) {
+        if (p == null) continue;
+        p.enPanne = false;
+        p.tProchainePanne = -1;
+        p.tFinPanne = -1;
+        p.nbPannes = 0;
+        p.tempsArretCumule = 0.0;
+        p.tDebutPanneCourante = -1;
+    }
+}
+```
+
+Valeurs conformes aux valeurs initiales déclarées de chaque champ (§13.1),
+confirmées par audit avant écriture — pas recopiées aveuglément depuis la
+demande initiale.
+
+**Le premier tirage de panne du nouveau run n'est PAS pré-tiré ici** :
+`gererPanne()` (logique inchangée) détecte `tProchainePanne < 0` à son
+prochain appel et tire alors la première échéance avec le générateur par
+défaut, désormais re-seedé pour ce run (§13.4).
+
+### 13.3. Diagnostic ajouté
+
+Fonction pure `diagnosticEtatPannesDebutRun()` (Main, aucune écriture, aucun
+tirage RNG), retournant une chaîne de contrôle, journalisée une fois par run
+via `board.logEvent()` :
+
+```
+[PANNE-RESET] postes=<n> ; enPanne=<compte> ; echeancesInitialisees=<compte> ;
+nbPannesCumule=<compte> ; tempsArretCumule=<compte>
+```
+
+Pas d'infrastructure d'export dédiée (pas de nouveau champ ABox/Excel) :
+une ligne de log suffit au contrôle manuel demandé. Sur un run frais après
+ce correctif, les quatre compteurs doivent tous être à `0`.
+
+### 13.4. Ordre dans `demarrerSimulation()` (audité avant modification)
+
+Ordre réel confirmé par lecture du code (légèrement différent de l'ordre
+conceptuel proposé, sans conséquence : l'application de la graine et le
+passage `modeExecution=false` sont deux opérations indépendantes qui n'ont
+pas besoin d'être dans un ordre particulier l'une par rapport à l'autre,
+tant que la graine précède tout tirage RNG — ce qui est déjà le cas) :
+
+1. Application de `seedExperiment` (`getDefaultRandomGenerator().setSeed(...)`) — tout en tête de la fonction, avant tout autre code (inchangé depuis EXP-0).
+2. `modeExecution = false` (phase de préparation, inchangé).
+3. Resets généraux du run (`commandesGenereesDepuisDemarrage=0`, `board.reset()`, resets PI/SCOR, `resetSuiviSimulation()`, etc., inchangés).
+4. `reinitialiserPolitiquesStockPourRun()` puis, **immédiatement après, `reinitialiserEtatPannePourNouveauRun()` (NOUVEAU) et le log `[PANNE-RESET]`**.
+5. Reconstruction des agents tactiques/coordinateurs (`initTacticals()`, `initSupervisorsMacro()`, `realignerArchitectureAgents()`, inchangé — `postes` n'est pas recréé ici, seuls `tacticals`/`supervisorsMacro` le sont).
+6. `modeExecution = true`.
+7. Bloc EXP-0.2 : `tempsDebutSimulation = time();` puis rephasage `restart()` de tous les événements cycliques métier, dont `p.verifierPanne.restart()` pour chaque poste.
+8. Premiers tirages de panne du nouveau run, plus tard pendant l'exécution, via les appels cycliques normaux de `verifierPanne`/`gererPanne()`.
+
+Le reset (étape 4) intervient donc bien avant `modeExecution=true` (étape 6)
+et avant `verifierPanne.restart()` (étape 7) : aucun tirage RNG de panne du
+nouveau run ne peut avoir lieu avant la remise à zéro.
+
+### 13.5. Impact sur KPI/OEE (vérifié explicitement)
+
+`tempsArretCumule`, `enPanne`, `tDebutPanneCourante` sont lus par
+`calculerDisponibiliteMachinesOEE()` (Bloc « C01 — Availability correcte
+pour l'OEE ») :
+
+```java
+double horizon = tempsDebutSimulation >= 0 ? Math.max(0.0, time() - tempsDebutSimulation) : 0.0;
+...
+double down = Math.max(0.0, p.tempsArretCumule);
+if (p.enPanne && p.tDebutPanneCourante >= 0) down += Math.max(0.0, time() - p.tDebutPanneCourante);
+dispo = Math.max(0.0, Math.min(1.0, 1.0 - down / horizon));
+```
+
+`oeeDisponibilite()` appelle directement cette fonction, et `oee()` =
+`oeeDisponibilite() * oeePerformance() * oeeQualite()`. **Impact confirmé
+avant correctif** : `horizon` est borné par `tempsDebutSimulation` du run
+COURANT (déjà remis à `time()` à chaque run), alors que `down` intégrait un
+`tempsArretCumule` hérité du run précédent — un numérateur inchangé pour un
+dénominateur plus petit, donc une disponibilité/OEE artificiellement
+dégradée dès le début d'un 2ᵉ run, sans rapport avec son activité réelle.
+`nbPannes` n'alimente aucun calcul PI/SCOR/OEE trouvé au-delà du dialogue de
+diagnostic (§13.1) — son impact est donc traçabilité/lisibilité, pas KPI.
+`calculerDisponibiliteMachinesMoyenne()` (AM.3.9 / `PROXY.AM.DISPONIBILITE_MACHINE`)
+n'est **pas** concernée : elle n'utilise que `MachineSim.disponibiliteTheorique()`
+(formule MTBF/(MTBF+MTTR), configuration pure), jamais l'état runtime.
+Après ce correctif, un nouveau run démarre avec `tempsArretCumule=0` et
+`enPanne=false` sur tous les postes : l'OEE du nouveau run ne peut plus être
+contaminé par le run précédent.
+
+### 13.6. Cas d'un run arrêté pendant une panne (raisonné, pas exécuté en runtime dans cette passe)
+
+Run 1 s'arrête avec `enPanne=true`, `tFinPanne > time()` sur au moins un
+poste (arrêt manuel avant réparation). Avant ce correctif : Run 2, démarré
+dans la même session, aurait vu ce(s) poste(s) démarrer avec `enPanne=true`
+hérité, une capacité de `delay` à 0 dès `t=0` du nouveau run (`enPanne ?
+0 : capaciteSimultanee`), sans qu'aucun événement de panne ne se soit
+produit dans ce nouveau run. Après ce correctif :
+`reinitialiserEtatPannePourNouveauRun()` remet `enPanne=false`,
+`tProchainePanne=-1`, `tFinPanne=-1`, `tDebutPanneCourante=-1`,
+`nbPannes=0`, `tempsArretCumule=0` sur tous les postes avant
+`modeExecution=true` — le poste démarre disponible, et la nouvelle première
+panne (si `mtbfHeures>0`) sera tirée par `gererPanne()` à partir de la
+graine du Run 2 (`getDefaultRandomGenerator()` re-seedé en tête de
+`demarrerSimulation()`), jamais héritée du Run 1.
+
+### 13.7. Protocole de tests runtime à exécuter (P1/P2/P3)
+
+**TEST P1 — run frais**, `seedExperiment=1001` : au début du run,
+`[PANNE-RESET]` doit afficher `enPanne=0 ; echeancesInitialisees=0 ;
+nbPannesCumule=0 ; tempsArretCumule=0` pour tous les postes.
+
+**TEST P2 — deux runs successifs dans la même session**, Run A puis Run B,
+`seedExperiment=1001` les deux fois, sans fermer AnyLogic ni recréer Main.
+Laisser Run A produire au moins une panne si la configuration le permet,
+l'arrêter (éventuellement pendant une panne en cours, cf. §13.6), puis
+relancer Run B. Attendu : `[PANNE-RESET]` de Run B identique à celui d'un
+run frais (§TEST P1) ; sous réserve de l'ordre global des appels RNG déjà
+validé par EXP-0.2, les premières échéances de panne de Run B doivent
+correspondre à celles d'un run frais seed 1001.
+
+**TEST P3 — seed différente**, même session, nouveau run `seedExperiment=1002` :
+état initial de panne toujours vierge (mêmes compteurs à 0), mais nouvelles
+échéances stochastiques (différentes de 1001), cohérent avec EXP-0.3/EXP-0.2.
+
+### 13.8. Cycle de vie AnyLogic pour deux runs successifs
+
+Confirmé par lecture du code (A.4-FIX-4/5, cf. §11 et le corps
+d'`arreterSimulation()`) : le bouton actif « Arrêter et voir résultats »
+appelle `finaliserRunEtExporter()` PUIS `finishSimulation()` (API AnyLogic
+`Agent`, héritée par `Main`), qui « termine la simulation après l'événement
+courant sans détruire immédiatement le modèle, laissant les résultats
+consultables » (commentaire A.4-FIX-5B, non modifié ici). Cette API ne
+détruit ni `Main` ni les populations (`postes`, `tacticals`, etc.) — c'est
+précisément ce qui rend `postes` réutilisable (et donc son état runtime de
+panne potentiellement contaminant) d'un run au suivant.
+
+**Ce qui reste incertain, non vérifiable par la seule lecture du code** :
+le comportement exact du moteur AnyLogic une fois l'état FINISHED atteint
+— en particulier si le bouton « Démarrer » (lié à `demarrerSimulation()`,
+qui appelle `.restart()` sur des événements `Timeout`) reste pleinement
+fonctionnel pour planifier de nouveaux événements après `finishSimulation()`,
+ou si un comportement de moteur AnyLogic spécifique intervient à ce stade.
+Cette question relève du comportement runtime du moteur, pas du code du
+modèle, et ne peut être tranchée qu'à l'exécution. **Élément en faveur du
+scénario A (réutilisation directe des mêmes agents, sans `Restart` moteur
+ni fermeture d'AnyLogic)** : les tests runtime déjà rapportés par
+l'utilisateur pour EXP-0.2 (T1-A/T1-B) et EXP-0.3 (seed 1001 vs 1001, puis
+1002) décrivent déjà plusieurs runs successifs « dans la même session »
+sans mention de fermeture/réouverture du modèle ni de `Restart` moteur —
+cohérent avec le scénario A. Ce correctif protège ce chemin, le plus
+probable d'après cette pratique déjà observée ; le protocole P1/P2/P3
+ci-dessus (§13.7), à exécuter par l'utilisateur, confirmera ou infirmera
+définitivement le cycle réellement utilisé. Si un `Restart` moteur complet
+s'avérait être la pratique réelle (scénario B, recréation de `Main` et donc
+de `postes`), ce correctif resterait sans effet négatif (les champs
+seraient de toute façon déjà à leur valeur initiale déclarée) mais
+deviendrait redondant plutôt qu'indispensable — l'audit ne permet pas de
+trancher entre les deux sans un test runtime réel.
+
+### 13.9. Non traité dans cette passe
+
+Le finding `OperationalAgent`/`etatHolon`/`nbGoulotsDetectes`/
+`nbAlertesEmises` (§13.1) reste explicitement hors périmètre : ce sont des
+champs holoniques partagés avec la détection de goulots, pas des champs
+panne exclusifs, et les toucher engagerait une logique proche de
+l'ordonnancement/AER explicitement exclue de cette passe. À évaluer dans
+une éventuelle EXP-0.5, si le besoin est confirmé par un cas d'usage réel.

@@ -4074,6 +4074,63 @@ void reinitialiserPolitiquesStockPourRun() {
     }
 }
 
+// EXP-0.4 -- l'etat RUNTIME de panne (enPanne, echeances, compteurs, duree
+// d'arret cumulee) appartient au run, pas a la configuration machine
+// (mtbfHeures/mttrHeures, JAMAIS touches ici : ce sont des Parameters
+// charges depuis le JSON de scenario, distincts de l'etat runtime).
+// postes n'est detruit/recree que par clearScenarioBeforeJsonLoad() (au
+// chargement d'un nouveau scenario JSON), jamais par demarrerSimulation() :
+// sans cette remise a zero explicite, un 2e run dans la meme session
+// AnyLogic heriterait de l'etat panne (voire d'une panne EN COURS) du run
+// precedent, avec deux consequences demontrees par audit :
+//  - gererPanne() ne retirerait jamais une premiere echeance a la graine du
+//    nouveau run tant que tProchainePanne resterait a une valeur heritee
+//    (la premiere echeance n'est tiree que si tProchainePanne < 0, voir son
+//    corps -- logique volontairement non modifiee ici) ;
+//  - calculerDisponibiliteMachinesOEE() (donc oeeDisponibilite()/oee())
+//    additionne p.tempsArretCumule (et l'arret en cours si p.enPanne) au
+//    numerateur d'une disponibilite dont le denominateur (horizon) ne
+//    compte que le temps ecoule depuis tempsDebutSimulation DU RUN COURANT
+//    -- un tempsArretCumule herite du run precedent fausserait directement
+//    l'OEE/AM du nouveau run.
+// Reutilise le meme point d'appel que reinitialiserPolitiquesStockPourRun()
+// dans demarrerSimulation(), AVANT modeExecution=true et AVANT
+// verifierPanne.restart() (bloc EXP-0.2), pour qu'aucun tirage RNG de panne
+// du nouveau run ne puisse avoir lieu avant ce reset.
+void reinitialiserEtatPannePourNouveauRun() {
+    for (PosteGenericAgent p : postes) {
+        if (p == null) continue;
+        p.enPanne = false;
+        p.tProchainePanne = -1;
+        p.tFinPanne = -1;
+        p.nbPannes = 0;
+        p.tempsArretCumule = 0.0;
+        p.tDebutPanneCourante = -1;
+    }
+}
+
+// EXP-0.4 -- diagnostic PUR (aucune ecriture, aucun tirage RNG) permettant
+// de verifier au debut d'un run que l'etat panne de tous les postes est
+// bien vierge. Appele juste apres reinitialiserEtatPannePourNouveauRun()
+// dans demarrerSimulation() et journalise via board.logEvent() ; pas
+// d'infrastructure d'export dediee, la ligne de log suffit au controle
+// manuel demande.
+String diagnosticEtatPannesDebutRun() {
+    int nEnPanne = 0, nEcheanceInitialisee = 0, nPannesCumulees = 0, nArretCumule = 0;
+    for (PosteGenericAgent p : postes) {
+        if (p == null) continue;
+        if (p.enPanne) nEnPanne++;
+        if (p.tProchainePanne >= 0) nEcheanceInitialisee++;
+        if (p.nbPannes > 0) nPannesCumulees++;
+        if (p.tempsArretCumule > 0) nArretCumule++;
+    }
+    return "postes=" + postes.size()
+        + " ; enPanne=" + nEnPanne
+        + " ; echeancesInitialisees=" + nEcheanceInitialisee
+        + " ; nbPannesCumule=" + nPannesCumulees
+        + " ; tempsArretCumule=" + nArretCumule;
+}
+
 void appliquerStocksInitiauxConfig() {
     // ETAPE 2 -- règle de réinitialisation reproductible.
     // Le stock produit fini possède une valeur globale explicite (chargée du
@@ -12980,6 +13037,13 @@ if (scenarioProfilSelectionne != null && estScenarioCasTest(scenarioProfilSelect
 }
 
 reinitialiserPolitiquesStockPourRun();
+// EXP-0.4 -- reset de l'etat runtime de panne AVANT modeExecution=true et
+// AVANT verifierPanne.restart() (bloc EXP-0.2 ci-dessous), pour qu'aucun
+// run ne reutilise l'etat panne (ni un eventuel enPanne=true en cours) du
+// run precedent dans la meme session AnyLogic. Voir le commentaire de
+// reinitialiserEtatPannePourNouveauRun() pour le detail de l'audit.
+reinitialiserEtatPannePourNouveauRun();
+board.logEvent("[PANNE-RESET] " + diagnosticEtatPannesDebutRun());
 initialiserStocksProduits();
 appliquerStocksInitiauxConfig();
 creerStationsAnimation();

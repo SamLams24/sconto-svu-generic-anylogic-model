@@ -22,6 +22,19 @@ début logique du run. Rephasés via `restart()` (API AnyLogic standard),
 sans modification d'aucune règle métier, période, MTBF/MTTR ni logique de
 décision.
 
+**EXP-0.3 (§12, après validation runtime complète de la reproductibilité)**
+a corrigé un second défaut réel, indépendant du rephasage : sur un run
+entièrement vidé (aucune commande cliente ni réapprovisionnement ouvert,
+aucun encours poste, aucune action métier différée pertinente),
+`demandGenerationFinished` restait `NON` alors que le quota de commandes
+était bien atteint. Cause : `generationDemandeTerminee()` mélangeait
+« le moteur est en exécution » et « la campagne a fini de générer sa
+demande », et `arreterSimulation()` positionne `modeExecution=false` avant
+d'exporter la TTL `RUN_FINALIZED`. Corrigé en retirant la garde
+`modeExecution` de `generationDemandeTerminee()` uniquement ; RNG,
+rephasage EXP-0.2, règles métier, stocks, KPI et ordonnancement non
+touchés.
+
 Aucune de ces vérifications/corrections n'a nécessité d'implémenter E4/E5.
 
 ## 1. Sources d'aléatoire trouvées
@@ -183,11 +196,20 @@ est :
 if (!peutGenererNouvelleCommande()) return;
 ```
 
-et `peutGenererNouvelleCommande()` applique exactement les mêmes conditions
+et, au moment de la rédaction de cette section (avant EXP-0.3, §12),
+`peutGenererNouvelleCommande()` appliquait exactement les mêmes conditions
 que `generationDemandeTerminee()` (`modeExecution`, `modePilotageParCommande`,
 `limiterNombreCommandes`, `nombreCommandesATester`). Il n'existe donc aucun
 chemin — normal ou choc de demande — qui crée une commande cliente hors de
-ce garde unique.
+ce garde unique. **Mise à jour EXP-0.3 :** `peutGenererNouvelleCommande()`
+n'a pas été modifiée et continue d'appliquer `modeExecution` (elle répond à
+« puis-je générer une commande MAINTENANT ? », donc doit rester bloquée
+après arrêt du run) ; seule `generationDemandeTerminee()` a perdu la garde
+`modeExecution` (§12). Les deux fonctions peuvent donc désormais diverger
+sur `modeExecution` sans que cela remette en cause la conclusion ci-dessous :
+aucune commande supplémentaire ne peut être créée au-delà du quota, dans
+tous les cas, car ce garde reste entièrement porté par
+`peutGenererNouvelleCommande()`.
 
 **Conclusion : la définition actuelle couvre E4.** Sous réserve que la
 campagne E2/E4 soit paramétrée en mode borné (`modePilotageParCommande=true`,
@@ -456,6 +478,10 @@ probabilistes, mêmes KPI à un même état terminal/snapshot.
 Le problème `demandGenerationFinished` observé à `RUN_FINALIZED` (mentionné
 par l'utilisateur) n'a pas été investigué ici — aucune dépendance technique
 démontrée avec le rephasage ci-dessus, traitement différé comme demandé.
+**Traité séparément en EXP-0.3, §12**, une fois la reproductibilité validée
+par un nouveau test runtime, conformément au principe « une cause par
+changement » appliqué tout au long de cette fondation expérimentale.
+
 Un état latent distinct a été repéré sans être corrigé (hors périmètre) :
 `tProchainePanne`/`enPanne` (par poste) ne sont pas explicitement réinitialisés
 en tête de `demarrerSimulation()` ; une panne programmée lors d'un run
@@ -463,4 +489,131 @@ précédent dans la même session AnyLogic pourrait laisser un état obsolète
 pour le run suivant. Non observé dans le test T1 (probablement parce que
 `tProchainePanne` restait à sa valeur initiale `-1` avant le premier run),
 mais à garder en tête si une session enchaîne plusieurs runs successifs
-sans rouvrir le modèle.
+sans rouvrir le modèle. **Toujours non traité après EXP-0.3** : reporté à
+EXP-0.4, pour la même raison de séparation des causes.
+
+## 12. EXP-0.3 — Découplage de la fin de génération de demande vis-à-vis de `modeExecution`
+
+Réalisée après validation runtime complète de la reproductibilité (build
+AnyLogic 8.9.5 PASS ; seed 1001 vs seed 1001 reproductible ; seed 1002
+divergent comme attendu ; rephasage EXP-0.2 PASS ; `REAPPRO_1` apparaît à
+`t_run + 15 s` dans les trois runs). Portée strictement limitée à
+`generationDemandeTerminee()` et à la terminalité qui en dépend ; RNG,
+rephasage EXP-0.2, règles métier, E4/E5, stocks, KPI et ordonnancement non
+touchés.
+
+### 12.1. Problème runtime confirmé
+
+Sur un run entièrement vidé :
+
+```
+openCustomerOrders       = 0
+openReplenishments       = 0
+entitiesInProcessAtPosts = 0
+pendingBusinessActions   = 0
+```
+
+mais :
+
+```
+demandGenerationFinished = NON
+terminalReached           = NON
+```
+
+alors que le quota de commandes (`commandesGenereesDepuisDemarrage >=
+nombreCommandesATester`) était bien atteint. La fonction
+`generationDemandeTerminee()` mélangeait deux notions différentes :
+(A) « le moteur est actuellement en exécution » (`modeExecution`) et
+(B) « la campagne a fini de générer sa demande ». Elle ne doit répondre
+qu'à (B).
+
+### 12.2. Ordre exact de finalisation (audité par lecture du code avant toute modification)
+
+Chaîne réelle, confirmée dans `model/SCONTO_SVU_GENERIC_MASTER.alp` :
+
+1. L'utilisateur déclenche `arreterSimulation()` (bouton « Arrêter et voir
+   résultats », seul point d'entrée UI actif — cf. commentaire A.4-FIX-4).
+2. Première instruction du corps de la fonction : `modeExecution = false;`
+3. Puis `arrivee.reset();`, calcul du PI final, `board.logEvent(...)`.
+4. Puis `finaliserRunEtExporter()` (Bloc A.4-FIX-4/5, idempotente via
+   `runFinalise`) : capture du point d'historique Dashboard, puis, **si**
+   `aboxExportActif && aboxExportSurArret`, appel à
+   `exporterABoxRuntimeTTL("RUN_FINALIZED")` — qui lit
+   `generationDemandeTerminee()` pour écrire `run:demandGenerationFinished` —
+   puis export Excel si `exportExcelActif`.
+5. Enfin `finishSimulation()` (API AnyLogic `Agent`), après les exports.
+
+**Constat clé :** à l'étape 4, `modeExecution` est déjà `false` depuis
+l'étape 2. Tout export `RUN_FINALIZED` lisait donc
+`generationDemandeTerminee()` avec `modeExecution=false`, ce qui, avec
+l'ancienne garde, forçait systématiquement `NON` — indépendamment de l'état
+réel de la génération de la demande. Les deux autres appels à
+`exporterABoxRuntimeTTL` (`"ORDER_CLOSED_<id>"`, sur clôture de commande en
+cours de run) ne sont pas concernés : `modeExecution` y est encore `true`.
+
+### 12.3. Ancienne condition
+
+```java
+public boolean generationDemandeTerminee() {
+    if (!modeExecution) return false;
+    if (!modePilotageParCommande) return false;
+    if (!limiterNombreCommandes) return false;
+    return commandesGenereesDepuisDemarrage >= Math.max(1, nombreCommandesATester);
+}
+```
+
+### 12.4. Nouvelle condition
+
+```java
+public boolean generationDemandeTerminee() {
+    if (!modePilotageParCommande) return false;
+    if (!limiterNombreCommandes) return false;
+    return commandesGenereesDepuisDemarrage >= Math.max(1, nombreCommandesATester);
+}
+```
+
+Seule la garde `modeExecution` a été retirée. Les gardes empêchant de
+déclarer terminée une campagne non bornée (`modePilotageParCommande`,
+`limiterNombreCommandes`) sont conservées à l'identique.
+
+### 12.5. Impact sur `peutGenererNouvelleCommande()`
+
+**Non modifiée.** Lecture du code (ligne ~2269) : cette fonction continue
+de commencer par `if (!modeExecution) return false;`, ce qui est correct et
+volontairement conservé — elle répond à « puis-je générer une commande
+MAINTENANT ? », question pour laquelle l'arrêt du run doit bloquer toute
+création. Elle divergeait déjà de `generationDemandeTerminee()` avant
+EXP-0.3 sur les cas `!modePilotageParCommande`/`!limiterNombreCommandes`
+(elle retourne `true` — génération continue autorisée — là où
+`generationDemandeTerminee()` retournait `false` — campagne non bornée
+jamais « terminée »). Ce n'était donc pas deux fonctions strictement
+identiques au-delà de la garde commune `modeExecution`, mais deux fonctions
+répondant à des questions différentes partageant une garde par ailleurs
+correcte pour l'une (autorisation immédiate) et devenue incorrecte pour
+l'autre (constat historique). La divergence introduite par EXP-0.3 sur
+`modeExecution` est donc intentionnelle et documentée, pas une régression.
+
+### 12.6. Impact sur `etatTerminalOperationnelAtteint()`
+
+**Non modifiée directement**, mais son comportement change mécaniquement :
+elle peut désormais retourner `true` avec `modeExecution == false`, dès lors
+que `generationDemandeTerminee() == true` et que les quatre compteurs
+d'encours (`nombreCommandesOuvertes()`, `nombreReapprovisionnementsOuverts()`,
+`nombreEntitesEnTraitementPostes()`, `nombreActionsMetierDiffereesPertinentes()`)
+sont à 0 — exactement le comportement recherché : la terminalité décrit
+l'état du système, pas l'état du bouton Exécution.
+
+### 12.7. Tests statiques (vérifiés conceptuellement sur le code, pas exécutés en runtime dans cette passe)
+
+| Cas | Condition | Résultat attendu | Conforme à la nouvelle définition |
+|---|---|---|---|
+| A | Quota non atteint | `generationDemandeTerminee() = false` | Oui — `commandesGenereesDepuisDemarrage >= max` est faux |
+| B | Quota atteint, `modeExecution=true` | `generationDemandeTerminee() = true` | Oui — mode borné + quota atteint |
+| C | Quota atteint, `modeExecution=false` après `RUN_FINALIZED` | `generationDemandeTerminee()` doit **rester** `true` | Oui — la garde `modeExecution` a été retirée, seul le quota compte |
+| D | Mode non borné (`!modePilotageParCommande` ou `!limiterNombreCommandes`) | `generationDemandeTerminee() = false` | Oui — gardes conservées à l'identique |
+
+### 12.8. Non traité dans cette passe
+
+`tProchainePanne`/`enPanne` entre runs successifs (§11.7) reste un point
+latent distinct, non corrigé ici. Reporté à EXP-0.4, pour garder une cause
+par changement.

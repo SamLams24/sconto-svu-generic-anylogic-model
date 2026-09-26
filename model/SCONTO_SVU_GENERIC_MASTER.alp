@@ -10192,8 +10192,31 @@ public int nombreCommandesOuvertes() {
 // "plus rien n'arrivera", pas a "tout est fini". Une generation continue
 // (non bornee par nombreCommandesATester) n'est par construction jamais
 // consideree comme terminee.
+// EXP-0.3 -- CORRECTIF : la garde "if (!modeExecution) return false;"
+// initialement presente ici a ete retiree. Preuve runtime ayant revele le
+// probleme (run entierement vide) : openCustomerOrders=0,
+// openReplenishments=0, entitiesInProcessAtPosts=0,
+// pendingBusinessActions=0, mais demandGenerationFinished=NON alors que le
+// quota de commandes etait bien atteint. Cause identifiee par lecture du
+// code : arreterSimulation() positionne modeExecution=false EN PREMIER,
+// puis appelle finaliserRunEtExporter() (Bloc A.4-FIX-4/5) qui, si
+// aboxExportActif && aboxExportSurArret, exporte la TTL "RUN_FINALIZED"
+// via exporterABoxRuntimeTTL() -- a cet instant precis, modeExecution est
+// deja false, donc l'ancienne garde forcait systematiquement "NON" pour
+// cet export, quel que soit l'etat reel de la generation de la demande.
+// generationDemandeTerminee() decrit desormais uniquement "la campagne a
+// fini de generer sa demande" (etat de campagne : quota de commandes
+// atteint en mode borne), jamais "le moteur est actuellement en
+// execution" -- ces deux notions sont distinctes et ne doivent plus etre
+// melangees ici. peutGenererNouvelleCommande() (bloc de generation de
+// commandes, NON modifiee par ce correctif) continue legitimement de
+// s'appuyer sur modeExecution pour empecher toute creation de commande
+// apres arret du run : autorisation de generer MAINTENANT (peut dependre
+// de modeExecution) et constat historique que le quota est deja atteint
+// (ne doit plus en dependre) sont deux questions differentes, qui peuvent
+// desormais diverger sur modeExecution -- divergence intentionnelle,
+// documentee ici, pas une incoherence entre les deux fonctions.
 public boolean generationDemandeTerminee() {
-    if (!modeExecution) return false;
     if (!modePilotageParCommande) return false;
     if (!limiterNombreCommandes) return false;
     return commandesGenereesDepuisDemarrage >= Math.max(1, nombreCommandesATester);
@@ -10263,6 +10286,13 @@ public int nombreActionsMetierDiffereesPertinentes() {
 // clientes, reapprovisionnements, postes, actions differees pertinentes).
 // Volontairement fonde sur l'etat du systeme, jamais sur time()/une duree
 // simulee ecoulee.
+// EXP-0.3 -- depuis le decouplage de generationDemandeTerminee() vis-a-vis
+// de modeExecution, cette fonction peut desormais retourner true meme si
+// modeExecution==false (typiquement au moment de l'export "RUN_FINALIZED"
+// declenche par arreterSimulation(), qui met modeExecution=false avant
+// d'exporter). Comportement recherche : la terminalite decrit l'etat du
+// systeme (demande generee et plus aucun encours), pas l'etat du bouton
+// Execution.
 public boolean etatTerminalOperationnelAtteint() {
     if (!generationDemandeTerminee()) return false;
     if (nombreCommandesOuvertes() > 0) return false;

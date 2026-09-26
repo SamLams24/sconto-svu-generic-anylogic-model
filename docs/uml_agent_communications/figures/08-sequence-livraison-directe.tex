@@ -1,0 +1,23 @@
+\begin{tikzpicture}[font=\scriptsize]
+  \seqactor{0}{Coordinator}{CA-sD1}
+  \seqactor{4.2}{Pilote Deliver}{AOp-sD1}
+  \seqactor{9.0}{Exéc. Deliver}{AOe-sD1.8..12}
+  \seqactor{14.0}{Customer}{CustomerActor}
+
+  \seqline{0}{14.4} \seqline{4.2}{14.4} \seqline{9.0}{14.4} \seqline{14.0}{14.4}
+
+  \seqmsg{amend}{1.2}{0}{4.2}{\emph{DeliveryOrder}}
+  \seqmsg{amend}{2.4}{4.2}{9.0}{\emph{ReserveInventory}}
+  \seqmsg{exec}{3.6}{9.0}{4.2}{\emph{InventoryReserved}}
+  \seqmsg{amend}{4.8}{4.2}{9.0}{\emph{PickingTask}}
+  \seqmsg{exec}{6.0}{9.0}{4.2}{\emph{PickingCompleted}}
+  \seqmsg{amend}{7.2}{4.2}{9.0}{\emph{PackingTask}}
+  \seqmsg{exec}{8.4}{9.0}{4.2}{\emph{PackingCompleted}}
+  \seqmsg{amend}{9.6}{4.2}{9.0}{\emph{LoadingTask}}
+  \seqmsg{exec}{10.8}{9.0}{4.2}{\emph{LoadingCompleted}}
+  \seqmsg{amend}{12.0}{4.2}{9.0}{\emph{ShipmentOrder}}
+  \draw[physflow] (9.0,-12.9) -- node[above,font=\scriptsize]{transport (flux physique)} (14.0,-12.9);
+  \seqmsg{exec}{13.8}{9.0}{4.2}{\emph{DeliveryCompleted}}
+
+  \seqnote{14.7}{9.6}{4.4cm}{Reporting ascendant\\(\emph{OperationalReport}\\ $\to$ \emph{ProcessStatusReport}\\ $\to$ \emph{MacroProcessReport})\\: voir figure SEQ-06.}
+\end{tikzpicture}

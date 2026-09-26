@@ -1,0 +1,29 @@
+\begin{tikzpicture}[font=\scriptsize]
+  \seqactor{0}{Tactical Make}{AT-sP3}
+  \seqactor{4.0}{Coordinator}{CA-sM1}
+  \seqactor{8.4}{Pilote Make}{AOp-sM1.1}
+  \seqactor{13.0}{Exéc. Make}{AOe-sM1.2..7}
+  \seqactor{17.6}{Tactical Deliver}{AT-sP4}
+
+  \seqline{0}{15.6} \seqline{4.0}{15.6} \seqline{8.4}{15.6} \seqline{13.0}{15.6} \seqline{17.6}{15.6}
+
+  \seqmsg{amend}{1.2}{0}{4.0}{\emph{ProductionPlan}}
+  \seqmsg{amend}{2.4}{4.0}{8.4}{\emph{ProductionOrder}}
+  \seqmsg{amend}{3.6}{8.4}{13.0}{\emph{ProductionTaskAssignment}}
+  \seqmsg{exec}{4.8}{13.0}{8.4}{\emph{ExecutionStart}}
+
+  % Fragment UML loop : unités du lot (pas de représentation individuelle).
+  \draw[colBoxLine] (7.9,-5.4) rectangle (17.4,-9.2);
+  \node[anchor=north west, font=\scriptsize\bfseries] at (7.95,-5.42) {loop [pour chaque unité du lot / de la commande]};
+  \seqmsg{exec}{6.6}{13.0}{8.4}{\emph{ExecutionProgress}}
+  \seqnote{13.5}{8.0}{3.6cm}{Traitement physique\\sur les micro-activités\\du poste (durée tirée\\de la loi de temps).}
+
+  \seqmsg{exec}{10.2}{13.0}{8.4}{\emph{ExecutionEnd}}
+  \seqmsg{report}{11.4}{8.4}{4.0}{\emph{OperationalReport}}
+  \seqmsg{report}{12.6}{4.0}{0}{\emph{ProductionCompleted}}
+  \seqmsg{report}{13.8}{0}{17.6}{\emph{ProductAvailableForDelivery}}
+
+  \seqnote{0}{14.8}{17.4cm}{\emph{ExecutionProgress} et \emph{ExecutionEnd} sont confirmés dans le code (\texttt{tracerFluxHierarchique}) mais
+   n'ont pas été retrouvés dans l'ABox du run de validation antérieur documenté en annexe -- statut
+   \og implémenté, non observé \fg{} plutôt qu'observé, malgré leur présence certaine dans le modèle.}
+\end{tikzpicture}

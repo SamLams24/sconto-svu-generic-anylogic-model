@@ -1,0 +1,21 @@
+\begin{tikzpicture}[font=\scriptsize]
+  \seqactor{0}{Customer}{CustomerActor}
+  \seqactor{4.2}{Exéc. Deliver}{AOe-sD1.2 / .8}
+  \seqactor{8.6}{Pilote Deliver}{AOp-sD1.1 / .3}
+  \seqactor{12.6}{Coordinator}{CA-sD1}
+  \seqactor{16.2}{Tactical}{AT-sP4}
+
+  \seqline{0}{9.6}   \seqline{4.2}{9.6}  \seqline{8.6}{9.6}
+  \seqline{12.6}{9.6} \seqline{16.2}{9.6}
+
+  \seqmsg{exec}{1.2}{0}{4.2}{\emph{CustomerOrder}}
+  \seqmsg{report}{2.4}{4.2}{8.6}{\emph{OrderReceived}}
+  \seqmsg{amend}{3.6}{8.6}{4.2}{\emph{InventoryCheckRequest}}
+  \seqmsg{report}{4.8}{4.2}{8.6}{\emph{InventoryAvailabilityResponse}}
+  \seqmsg{report}{6.0}{8.6}{12.6}{\emph{OrderValidated}}
+  \seqmsg{report}{7.2}{12.6}{16.2}{\emph{OrderFeasibilityRequest}}
+
+  \seqnote{16.9}{7.2}{4.6cm}{Décision tactique\\déclenchée : voir\\figures MTS / SMD.}
+  \seqnote{-0.2}{9.0}{16.6cm}{Tronc commun strict (identique MTS/MTO/ETO/REAPPRO) : le commentaire source précise
+   qu'aucun message de validation ne précède la réponse du stock.}
+\end{tikzpicture}

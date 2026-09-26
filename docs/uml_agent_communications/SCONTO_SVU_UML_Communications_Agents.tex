@@ -1,0 +1,492 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[french]{babel}
+\usepackage{lmodern}
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{tikz}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{float}
+\usepackage{pdflscape}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{hyperref}
+\usepackage{caption}
+
+\input{figures/uml-style.tex}
+
+\hypersetup{colorlinks=true,linkcolor=colAmend,urlcolor=colAmend,citecolor=colAmend}
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\small Communications inter-agents SCONTO-SVU}
+\rhead{\small \today}
+\cfoot{\small\thepage}
+\setlength{\headheight}{14pt}
+\titleformat{\section}{\large\bfseries\color{colAmend}}{\thesection}{0.5em}{}
+\titleformat{\subsection}{\normalsize\bfseries\color{colReport}}{\thesubsection}{0.5em}{}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\statut}[1]{\textbf{Statut : }#1}
+
+\begin{document}
+
+% ============================================================
+% 1. PAGE DE GARDE
+% ============================================================
+\begin{titlepage}
+\centering
+\vspace*{2cm}
+{\Huge\bfseries Communications inter-agents\\[0.3cm] du modèle SCONTO-SVU\par}
+\vspace{0.6cm}
+{\Large Diagrammes UML d'activités et de séquence\\ fondés sur le modèle générique validé\par}
+\vspace{1.5cm}
+{\large Modèle audité : \code{model/SCONTO\_SVU\_GENERIC\_MASTER.alp}\par}
+{\large Dépôt : \code{sconto-svu-generic-anylogic-model}, branche \code{docs/uml-agent-communications}\par}
+\vspace{2cm}
+{\normalsize Document technique de présentation, destiné à un lecteur ne connaissant pas nécessairement le code AnyLogic sous-jacent.\par}
+\vfill
+{\normalsize \today\par}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+% ============================================================
+% 2. OBJECTIF ET PÉRIMÈTRE
+% ============================================================
+\section{Objectif et périmètre}
+
+Ce document présente, sous forme de diagrammes UML d'activités et de séquence, les communications réellement implémentées entre les agents du modèle générique SCONTO-SVU. Il s'adresse à un lecteur qui doit comprendre le fonctionnement du système sans lire le code AnyLogic lui-même.
+
+Aucun diagramme de ce document n'a été construit à partir de connaissances générales sur SCOR ou sur les systèmes multi-agents. Chaque message, chaque agent et chaque séquence provient d'une vérification directe dans le fichier modèle ou dans une documentation déjà auditée et confrontée à un export runtime. Lorsqu'un élément n'a pas pu être confirmé, il est explicitement signalé comme tel plutôt que représenté comme acquis.
+
+Ce document ne modifie aucun fichier \code{.alp}, aucun code Java, aucun scénario JSON et ne touche ni à la logique du modèle ni aux travaux de consolidation E4/E5 en cours sur d'autres branches.
+
+\subsection{Sources de vérité utilisées}
+
+Par ordre de priorité, conformément à la méthode de cette passe :
+\begin{enumerate}
+  \item \code{model/\allowbreak SCONTO\_SVU\_\allowbreak GENERIC\_MASTER.alp} (fonction \code{tracer\allowbreak{}Flux\allowbreak{}Hierarchique()}, seule fonction du modèle qui journalise et anime les communications AER ; 81 sites d'appel recensés, 69 messages distincts) ;
+  \item \code{POST\_\allowbreak MERGE\_\allowbreak COMPLETENESS\_\allowbreak AUDIT.md} (inventaire des agents, architecture AER, statut MTS/\allowbreak{}MTO/\allowbreak{}ETO) ;
+  \item \code{EXPERIMENTATION\_\allowbreak FOUNDATION.md} (preuves runtime du Run 01, seed 1001) ;
+  \item l'annexe déjà publiée \emph{Catalogue des messages inter-agents et Flux global} du dépôt de documentation (\code{documentation/\allowbreak appendices/\allowbreak g-messages-\allowbreak flux-\allowbreak global.tex}), elle-même construite par confrontation d'un document de travail générique avec \code{sources/model/\allowbreak SCONTO\_SVU\_\allowbreak FINAL\_\allowbreak VALIDATED.alp} et l'ABox d'un run de validation antérieur (\code{RUN\_\allowbreak 1773129\allowbreak 600000\_\allowbreak 1788264\allowbreak 883846} : un run distinct du Run 01 d'EXP-0, cité ici comme seconde preuve runtime indépendante, pas comme le même run) ;
+  \item les traces et exports du Run 01 (EXP-0, seed 1001) pour la confirmation MTS/\allowbreak Source/\allowbreak Make/\allowbreak Deliver/\allowbreak réapprovisionnement autonome.
+\end{enumerate}
+
+\textbf{Un document de travail intitulé \og{} Tableaux clarifiés du flux global \fg{} a été identifié} comme source conceptuelle de l'annexe ci-dessus, elle-même explicitement citée par un commentaire du code actuel (fonction \code{traiterCommande()} : \emph{\og{} Tronc commun strict C2 $\to$ C6 du document Flux global \fg{}}). Ce document a servi de point de départ conceptuel, confronté ici à l'implémentation réelle de \code{model/SCONTO\_SVU\_GENERIC\_MASTER.alp} : la quasi-totalité des messages qu'il recense a été retrouvée telle quelle par recherche indépendante dans le fichier modèle actuel, confirmant que l'architecture de communication décrite est restée stable entre les deux fichiers.
+
+\subsection{Écart de nommage identifié entre les sources, corrigé dans ce document}
+
+L'annexe citée ci-dessus utilise le préfixe \code{ASup-s...} pour le rôle de pilotage opérationnel (ex. \code{ASup-sD1}). La fonction \code{idSuperviseurCommande()} du \code{model/SCONTO\_SVU\_GENERIC\_MASTER.alp} actuel produit désormais le préfixe \code{AOp-s...} pour ce même rôle (ex. \code{AOp-sD1.1}). Il s'agit d'une évolution de nommage entre les deux fichiers, pas d'une erreur : ce document utilise systématiquement \code{AOp-s...}, conforme au modèle actuellement audité, et le signale explicitement ici plutôt que de laisser une incohérence silencieuse entre les sources.
+
+% ============================================================
+% 3. LÉGENDE GÉNÉRALE
+% ============================================================
+\section{Légende générale}
+
+\subsection{Légende des agents}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{lX}
+\toprule
+Identifiant & Rôle \\
+\midrule
+\code{AS} & \textbf{Strategic Agent} : pilotage stratégique global, PI/SCOR consolidé (une instance unique, \code{AS-sP1}). \\
+\code{AT} & \textbf{Tactical Agent} : arbitrage tactique par macro-processus SCOR (\code{AT-sP2} Source, \code{AT-sP3} Make, \code{AT-sP4} Deliver). \\
+\code{CA} & \textbf{Coordinator Agent} : coordination par macro-processus et par stratégie (\code{CA-sS1}, \code{CA-sM1}, \code{CA-sD1}). \\
+\code{AOp} & \textbf{Operational Pilot Agent} : pilotage opérationnel d'un poste/groupe (ex. \code{AOp-sM1.1}). Nommé \code{ASup} dans une documentation antérieure (voir écart signalé ci-dessus). \\
+\code{AOe} & \textbf{Operational Execution Agent} : exécution opérationnelle sur une micro-activité précise (ex. \code{AOe-sD1.8}). \\
+\code{SupplierActor} & Acteur fournisseur externe. \\
+\code{CustomerActor} & Acteur client externe. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Dans le modèle, \code{AOp}/\code{AOe}/\code{CA}/\code{AT} ne sont pas des classes séparées par rôle : \code{OperationalAgent} est une classe unique dont l'identifiant (\code{AOp-...} ou \code{AOe-...}) encode le rôle et l'activité concernée. Cette distinction reste utile à la lecture des diagrammes, même si elle n'implique pas de classe Java distincte (confirmé dans \code{POST\_MERGE\_COMPLETENESS\_AUDIT.md}, \S2.3).
+
+\subsection{Lecture des communications AER}
+
+\begin{itemize}
+  \item \textbf{AMENDMENT} (\textcolor{colAmend}{bleu, trait plein}) : instruction, plan, ordre ou demande descendant dans l'organisation.
+  \item \textbf{EXECUTION} (\textcolor{colExec}{vert-bleu, trait plein}) : réalisation ou événement opérationnel constaté.
+  \item \textbf{REPORT} (\textcolor{colReport}{gris, trait pointillé}) : retour d'information vers les niveaux de pilotage.
+\end{itemize}
+
+Cette classification est reprise directement de l'usage du modèle (premier paramètre de \code{tracer\allowbreak{}Flux\allowbreak{}Hierarchique(\allowbreak{}phase,\allowbreak{} émetteur,\allowbreak{} destinataire,\allowbreak{} message, ...)}), pas d'une théorie AER générale.
+
+\subsection{Flux informationnels et flux physiques}
+
+Les échanges entre agents (les messages ci-dessus) sont des \textbf{flux informationnels} : ordre, requête, réponse, rapport, notification. Un second type de flux, \textbf{physique} (\textcolor{colPhys}{brun, trait pointillé épais avec triangle}), représente le déplacement réel de matière ou de produit (fournisseur $\to$ entreprise, produit fini $\to$ client). Dans les diagrammes de séquence, ce flux physique est annoté explicitement plutôt que représenté comme un message UML ordinaire.
+
+\subsection{Statuts de validation utilisés}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{lX}
+\toprule
+Statut & Signification \\
+\midrule
+Observé en runtime & Confirmé par une trace ABox d'un run réellement exécuté (Run 01 seed 1001, ou le run de validation antérieur cité en annexe). \\
+Implémenté dans le modèle & Confirmé par lecture du code (\code{tracerFluxHierarchique}), sans confirmation par une trace runtime disponible. \\
+Implémenté mais non validé en runtime & Le mécanisme existe dans le code mais aucun run documenté ne l'a exercé (ex. MTO/ETO). \\
+Partiel / legacy & Le mécanisme existe mais est inactif, incomplet, ou coexiste avec une variante plus récente. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Le mot \og{} validé \fg{} n'est jamais utilisé seul dans ce document lorsque la preuve disponible est uniquement statique.
+
+% ============================================================
+% 4. ARCHITECTURE GLOBALE
+% ============================================================
+\section{Architecture globale des agents}
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{\input{figures/01-architecture-globale.tex}}
+\caption{Architecture globale des communications multi-agents SCONTO-SVU.}
+\label{fig:archi-globale}
+\end{figure}
+
+\paragraph{Objectif.} Donner une vue d'ensemble de la hiérarchie de pilotage avant les cas détaillés : comment une instruction descend (AMENDMENT), comment un événement opérationnel remonte (REPORT/EXECUTION), et où se situent les acteurs externes (fournisseur, client) et le flux physique.
+
+\paragraph{Légende.} Une seule instance conceptuelle par niveau est représentée ; le modèle réel instancie plusieurs \code{CoordinatorAgent}/\code{OperationalAgent}, un par macro-processus SCOR (Source, Make, Deliver), non multipliés ici par lisibilité (voir \S12, tableau synthétique, pour le détail par macro-processus).
+
+\paragraph{Interprétation.} Le flux descendant (AMENDMENT) part de l'agent stratégique unique et se spécialise à chaque niveau jusqu'à l'exécution opérationnelle, qui seule interagit directement avec le fournisseur et le client. Le flux remontant (REPORT) suit rigoureusement le chemin inverse, sans saut de niveau observé dans le code. Le flux physique (matière, produit fini) est distinct des communications d'agents : il relie directement les acteurs externes à l'exécution opérationnelle.
+
+\statut{Implémenté dans le modèle (architecture confirmée par lecture exhaustive des identifiants d'agents et des fonctions de génération d'identifiants ; la chaîne complète AMENDMENT descendante et REPORT remontante est observée en runtime pour le cas MTS, Run 01).}
+
+% ============================================================
+% 5. FLUX GLOBAL
+% ============================================================
+\section{Flux global}
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{\input{figures/02-activite-flux-global.tex}}
+\caption{ACT-01 --- Flux métier global, du besoin client à la clôture et au reporting.}
+\label{fig:act01}
+\end{figure}
+
+\paragraph{Objectif.} Montrer, en un seul diagramme d'activité à couloirs, l'ensemble du chemin possible d'une commande : réception, décision, branchement Source/Make selon l'état du stock, Deliver, clôture et reporting.
+
+\paragraph{Légende.} Couloirs : Customer, Deliver (Coordinator/Exécution), Tactical (décision), Source/Make. Les deux losanges de décision correspondent exactement aux deux tests réellement présents dans le code (\code{analyser\allowbreak{}Stock\allowbreak{}Commande\allowbreak{}Orchestree()} : stock produit fini suffisant ; \code{analyser\allowbreak{}Matiere\allowbreak{}Commande\allowbreak{}Orchestree()} : matière suffisante).
+
+\paragraph{Interprétation.} Une seule commande peut suivre trois chemins distincts selon l'état du stock et de la matière au moment de son traitement. Le branchement n'est jamais un choix du client : c'est une décision interne calculée à partir de l'état réel du système.
+
+\statut{Implémenté dans le modèle ; le chemin \og{} stock PF suffisant \fg{} est observé en runtime (Run 01) ; les deux chemins passant par Source/Make sont implémentés mais non exercés par le Run 01 (voir \S14).}
+
+% ============================================================
+% 6. TRONC COMMUN RÉCEPTION COMMANDE
+% ============================================================
+\section{Tronc commun de réception commande}
+
+\begin{figure}[H]
+\centering
+\input{figures/03-activite-reception-commande.tex}
+\caption{ACT-02 --- Tronc commun A : réception et validation de la commande.}
+\label{fig:act02}
+\end{figure}
+
+\paragraph{Objectif.} Détailler la portion strictement commune à MTS, MTO, ETO et aux ordres \code{REAPPRO\_*} : aucune décision de stratégie n'intervient avant que le système dispose de l'état du stock.
+
+\paragraph{Légende.} Chaque flèche porte le nom du message réellement journalisé par le code (\code{tracer\allowbreak{}Flux\allowbreak{}Hierarchique}), avec l'émetteur et le destinataire réels.
+
+\paragraph{Interprétation.} Le code impose explicitement cet ordre (commentaire source cité en \S2.1) : \code{Order\allowbreak{}Received} $\to$ \code{Inventory\allowbreak{}Check\allowbreak{}Request} $\to$ \code{Inventory\allowbreak{}Availability\allowbreak{}Response} $\to$ \code{Order\allowbreak{}Validated} $\to$ \code{Order\allowbreak{}Feasibility\allowbreak{}Request}. C'est seulement après ce tronc que la décision de stratégie (figures suivantes) peut avoir lieu.
+
+\statut{Observé en runtime (Run 01 et run de validation antérieur cité en annexe).}
+
+% ============================================================
+% 7. CAS MTS
+% ============================================================
+\section{Cas MTS}
+
+\begin{figure}[H]
+\centering
+\input{figures/04-activite-mts-stock-suffisant.tex}
+\caption{ACT-03 --- Cas MTS : stock produit fini suffisant, livraison directe.}
+\label{fig:act03}
+\end{figure}
+
+\paragraph{Objectif.} Représenter le chemin observé en runtime lorsqu'une commande MTS trouve un stock produit fini suffisant.
+
+\paragraph{Légende.} Chaque étape correspond à un message réellement journalisé, de \code{DeliveryPlan} à \code{DeliveryCompleted}.
+
+\paragraph{Interprétation.} Ce chemin ne déclenche jamais Make : le produit fini provient exclusivement d'un stock déjà constitué par la politique autonome (\S9). C'est le seul chemin complet observé de bout en bout par le Run 01.
+
+\statut{Observé en runtime (Run 01, seed 1001).}
+
+\subsection{Cas de stock insuffisant : voir Source/\allowbreak{}Make/\allowbreak{}Deliver}
+
+Le cas \og{} stock PF insuffisant mais matière disponible \fg{} et le cas \og{} stock PF et matière insuffisants \fg{} ne sont pas deux diagrammes séparés dans ce document : le code les traite comme deux branches d'une même décision (\S\ref{sec:smd}), et aucun des deux n'a été exercé par un run documenté à ce jour. Les présenter comme des diagrammes indépendants aurait suggéré une preuve runtime qui n'existe pas.
+
+% ============================================================
+% 8. SOURCE / MAKE / DELIVER
+% ============================================================
+\section{Source / Make / Deliver}
+\label{sec:smd}
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{\input{figures/05-activite-source-make-deliver.tex}}
+\caption{ACT-04/05 --- Stock produit fini insuffisant : décision matière, Source si nécessaire, Make, Deliver.}
+\label{fig:act0405}
+\end{figure}
+
+\paragraph{Objectif.} Montrer le point de décision réel du code (\code{analyserMatiereCommandeOrchestree()}) et les deux branches qu'il ouvre.
+
+\paragraph{Légende.} Le losange reprend exactement le test \code{matieresSuffisantesPourScenario()} du code. Les identifiants d'agents renvoient aux séquences détaillées SEQ-03 et SEQ-04.
+
+\paragraph{Interprétation.} MTO et ETO empruntent rigoureusement le même chemin dans ce diagramme : le code ne distingue pas les deux stratégies au-delà de leur classification SCOR (voir \S12 \og{} Couverture MTS/\allowbreak{}MTO/\allowbreak{}ETO \fg{}). Un ordre \code{REAPPRO\_*} emprunte également ce même point d'entrée (\S9).
+
+\statut{Implémenté dans le modèle ; aucune des deux branches (matière suffisante ou insuffisante) n'a été exercée par le Run 01, qui n'a mobilisé que le chemin MTS direct. Non validé en runtime dans la campagne actuelle.}
+
+% ============================================================
+% 9. RÉAPPROVISIONNEMENT AUTONOME
+% ============================================================
+\section{Réapprovisionnement autonome}
+
+\begin{figure}[H]
+\centering
+\input{figures/06-activite-reappro-autonome.tex}
+\caption{ACT-06 --- Réapprovisionnement autonome (ordre interne \code{REAPPRO\_n}).}
+\label{fig:act06}
+\end{figure}
+
+\paragraph{Objectif.} Montrer que la reconstitution du stock produit fini est pilotée par une politique autonome, indépendante des commandes clientes, mais empruntant les mêmes points d'entrée Source/Make.
+
+\paragraph{Légende.} Le losange correspond au test de seuil de la politique de stock (\code{verifier\allowbreak{}Politique\allowbreak{}Stock\allowbreak{}Produit()}).
+
+\paragraph{Interprétation.} Un ordre \code{REAPPRO\_*} n'est jamais une commande cliente : il est explicitement exclu de tout compteur de commandes clientes (\code{estOrdreStockAutonome()}), mais sa clôture conditionne la terminalité opérationnelle globale au même titre qu'une commande cliente ouverte.
+
+\statut{Observé en runtime (Run 01 : ordre \code{REAPPRO\_1}, clôturé avant la fin du run, unité finale \code{REAPPRO\_1\_F\_50}).}
+
+% ============================================================
+% 10. SÉQUENCES D'INTERACTION
+% ============================================================
+\section{Séquences d'interaction}
+
+\subsection{SEQ-01 --- Réception et validation d'une commande client}
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{\input{figures/07-sequence-reception-commande.tex}}
+\caption{SEQ-01 --- Réception et validation d'une commande client.}
+\label{fig:seq01}
+\end{figure}
+
+\paragraph{Interprétation.} Le client déclenche le flux (\code{CustomerOrder}) ; l'information descend et remonte strictement entre les niveaux d'exécution, de pilotage et de coordination du macro-processus Deliver, avant qu'une décision de stratégie ne soit demandée au niveau tactique.
+
+\statut{Observé en runtime.}
+
+\subsection{SEQ-02 --- Livraison directe depuis le stock MTS}
+
+\begin{landscape}
+\begin{figure}[H]
+\centering
+\resizebox{\linewidth}{!}{\input{figures/08-sequence-livraison-directe.tex}}
+\caption{SEQ-02 --- Livraison directe depuis le stock MTS.}
+\label{fig:seq02}
+\end{figure}
+\end{landscape}
+
+\paragraph{Interprétation.} Chaque étape physique (prélèvement, conditionnement, chargement) est encadrée par un message d'instruction (AMENDMENT) et un message de constat (EXECUTION), avant le transport physique réel vers le client.
+
+\statut{Observé en runtime (Run 01).}
+
+\subsection{SEQ-03 --- Insuffisance matière : consultation fournisseur}
+
+\begin{landscape}
+\begin{figure}[H]
+\centering
+\resizebox{\linewidth}{!}{\input{figures/09-sequence-consultation-fournisseur.tex}}
+\caption{SEQ-03 --- Consultation fournisseur en cas de matière insuffisante.}
+\label{fig:seq03}
+\end{figure}
+\end{landscape}
+
+\paragraph{Interprétation.} La demande descend du tactique Make vers le tactique Source, puis jusqu'au fournisseur externe, avant que la réponse ne remonte symétriquement. La perturbation de retard fournisseur (note de la figure) est un mécanisme de test manuel, pas un chemin nominal.
+
+\statut{Implémenté mais non validé en runtime dans la campagne actuelle (aucun run documenté n'a emprunté cette branche).}
+
+\subsection{SEQ-04 --- Approvisionnement et retour vers Make}
+
+\begin{landscape}
+\begin{figure}[H]
+\centering
+\resizebox{\linewidth}{!}{\input{figures/10-sequence-approvisionnement.tex}}
+\caption{SEQ-04 --- Approvisionnement matière et retour vers Make.}
+\label{fig:seq04}
+\end{figure}
+\end{landscape}
+
+\paragraph{Interprétation.} L'approvisionnement se conclut par un message \code{MaterialAvailable} transmis directement au tactique Make, qui peut alors lancer la production (SEQ-05).
+
+\statut{Implémenté mais non validé en runtime dans la campagne actuelle.}
+
+\subsection{SEQ-05 --- Planification et exécution Make}
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{\input{figures/11-sequence-make.tex}}
+\caption{SEQ-05 --- Planification et exécution de la production.}
+\label{fig:seq05}
+\end{figure}
+
+\paragraph{Interprétation.} Le fragment \emph{loop} représente le traitement physique répété des unités du lot sur les micro-activités du poste, sans représenter individuellement chaque unité produite (contrairement aux 50 unités effectivement tracées dans le Run 01 pour l'ordre \code{REAPPRO\_1}).
+
+\statut{Partiellement observé : la planification (\code{ProductionPlan/Order/TaskAssignment}) et \code{ExecutionStart} sont confirmés par le code ; \code{ExecutionProgress}/\code{ExecutionEnd} sont implémentés mais non retrouvés dans l'ABox du run de validation cité en annexe --- statut \og{} implémenté, non observé \fg{}.}
+
+\subsection{SEQ-06 --- Livraison finale, réception client et reporting}
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{\input{figures/12-sequence-livraison-reporting.tex}}
+\caption{SEQ-06 --- Clôture de la livraison et remontée du reporting.}
+\label{fig:seq06}
+\end{figure}
+
+\paragraph{Interprétation.} La remontée REPORT est strictement symétrique de la descente AMENDMENT de l'architecture globale (\S4) : \code{Operational\allowbreak{}Report} $\to$ \code{Process\allowbreak{}Status\allowbreak{}Report} $\to$ \code{Macro\allowbreak{}Process\allowbreak{}Report}, jusqu'à l'agent stratégique unique.
+
+\statut{Observé en runtime (Run 01).}
+
+% ============================================================
+% 11. AER ET REMONTÉE HIÉRARCHIQUE
+% ============================================================
+\section{AER et remontée hiérarchique}
+
+Les trois catégories de messages déjà présentées en \S3.2 structurent l'ensemble des figures de ce document : \textbf{AMENDMENT} porte la décision et l'ordre vers le bas, \textbf{EXECUTION} porte le constat opérationnel, \textbf{REPORT} porte la consolidation vers le haut. Cette classification n'est pas une théorie ajoutée après coup : c'est le premier paramètre littéral de la fonction \code{tracerFluxHierarchique()} à chacun de ses 81 sites d'appel dans le modèle, et elle correspond au type ontologique porté par chaque message dans l'export ABox (\code{AmendmentMessage}, \code{ExecutionMessage}/\code{ExecutionStartMessage}, \code{ReportingMessage}, confirmé par l'annexe citée en \S2.1).
+
+% ============================================================
+% 12. COUVERTURE MTS/\allowbreak{}MTO/\allowbreak{}ETO
+% ============================================================
+\section{Couverture actuelle des stratégies MTS, MTO et ETO}
+
+Ce document ne construit pas trois architectures différentes pour MTS, MTO et ETO, parce que le modèle lui-même n'en construit pas trois.
+
+\begin{itemize}
+  \item \textbf{MTS} est observé en runtime (Run 01) et détaillé dans les figures ACT-03/SEQ-02.
+  \item \textbf{MTO} est implémenté : une commande MTO emprunte exactement le même point d'entrée que la branche \og{} stock insuffisant \fg{} (\S8, ACT-04/05), et le code confirme qu'aucune branche MTO propre n'existe au-delà de ce point commun avec ETO. \textbf{Non validé en runtime} dans la campagne actuelle.
+  \item \textbf{ETO} est implémenté via le même traitement partagé que MTO. Aucune phase d'ingénierie ou de personnalisation propre à ETO n'est représentée dans le pipeline de traitement de commande (confirmé par \code{POST\_MERGE\_COMPLETENESS\_AUDIT.md}, \S3) : la distinction ETO existe uniquement au niveau de la classification SCOR (niveau 3, groupes tactiques \code{CA-sS3}/\code{CA-sM3}/\code{CA-sD3}) et d'une constante de délai, pas dans le flux de messages présenté ici. \textbf{Non validé en runtime}, et sans diagramme de séquence propre pour cette raison.
+\end{itemize}
+
+Créer des diagrammes distincts pour MTO et ETO aurait suggéré une différence de comportement que le code ne présente pas à ce niveau de détail.
+
+% ============================================================
+% 13. TABLEAU SYNTHÉTIQUE
+% ============================================================
+\section{Tableau synthétique des communications}
+
+\begin{landscape}
+{\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{longtable}{p{2.9cm}p{2.9cm}p{5.6cm}p{2.1cm}p{1.4cm}p{2.6cm}p{2.6cm}}
+\caption{Communications inter-agents représentées dans ce document (échantillon complet des figures ACT-02 à SEQ-06 ; catalogue complet en annexe).}\label{tab:synthese}\\
+\toprule
+Émetteur & Récepteur & Message & AER & SCOR & Cas & Validation \\
+\midrule
+\endfirsthead
+\toprule
+Émetteur & Récepteur & Message & AER & SCOR & Cas & Validation \\
+\midrule
+\endhead
+\bottomrule
+\endlastfoot
+CustomerActor & AOe-sD1.2 & CustomerOrder & EXECUTION & Deliver & Réception commande & Observé runtime \\
+AOe-sD1.2 & AOp-sD1.1 & OrderReceived & REPORT & Deliver & Réception commande & Observé runtime \\
+AOp-sD1.3 & AOe-sD1.8 & InventoryCheckRequest & AMENDMENT & Deliver & Réception commande & Observé runtime \\
+AOe-sD1.8 & AOp-sD1.3 & InventoryAvailabilityResponse & REPORT & Deliver & Réception commande & Observé runtime \\
+AOp-sD1.1 & CA-sD1 & OrderValidated & REPORT & Deliver & Réception commande & Observé runtime \\
+CA-sD1 & AT-sP4 & OrderFeasibilityRequest & REPORT & Plan/\allowbreak{}Deliver & Réception commande & Observé runtime \\
+AT-sP4 & CA-sD1 & DeliveryPlan & AMENDMENT & Deliver & MTS stock suffisant & Observé runtime \\
+CA-sD1 & AOp-sD1 & DeliveryOrder & AMENDMENT & Deliver & MTS stock suffisant & Observé runtime \\
+AOp-sD1 & AOe-sD1.8 & ReserveInventory & AMENDMENT & Deliver & MTS stock suffisant & Observé runtime \\
+AOe-sD1.8 & AOp-sD1 & InventoryReserved & EXECUTION & Deliver & MTS stock suffisant & Observé runtime \\
+AOp-sD1 & AOe-sD1.9 & PickingTask & AMENDMENT & Deliver & MTS stock suffisant & Observé runtime \\
+AOe-sD1.9 & AOp-sD1 & PickingCompleted & EXECUTION & Deliver & MTS stock suffisant & Observé runtime \\
+AOp-sD1 & AOe-sD1.10 & PackingTask & AMENDMENT & Deliver & MTS stock suffisant & Observé runtime \\
+AOe-sD1.10 & AOp-sD1 & PackingCompleted & EXECUTION & Deliver & MTS stock suffisant & Observé runtime \\
+AOp-sD1 & AOe-sD1.11 & LoadingTask & AMENDMENT & Deliver & MTS stock suffisant & Observé runtime \\
+AOe-sD1.11 & AOp-sD1 & LoadingCompleted & EXECUTION & Deliver & MTS stock suffisant & Observé runtime \\
+AOp-sD1 & AOe-sD1.12 & ShipmentOrder & AMENDMENT & Deliver & MTS stock suffisant & Observé runtime \\
+AOe-sD1.12 & AOp-sD1 & DeliveryCompleted & EXECUTION & Deliver & MTS stock suffisant & Observé runtime \\
+AOp-sD1 & CA-sD1 & OperationalReport & REPORT & Deliver & Livraison/reporting & Observé runtime \\
+CA-sD1 & AT-sP4 & ProcessStatusReport & REPORT & Deliver & Livraison/reporting & Observé runtime \\
+AT-sP4 & AS-sP1 & MacroProcessReport & REPORT & Deliver & Livraison/reporting & Observé runtime \\
+AT-sP3 & CA-sM1 & MakeFeasibilityCheck & AMENDMENT & Make & Source/\allowbreak{}Make/\allowbreak{}Deliver & Implémenté, non validé \\
+CA-sM1 & AOp-sM1.1 & CapacityAndMaterialCheckOrder & AMENDMENT & Make & Source/\allowbreak{}Make/\allowbreak{}Deliver & Implémenté, non validé \\
+AOp-sM1.1 & AOe-sM1.2..7 & CapacityCheckRequest / MaterialCheckRequest & AMENDMENT & Make & Source/\allowbreak{}Make/\allowbreak{}Deliver & Implémenté, non validé \\
+AOe-sM1.2..7 & AOp-sM1.1 & CapacityAvailabilityResponse / MaterialAvailabilityResponse & REPORT & Make & Source/\allowbreak{}Make/\allowbreak{}Deliver & Implémenté, non validé \\
+CA-sM1 & AT-sP3 & MakeFeasibilityResponse & REPORT & Make & Source/\allowbreak{}Make/\allowbreak{}Deliver & Implémenté, non validé \\
+AT-sP3 & AT-sP2 & MaterialAvailabilityRequest & AMENDMENT & Source & Consultation fournisseur & Implémenté, non validé \\
+AT-sP2 & CA-sS1 & SourceFeasibilityRequest & AMENDMENT & Source & Consultation fournisseur & Implémenté, non validé \\
+CA-sS1 & AOp-sS1.1 & SupplierCheckOrder & AMENDMENT & Source & Consultation fournisseur & Implémenté, non validé \\
+AOp-sS1.1 & AOe-sS1.2 & SupplierAvailabilityCheck & AMENDMENT & Source & Consultation fournisseur & Implémenté, non validé \\
+AOe-sS1.2 & SupplierActor & RequestForAvailability & AMENDMENT & Source & Consultation fournisseur & Implémenté, non validé \\
+SupplierActor & AOe-sS1.2 & SupplierCommitment & REPORT & Source & Consultation fournisseur & Implémenté, non validé \\
+AOe-sS1.2 & AOp-sS1.1 & SupplierAvailabilityResponse & REPORT & Source & Consultation fournisseur & Implémenté, non validé \\
+AOp-sS1.1 & CA-sS1 & SourceOperationalFeasibility & REPORT & Source & Consultation fournisseur & Implémenté, non validé \\
+CA-sS1 & AT-sP2 & SourceFeasibilityResponse & REPORT & Source & Consultation fournisseur & Implémenté, non validé \\
+AT-sP2 & AT-sP3 & MaterialAvailabilityResponse & REPORT & Source & Consultation fournisseur & Implémenté, non validé \\
+AT-sP2 & CA-sS1 & ProcurementPlan & AMENDMENT & Source & Approvisionnement & Implémenté, non validé \\
+CA-sS1 & AOp-sS1.1 & ProcurementOrder & AMENDMENT & Source & Approvisionnement & Implémenté, non validé \\
+AOp-sS1.1 & AOe-sS1.2 & PurchaseOrderTask & AMENDMENT & Source & Approvisionnement & Implémenté, non validé \\
+AOe-sS1.2 & SupplierActor & PurchaseOrder & AMENDMENT & Source & Approvisionnement & Implémenté, non validé \\
+SupplierActor & AOe-sS1.3 & InboundDelivery & EXECUTION & Source & Approvisionnement (flux physique) & Implémenté, non validé \\
+AOe-sS1.3 & AOp-sS1.1 & MaterialReceived & EXECUTION & Source & Approvisionnement & Implémenté, non validé \\
+AOp-sS1.1 & CA-sS1 & OperationalReport & REPORT & Source & Approvisionnement & Implémenté, non validé \\
+CA-sS1 & AT-sP2 & ProcurementCompleted & REPORT & Source & Approvisionnement & Implémenté, non validé \\
+AT-sP2 & AT-sP3 & MaterialAvailable & REPORT & Source & Approvisionnement & Implémenté, non validé \\
+AT-sP3 & CA-sM1 & ProductionPlan & AMENDMENT & Make & Planification Make & Implémenté, non validé \\
+CA-sM1 & AOp-sM1.1 & ProductionOrder & AMENDMENT & Make & Planification Make & Implémenté, non validé \\
+AOp-sM1.1 & AOe-sM1.2..7 & ProductionTaskAssignment & AMENDMENT & Make & Planification Make & Implémenté, non validé \\
+AOe-sM1.2..7 & AOp-sM1.1 & ExecutionStart & EXECUTION & Make & Planification Make & Implémenté, non validé \\
+AOe-sM1.2..7 & AOp-sM1.1 & ExecutionProgress / ExecutionEnd & EXECUTION & Make & Planification Make & Implémenté, non observé \\
+AOp-sM1.1 & CA-sM1 & OperationalReport & REPORT & Make & Planification Make & Implémenté, non validé \\
+CA-sM1 & AT-sP3 & ProductionCompleted & REPORT & Make & Planification Make & Implémenté, non observé \\
+AT-sP3 & AT-sP4 & ProductAvailableForDelivery & REPORT & Make & Planification Make & Implémenté, non observé \\
+SupplierActor & AOp-sS1.1 & SupplierDelayAlert & REPORT & Source & Perturbation (test manuel) & Implémenté, non validé en nominal \\
+AOp-sS1.1 & CA-sS1 & OperationalException & REPORT & Source & Perturbation (test manuel) & Implémenté, non validé en nominal \\
+CA-sS1 & AT-sP2 & ProcessDeviationReport & REPORT & Source & Perturbation (test manuel) & Implémenté, non validé en nominal \\
+AT-sP2 & AT-sP3 & RevisedMaterialAvailability & REPORT & Source & Perturbation (test manuel) & Implémenté, non validé en nominal \\
+AT-sP3 & AT-sP4 & RevisedProductionCompletionDate & REPORT & Make & Perturbation (test manuel) & Implémenté, non validé en nominal \\
+AT-sP4 & CA-sD1 & RevisedDeliveryPlan & AMENDMENT & Deliver & Perturbation (test manuel) & Implémenté, non validé en nominal \\
+\end{longtable}
+}
+\end{landscape}
+
+Ce tableau reprend les communications effectivement représentées dans les figures de ce document. Le catalogue complet des 62 messages avec leur statut détaillé (\code{OBSERVE\_\allowbreak RUN\_\allowbreak FINAL}/\allowbreak{}\code{IMPLEMENTE\_\allowbreak NON\_\allowbreak OBSERVE}) reste publié dans l'annexe déjà citée du dépôt de documentation (\S2.1) et n'est pas republié intégralement ici pour éviter la duplication d'une source déjà auditée.
+
+% ============================================================
+% 14. LIMITES ET STATUT DE VALIDATION
+% ============================================================
+\section{Limites et statut de validation}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{lX}
+\toprule
+Élément & Niveau de preuve exact \\
+\midrule
+MTS & Observé durant le Run 01 (seed 1001) et durant le run de validation antérieur cité en annexe. \\
+Source & Observé durant le run de validation antérieur (annexe) ; observé indirectement durant le Run 01 lors de la reconstitution de stock \code{REAPPRO\_1} (le chemin exact emprunté --- consultation fournisseur ou matière déjà suffisante --- n'a pas été isolé spécifiquement dans cette passe). \\
+Make & Observé durant le Run 01 et le run de validation antérieur. \\
+Deliver & Observé durant le Run 01 et le run de validation antérieur. \\
+Réapprovisionnement autonome & Observé durant le Run 01 (ordre \code{REAPPRO\_1}, clôturé). \\
+MTO & Implémenté (code confirmé), non validé en runtime dans la campagne actuelle. \\
+ETO & Implémenté via le traitement partagé avec MTO ; aucune phase d'ingénierie distincte n'est validée, ni même formalisée séparément dans le pipeline de traitement de commande. \\
+Return & Un identifiant de coordinateur dédié existe dans le code (\code{idCoordinateurCommande("R", ...)} $\to$ \code{CA-sR}), mais aucun message AER de la famille Return n'a été retrouvé parmi les 81 sites d'appel de \code{tracerFluxHierarchique()} recensés, ni dans l'annexe déjà auditée contre un run réel. Return reste donc disponible dans l'architecture (identifiant réservé) sans qu'un flux de messages propre soit implémenté ou observé. \\
+Multiproduit & Non présenté comme validé en runtime dans ce document : le Run 01 comme le run de validation antérieur portent sur un scénario mono-produit. Voir \code{POST\_MERGE\_COMPLETENESS\_AUDIT.md} \S17 pour l'audit structurel complet. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Aucune interaction représentée dans ce document ne provient d'une supposition : chaque message porte un nom retrouvé littéralement dans \code{model/SCONTO\_SVU\_GENERIC\_MASTER.alp} ou dans l'annexe déjà auditée contre un run réel.
+
+% ============================================================
+% 15. CONCLUSION
+% ============================================================
+\section{Conclusion}
+
+Le modèle générique SCONTO-SVU implémente une architecture de communication multi-agents cohérente et cataloguée : trois catégories AER (AMENDMENT, EXECUTION, REPORT), cinq niveaux de pilotage (Strategic, Tactical, Coordinator, Operational Pilot, Operational Execution), et un vocabulaire de messages stable entre deux fichiers modèles distincts dans le temps (l'annexe déjà auditée et le master générique actuel). Le chemin MTS complet, de la réception de commande à la clôture et au reporting, est observé en runtime et documenté ici avec le niveau de détail nécessaire pour qu'un lecteur non familier du code AnyLogic comprenne le mécanisme. Les chemins MTO, ETO et la consultation fournisseur restent implémentés mais non exercés par un run documenté à ce jour ; ce document ne les présente jamais comme validés, conformément à la exigence de traçabilité qui structure l'ensemble de cette fondation expérimentale SCONTO-SVU.
+
+\end{document}

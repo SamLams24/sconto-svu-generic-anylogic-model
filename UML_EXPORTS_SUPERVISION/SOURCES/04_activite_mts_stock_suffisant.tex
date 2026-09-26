@@ -1,0 +1,30 @@
+\begin{tikzpicture}[node distance=6.5mm, font=\scriptsize]
+
+  \node[startstop] (n0) {Décision tactique :\\stock PF suffisant};
+  \node[actbox] (n1) [below=of n0] {Plan de livraison\\(\emph{Delivery\allowbreak{}Plan})\\AT-sP4 $\to$ CA-sD1};
+  \node[actbox] (n2) [below=of n1] {Ordre de livraison\\(\emph{Delivery\allowbreak{}Order})\\CA-sD1 $\to$ AOp-sD1};
+  \node[actbox] (n3) [below=of n2] {Réservation stock\\(\emph{Reserve\allowbreak{}Inventory} / \emph{Inventory\allowbreak{}Reserved})\\AOp-sD1 $\leftrightarrow$ AOe-sD1.8};
+  \node[actbox] (n4) [below=of n3] {Prélèvement\\(\emph{PickingTask} / \emph{Picking\allowbreak{}Completed})};
+  \node[actbox] (n5) [below=of n4] {Conditionnement\\(\emph{PackingTask} / \emph{Packing\allowbreak{}Completed})};
+  \node[actbox] (n6) [below=of n5] {Chargement\\(\emph{LoadingTask} / \emph{Loading\allowbreak{}Completed})};
+  \node[actbox] (n7) [below=of n6] {Expédition\\(\emph{Shipment\allowbreak{}Order})};
+  \node[actbox] (n8) [below=of n7] {Réception client\\(\emph{Delivery\allowbreak{}Completed})};
+  \node[startstop] (n9) [below=of n8] {Clôture commande\\(SERVIE)};
+
+  \draw[amend] (n0) -- (n1);
+  \draw[amend] (n1) -- (n2);
+  \draw[amend] (n2) -- (n3);
+  \draw[amend] (n3) -- (n4);
+  \draw[amend] (n4) -- (n5);
+  \draw[amend] (n5) -- (n6);
+  \draw[amend] (n6) -- (n7);
+  \draw[exec]  (n7) -- (n8);
+  \draw[amend] (n8) -- (n9);
+
+  \node[actbox, fill=colLaneFill, draw=colPhys, text width=3.6cm, right=1.6cm of n5] (note)
+    {MAKE n'est pas déclenché pour cette commande : le produit fini\\
+     provient exclusivement du stock existant, reconstitué en amont\\
+     par la politique autonome (figure Réapprovisionnement).};
+  \draw[physflow] (note.west) -- (n5.east);
+
+\end{tikzpicture}

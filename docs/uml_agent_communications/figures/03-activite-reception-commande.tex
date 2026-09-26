@@ -1,0 +1,27 @@
+\begin{tikzpicture}[node distance=8mm, font=\small]
+
+  \node[startstop] (n0) {Commande client\\reçue (CustomerOrder)};
+  \node[actbox, below=of n0] (n1) {Enregistrement\\(\emph{Order\allowbreak{}Received})\\AOe-sD1.2 $\to$ AOp-sD1};
+  \node[actbox, below=of n1] (n2) {Demande d'état du stock\\(\emph{Inventory\allowbreak{}Check\allowbreak{}Request})\\AOp-sD1 $\to$ AOe-sD1.8};
+  \node[actbox, below=of n2] (n3) {Réponse stock\\(\emph{Inventory\allowbreak{}Availability\allowbreak{}Response})\\AOe-sD1.8 $\to$ AOp-sD1};
+  \node[actbox, below=of n3] (n4) {Validation commande\\(\emph{Order\allowbreak{}Validated})\\AOp-sD1 $\to$ CA-sD1};
+  \node[actbox, below=of n4] (n5) {Transmission décision\\(\emph{Order\allowbreak{}Feasibility\allowbreak{}Request})\\CA-sD1 $\to$ AT-sP4};
+  \node[startstop, below=of n5] (n6) {Décision tactique\\(cf. figures suivantes)};
+
+  \draw[amend] (n0) -- (n1);
+  \draw[report] (n1) -- (n2);
+  \draw[amend] (n2) -- (n3);
+  \draw[report] (n3) -- (n4);
+  \draw[report] (n4) -- (n5);
+  \draw[report] (n5) -- (n6);
+
+  \node[actlabel, text width=8cm, right=1.4cm of n3, align=left] {
+    Tronc commun strict, identique pour MTS/MTO/ETO et pour\\
+    un ordre \texttt{REAPPRO\_*} : aucune décision de stratégie\\
+    n'intervient avant la réponse du stock. Séquence garantie\\
+    par le code lui-même (commentaire source : \emph{\og Aucun\\
+    message de validation ne doit précéder la réponse du\\
+    stock \fg{}}).
+  };
+
+\end{tikzpicture}

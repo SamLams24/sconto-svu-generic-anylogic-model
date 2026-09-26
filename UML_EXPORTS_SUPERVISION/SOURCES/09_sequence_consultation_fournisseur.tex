@@ -1,0 +1,28 @@
+\begin{tikzpicture}[font=\scriptsize]
+  \seqactor{0}{Tactical Make}{AT-sP3}
+  \seqactor{3.6}{Tactical Source}{AT-sP2}
+  \seqactor{7.4}{Coordinator}{CA-sS1}
+  \seqactor{11.2}{Pilote Source}{AOp-sS1.1}
+  \seqactor{15.2}{Exéc. Source}{AOe-sS1.2}
+  \seqactor{19.4}{Supplier}{SupplierActor}
+
+  \seqline{0}{15.6} \seqline{3.6}{15.6} \seqline{7.4}{15.6}
+  \seqline{11.2}{15.6} \seqline{15.2}{15.6} \seqline{19.4}{15.6}
+
+  \seqmsg{amend}{1.2}{0}{3.6}{\emph{MaterialAvailabilityRequest}}
+  \seqmsg{amend}{2.4}{3.6}{7.4}{\emph{SourceFeasibilityRequest}}
+  \seqmsg{amend}{3.6}{7.4}{11.2}{\emph{SupplierCheckOrder}}
+  \seqmsg{amend}{4.8}{11.2}{15.2}{\emph{SupplierAvailabilityCheck}}
+  \seqmsg{amend}{6.0}{15.2}{19.4}{\emph{RequestForAvailability}}
+  \seqmsg{report}{7.2}{19.4}{15.2}{\emph{SupplierCommitment}}
+  \seqmsg{report}{8.4}{15.2}{11.2}{\emph{SupplierAvailabilityResponse}}
+  \seqmsg{report}{9.6}{11.2}{7.4}{\emph{SourceOperationalFeasibility}}
+  \seqmsg{report}{10.8}{7.4}{3.6}{\emph{SourceFeasibilityResponse}}
+  \seqmsg{report}{12.0}{3.6}{0}{\emph{MaterialAvailabilityResponse}}
+
+  \seqnote{0}{13.2}{18cm}{Si la matière est finalement jugée suffisante avant cette consultation (analyse locale), la branche
+   ci-dessus n'est pas empruntée (voir figure Source/Make/Deliver). Si le fournisseur ne peut honorer la demande
+   dans les délais, une perturbation manuelle de scénario (SupplierDelayAlert $\to$ OperationalException $\to$
+   ProcessDeviationReport $\to$ RevisedMaterialAvailability $\to$ RevisedProductionCompletionDate $\to$
+   RevisedDeliveryPlan) peut être injectée à des fins de test ; ce n'est pas un chemin nominal.}
+\end{tikzpicture}

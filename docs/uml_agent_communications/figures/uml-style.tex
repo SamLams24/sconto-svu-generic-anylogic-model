@@ -1,0 +1,48 @@
+% Style partagé pour tous les diagrammes UML SCONTO-SVU.
+% Palette sobre : AMENDMENT (bleu), EXECUTION (vert-bleu discret),
+% REPORT (gris), flux physique (brun, ligne pointillée épaisse).
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds,shapes.geometric,calc}
+
+\definecolor{colAmend}{RGB}{31,78,121}
+\definecolor{colExec}{RGB}{27,120,110}
+\definecolor{colReport}{RGB}{90,90,90}
+\definecolor{colPhys}{RGB}{140,90,40}
+\definecolor{colBoxFill}{RGB}{245,247,250}
+\definecolor{colBoxLine}{RGB}{70,80,95}
+\definecolor{colLaneFill}{RGB}{250,250,251}
+
+\tikzset{
+  amend/.style   = {-{Stealth[length=2.2mm]}, colAmend, thick},
+  exec/.style    = {-{Stealth[length=2.2mm]}, colExec, thick},
+  report/.style  = {-{Stealth[length=2.2mm]}, colReport, thick, dashed},
+  physflow/.style= {-{Triangle[length=2.6mm,width=2mm]}, colPhys, ultra thick, densely dotted},
+  actbox/.style  = {rectangle, rounded corners=2pt, draw=colBoxLine, fill=colBoxFill,
+                    text width=3.1cm, align=center, minimum height=0.9cm, font=\small, inner sep=4pt},
+  decbox/.style  = {diamond, draw=colBoxLine, fill=colBoxFill, aspect=2.2,
+                    align=center, font=\scriptsize, inner sep=2pt},
+  startstop/.style = {rectangle, rounded corners=8pt, draw=colBoxLine, fill=colLaneFill,
+                    text width=2.6cm, align=center, minimum height=0.7cm, font=\small\bfseries, inner sep=3pt},
+  lane/.style    = {rectangle, draw=colBoxLine, fill=colLaneFill, minimum height=1.3cm, anchor=north west},
+  lifeline/.style= {colBoxLine, thin},
+  actorbox/.style= {rectangle, draw=colBoxLine, fill=colBoxFill, minimum width=2.8cm,
+                    minimum height=0.7cm, align=center, font=\small\bfseries},
+  actlabel/.style= {font=\scriptsize, align=center, text width=2.6cm},
+}
+
+% Macros pour diagrammes de séquence UML minimalistes.
+% \seqactor{x}{nom}{sous-texte} : place l'en-tête d'acteur/lifeline en x=0 en haut.
+% \seqline{x}{hauteur} : trace la ligne de vie pointillée sous l'acteur.
+% \seqmsg{style}{y}{xEmetteur}{xDestinataire}{label} : flèche horizontale à l'ordonnée -y.
+% \seqnote{x}{y}{largeur}{texte} : note explicative à côté d'un message.
+\newcommand{\seqactor}[3]{%
+  \node[actorbox] at (#1,0) {#2\\\scriptsize #3};
+}
+\newcommand{\seqline}[2]{%
+  \draw[lifeline, dashed] (#1,-0.4) -- (#1,-#2);
+}
+\newcommand{\seqmsg}[5]{%
+  \draw[#1] (#3,-#2) -- node[above,font=\scriptsize,align=center]{#5} (#4,-#2);
+}
+\newcommand{\seqnote}[4]{%
+  \node[actlabel, text width=#3, align=left, anchor=west] at (#1,-#2) {#4};
+}

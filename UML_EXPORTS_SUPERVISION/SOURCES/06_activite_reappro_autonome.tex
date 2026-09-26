@@ -1,0 +1,29 @@
+\begin{tikzpicture}[node distance=7mm, font=\scriptsize]
+
+  \node[startstop] (n0) {Politique de stock autonome\\(\emph{verifier\allowbreak{}Politique\allowbreak{}Stock\allowbreak{}Produit})};
+  \node[decbox] (dec) [below=of n0] {Seuil de\\réappro atteint ?};
+  \node[actbox] (n1) [below=16mm of dec] {Création ordre interne\\\texttt{REAPPRO\_n}\\(\emph{est\allowbreak{}Ordre\allowbreak{}Stock\allowbreak{}Autonome} = vrai)};
+  \node[actbox] (n2) [below=of n1] {Contrôle matière\\(même point d'entrée que MTO/ETO :\\\emph{analyser\allowbreak{}Matiere\allowbreak{}Commande\allowbreak{}Orchestree})};
+  \node[actbox] (n3) [below=of n2] {SOURCE si nécessaire\\(voir figures Source/Deliver)};
+  \node[actbox] (n4) [below=of n3] {MAKE\\(production du lot de reconstitution)};
+  \node[actbox] (n5) [below=of n4] {Reconstitution stock PF};
+  \node[startstop] (n6) [below=of n5] {Clôture de l'ordre \texttt{REAPPRO\_n}};
+
+  \draw[amend] (n0) -- (dec);
+  \draw[amend] (dec) -- node[right]{oui} (n1);
+  \node[actlabel, left=8mm of dec, text width=2.4cm] {non : nouvelle\\évaluation au\\cycle suivant};
+  \draw[amend] (n1) -- (n2);
+  \draw[amend] (n2) -- (n3);
+  \draw[amend] (n3) -- (n4);
+  \draw[amend] (n4) -- (n5);
+  \draw[amend] (n5) -- (n6);
+
+  \node[actbox, fill=colLaneFill, draw=colPhys, text width=6.4cm, right=1.4cm of n2] (note)
+    {\texttt{REAPPRO\_*} est un ordre \textbf{interne} de reconstitution de\\
+     stock, jamais une commande cliente : exclu par construction\\
+     de \texttt{nombreCommandesOuvertes()} et de tout compteur de\\
+     commandes clientes (\texttt{estOrdreStockAutonome()}). Sa clôture\\
+     peut néanmoins bloquer la terminalité opérationnelle tant\\
+     qu'il reste ouvert.};
+
+\end{tikzpicture}

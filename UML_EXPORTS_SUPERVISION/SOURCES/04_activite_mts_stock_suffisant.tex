@@ -1,15 +1,15 @@
-\begin{tikzpicture}[node distance=6.5mm, font=\scriptsize]
+\begin{tikzpicture}[node distance=6.5mm, font=\small]
 
-  \node[startstop] (n0) {Décision tactique :\\stock PF suffisant};
-  \node[actbox] (n1) [below=of n0] {Plan de livraison\\(\emph{Delivery\allowbreak{}Plan})\\AT-sP4 $\to$ CA-sD1};
-  \node[actbox] (n2) [below=of n1] {Ordre de livraison\\(\emph{Delivery\allowbreak{}Order})\\CA-sD1 $\to$ AOp-sD1};
-  \node[actbox] (n3) [below=of n2] {Réservation stock\\(\emph{Reserve\allowbreak{}Inventory} / \emph{Inventory\allowbreak{}Reserved})\\AOp-sD1 $\leftrightarrow$ AOe-sD1.8};
-  \node[actbox] (n4) [below=of n3] {Prélèvement\\(\emph{PickingTask} / \emph{Picking\allowbreak{}Completed})};
-  \node[actbox] (n5) [below=of n4] {Conditionnement\\(\emph{PackingTask} / \emph{Packing\allowbreak{}Completed})};
-  \node[actbox] (n6) [below=of n5] {Chargement\\(\emph{LoadingTask} / \emph{Loading\allowbreak{}Completed})};
-  \node[actbox] (n7) [below=of n6] {Expédition\\(\emph{Shipment\allowbreak{}Order})};
-  \node[actbox] (n8) [below=of n7] {Réception client\\(\emph{Delivery\allowbreak{}Completed})};
-  \node[startstop] (n9) [below=of n8] {Clôture commande\\(SERVIE)};
+  \node[startstop] (n0) {Stock PF suffisant};
+  \node[actbox] (n1) [below=of n0] {Plan de livraison\\\scriptsize AT-sP4 $\to$ CA-sD1};
+  \node[actbox] (n2) [below=of n1] {Ordre de livraison\\\scriptsize CA-sD1 $\to$ AOp-sD1};
+  \node[actbox] (n3) [below=of n2] {Réservation stock\\\scriptsize AOp-sD1 $\leftrightarrow$ AOe-sD1.8};
+  \node[actbox] (n4) [below=of n3] {Prélèvement};
+  \node[actbox] (n5) [below=of n4] {Conditionnement\\\scriptsize\itshape MAKE non déclenché};
+  \node[actbox] (n6) [below=of n5] {Chargement};
+  \node[actbox] (n7) [below=of n6] {Expédition};
+  \node[actbox] (n8) [below=of n7] {Réception client};
+  \node[startstop] (n9) [below=of n8] {Clôture (SERVIE)};
 
   \draw[amend] (n0) -- (n1);
   \draw[amend] (n1) -- (n2);
@@ -20,11 +20,5 @@
   \draw[amend] (n6) -- (n7);
   \draw[exec]  (n7) -- (n8);
   \draw[amend] (n8) -- (n9);
-
-  \node[actbox, fill=colLaneFill, draw=colPhys, text width=3.6cm, right=1.6cm of n5] (note)
-    {MAKE n'est pas déclenché pour cette commande : le produit fini\\
-     provient exclusivement du stock existant, reconstitué en amont\\
-     par la politique autonome (figure Réapprovisionnement).};
-  \draw[physflow] (note.west) -- (n5.east);
 
 \end{tikzpicture}

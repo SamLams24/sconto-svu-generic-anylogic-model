@@ -1,37 +1,29 @@
 \begin{tikzpicture}[node distance=0.9cm and 1.6cm, font=\small]
 
-  % Colonne hiérarchique centrale (une seule instance conceptuelle par
-  % niveau ; en réalité plusieurs CoordinatorAgent/OperationalAgent existent,
-  % un par macro-processus SCOR -- non multiplié ici par lisibilité).
-  \node[startstop, fill=colBoxFill] (strat) {Strategic\\\scriptsize AS-sP1};
-  \node[actbox, below=of strat] (tact) {Tactical\\\scriptsize AT-sP2 / AT-sP3 / AT-sP4};
-  \node[actbox, below=of tact] (coord) {Coordinator\\\scriptsize CA-sS1 / CA-sM1 / CA-sD1};
-  \node[actbox, below=of coord] (pilot) {Operational Pilot\\\scriptsize AOp-sS1.1 / AOp-sM1.1};
-  \node[actbox, below=of pilot] (exec) {Operational Execution\\\scriptsize AOe-sS1.2/1.3, AOe-sM1.2..7, AOe-sD1.8..12};
+  \node[startstop, fill=colBoxFill] (strat) {Agent stratégique\\\scriptsize AS-sP1};
+  \node[actbox] (tact) [below=of strat] {Agent tactique\\\scriptsize AT-sP2 / AT-sP3 / AT-sP4};
+  \node[actbox] (coord) [below=of tact] {Coordinateur\\\scriptsize CA-sS1 / CA-sM1 / CA-sD1};
+  \node[actbox] (pilot) [below=of coord] {Pilote opérationnel\\\scriptsize AOp-sS1.1 / AOp-sM1.1};
+  \node[actbox] (exec) [below=of pilot] {Agent d'exécution\\\scriptsize AOe-sS1.2/1.3, AOe-sM1.2..7, AOe-sD1.8..12};
 
-  % Acteurs externes
-  \node[actorbox, left=2.6cm of pilot] (supplier) {Supplier\\\scriptsize SupplierActor};
-  \node[actorbox, right=2.6cm of pilot] (customer) {Customer\\\scriptsize CustomerActor};
+  \node[actorbox] (supplier) [left=3.0cm of exec] {Fournisseur\\\scriptsize SupplierActor};
+  \node[actorbox] (customer) [right=3.0cm of exec] {Client\\\scriptsize CustomerActor};
 
-  % Flux physique en bas
-  \node[actbox, below=1.1cm of exec, text width=6.4cm, fill=colLaneFill] (phys)
-    {Flux physique : matière fournisseur $\rightarrow$ postes $\rightarrow$ produit fini $\rightarrow$ client};
+  \node[actbox, below=1.1cm of exec, text width=6.6cm, fill=colLaneFill] (phys)
+    {Flux physique : matière $\to$ postes $\to$ produit fini $\to$ client};
 
-  % AMENDMENT descendant (colonne de gauche des flèches)
-  \draw[amend] ([xshift=-0.6cm]strat.south) -- node[left,font=\scriptsize,colAmend]{AMENDMENT} ([xshift=-0.6cm]tact.north);
+  \draw[amend] ([xshift=-0.6cm]strat.south) -- node[left,font=\scriptsize,colAmend]{ordres} ([xshift=-0.6cm]tact.north);
   \draw[amend] ([xshift=-0.6cm]tact.south) -- ([xshift=-0.6cm]coord.north);
   \draw[amend] ([xshift=-0.6cm]coord.south) -- ([xshift=-0.6cm]pilot.north);
   \draw[amend] ([xshift=-0.6cm]pilot.south) -- ([xshift=-0.6cm]exec.north);
 
-  % REPORT remontant (colonne de droite des flèches)
-  \draw[report] ([xshift=0.6cm]exec.north) -- node[right,font=\scriptsize,colReport]{REPORT} ([xshift=0.6cm]pilot.south);
+  \draw[report] ([xshift=0.6cm]exec.north) -- node[right,font=\scriptsize,colReport]{rapports} ([xshift=0.6cm]pilot.south);
   \draw[report] ([xshift=0.6cm]pilot.north) -- ([xshift=0.6cm]coord.south);
   \draw[report] ([xshift=0.6cm]coord.north) -- ([xshift=0.6cm]tact.south);
   \draw[report] ([xshift=0.6cm]tact.north) -- ([xshift=0.6cm]strat.south);
 
-  % EXECUTION vers/depuis les acteurs externes et le flux physique
-  \draw[exec] (supplier.east) -- node[above,font=\scriptsize,colExec]{EXECUTION} (pilot.west);
-  \draw[exec] (pilot.east) -- node[above,font=\scriptsize,colExec]{EXECUTION} (customer.west);
+  \draw[exec] (supplier.east) -- node[above,font=\scriptsize,colExec]{échanges} (exec.west);
+  \draw[exec] (exec.east) -- node[above,font=\scriptsize,colExec]{échanges} (customer.west);
   \draw[exec] (exec.south) -- (phys.north);
   \draw[physflow] (supplier.south) .. controls +(0,-2.4) and +(-3.0,0) .. (phys.west);
   \draw[physflow] (phys.east) .. controls +(3.0,0) and +(0,-2.4) .. (customer.south);

@@ -1,24 +1,24 @@
-\begin{tikzpicture}[font=\scriptsize]
+\begin{tikzpicture}[font=\small]
 
-  \node[startstop, text width=3.6cm] (n0) at (0,0) {Stock PF insuffisant\\(MTO/ETO ou REAPPRO)};
-  \node[actbox] (n1) at (0,-2.9) {Vérification capacité/matière\\(\emph{Make\allowbreak{}Feasibility\allowbreak{}Check} $\to$\\ \emph{Capacity\allowbreak{}Check\allowbreak{}Request} +\\ \emph{Material\allowbreak{}Check\allowbreak{}Request})\\AT-sP3 $\to$ CA-sM1 $\to$ AOp-sM1.1};
-  \node[decbox] (dec) at (0,-5.9) {Matière\\suffisante ?};
+  \node[startstop] (n0) at (0,0) {Stock PF insuffisant};
+  \node[actbox] (n1) at (0,-1.6) {Vérifier capacité\\et matières};
+  \node[decbox] (dec) at (0,-3.6) {Matière\\suffisante ?};
 
-  \node[actbox] (nY) at (-3.6,-8.0) {Production\\directe};
-  \node[actbox] (n2) at (4.6,-8.0) {Consultation fournisseur\\(\emph{Source\allowbreak{}Feasibility\allowbreak{}Request} $\to$\\ \emph{Supplier\allowbreak{}Check\allowbreak{}Order} $\to$ ... $\to$\\ \emph{Supplier\allowbreak{}Commitment})\\voir figure SEQ-03};
-  \node[actbox] (n3) at (4.6,-12.6) {Approvisionnement\\(\emph{Procurement\allowbreak{}Plan/\allowbreak{}Order} $\to$\\ \emph{Purchase\allowbreak{}Order} $\to$ \emph{Inbound\allowbreak{}Delivery} $\to$\\ \emph{Material\allowbreak{}Received} $\to$ \emph{Material\allowbreak{}Available})\\voir figure SEQ-04};
+  \node[actbox] (nY) at (-4.2,-6.0) {Planifier Make};
+  \node[actbox] (n2) at (4.2,-6.0) {Consulter\\fournisseur};
+  \node[actbox] (n3) at (4.2,-8.2) {Approvisionner};
 
-  \node[actbox] (nMake) at (0,-15.1) {MAKE\\(\emph{Production\allowbreak{}Plan/\allowbreak{}Order/\allowbreak{}Task\allowbreak{}Assignment} $\to$\\ \emph{Execution\allowbreak{}Start})\\AT-sP3 $\to$ CA-sM1 $\to$ AOp-sM1.1};
-  \node[actbox] (n4) at (0,-17.4) {Produit fini disponible\\(\emph{Product\allowbreak{}Available\allowbreak{}For\allowbreak{}Delivery})};
-  \node[startstop, text width=3.6cm] (n5) at (0,-19.4) {DELIVER\\(voir figure MTS, à partir de \emph{Delivery\allowbreak{}Plan})};
+  \node[actbox] (nMake) at (0,-10.2) {Lancer Make};
+  \node[actbox] (n4) at (0,-11.8) {Produit fini\\disponible};
+  \node[startstop] (n5) at (0,-13.4) {Deliver};
 
   \draw[amend] (n0) -- (n1);
   \draw[amend] (n1) -- (dec);
   \draw[amend] (dec) -- node[above,sloped]{oui} (nY);
   \draw[amend] (dec) -- node[above,sloped]{non} (n2);
   \draw[amend] (n2) -- (n3);
-  \draw[amend] (nY) |- (nMake);
-  \draw[amend] (n3) |- (nMake);
+  \draw[amend] (nY.south) to[out=-90,in=180] (nMake.west);
+  \draw[amend] (n3.south) to[out=-90,in=0] (nMake.east);
   \draw[amend] (nMake) -- (n4);
   \draw[amend] (n4) -- (n5);
 

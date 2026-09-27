@@ -1,46 +1,43 @@
-\begin{tikzpicture}[node distance=7mm and 8mm, font=\scriptsize]
+\begin{tikzpicture}[node distance=7mm and 6mm, font=\small]
 
-  % Colonnes de couloirs (swimlanes) : x centraux
   \def\xCust{0}
-  \def\xDel{3.4}
-  \def\xTac{7.2}
-  \def\xSM{11.2}
+  \def\xDel{3.2}
+  \def\xTac{6.6}
+  \def\xSrc{10.0}
+  \def\xMake{13.4}
 
-  % --- Bandeaux de couloirs (dessinés en premier, sous les nœuds) ---
   \begin{scope}[on background layer]
-    \node[lane, minimum width=2.6cm, minimum height=13.6cm, anchor=north] (laneCust) at (\xCust,0.6) {};
-    \node[lane, fill=colBoxFill, minimum width=3.0cm, minimum height=13.6cm, anchor=north] (laneDel) at (\xDel,0.6) {};
-    \node[lane, minimum width=3.0cm, minimum height=13.6cm, anchor=north] (laneTac) at (\xTac,0.6) {};
-    \node[lane, fill=colBoxFill, minimum width=3.4cm, minimum height=13.6cm, anchor=north] (laneSM) at (\xSM,0.6) {};
+    \node[lane, minimum width=2.4cm, minimum height=13.2cm, anchor=north] (laneCust) at (\xCust,0.6) {};
+    \node[lane, fill=colBoxFill, minimum width=2.8cm, minimum height=13.2cm, anchor=north] (laneDel) at (\xDel,0.6) {};
+    \node[lane, minimum width=2.8cm, minimum height=13.2cm, anchor=north] (laneTac) at (\xTac,0.6) {};
+    \node[lane, fill=colBoxFill, minimum width=2.8cm, minimum height=13.2cm, anchor=north] (laneSrc) at (\xSrc,0.6) {};
+    \node[lane, minimum width=2.8cm, minimum height=13.2cm, anchor=north] (laneMake) at (\xMake,0.6) {};
   \end{scope}
-  \node[above=1mm of laneCust, font=\scriptsize\bfseries] {Customer};
-  \node[above=1mm of laneDel, font=\scriptsize\bfseries] {Deliver (Coordinator/OpExec)};
-  \node[above=1mm of laneTac, font=\scriptsize\bfseries] {Tactical (décision)};
-  \node[above=1mm of laneSM, font=\scriptsize\bfseries] {Source / Make};
+  \node[above=1mm of laneCust, font=\scriptsize\bfseries] {Client};
+  \node[above=1mm of laneDel, font=\scriptsize\bfseries] {Deliver};
+  \node[above=1mm of laneTac, font=\scriptsize\bfseries] {Tactique};
+  \node[above=1mm of laneSrc, font=\scriptsize\bfseries] {Source};
+  \node[above=1mm of laneMake, font=\scriptsize\bfseries] {Make};
 
-  % --- Étapes ---
-  \node[startstop] (start) at (\xCust,0) {Émission demande\\(CustomerOrder)};
-  \node[actbox] (recep) at (\xDel,-1.4) {Réception commande\\(OrderReceived)};
-  \node[actbox] (stock) at (\xDel,-2.9) {Vérification stock\\(InventoryCheck/Response)};
-  \node[actbox] (valid) at (\xDel,-4.4) {Validation\\(OrderValidated)};
-  \node[decbox] (decT) at (\xTac,-5.9) {Stock PF\\suffisant ?};
-  \node[decbox] (decM) at (\xSM,-7.6) {Matière\\suffisante ?};
-  \node[actbox, fill=colLaneFill] (source) at (\xSM,-9.4) {SOURCE\\(consultation fournisseur)};
-  \node[actbox] (make) at (\xSM,-11.0) {MAKE\\(production)};
-  \node[actbox] (deliverY) at (\xDel,-7.6) {DELIVER\\(depuis stock existant)};
-  \node[actbox] (deliverN) at (\xDel,-11.8) {DELIVER\\(après production)};
-  \node[actbox] (recepClient) at (\xDel,-12.9) {Réception client\\(DeliveryCompleted)};
-  \node[actbox] (cloture) at (\xDel,-13.9) {Clôture commande};
-  \node[startstop] (report) at (\xTac,-13.9) {Reporting\\(Operational $\rightarrow$ Macro)};
+  \node[startstop] (start) at (\xCust,0) {Commande};
+  \node[actbox] (recep) at (\xDel,-1.4) {Réception};
+  \node[actbox] (valid) at (\xDel,-2.9) {Validation};
+  \node[decbox] (decT) at (\xTac,-4.4) {Stock PF\\suffisant ?};
+  \node[decbox] (decM) at (\xMake,-6.4) {Matière\\suffisante ?};
+  \node[actbox, fill=colLaneFill] (source) at (\xSrc,-8.1) {Consulter\\fournisseur};
+  \node[actbox] (make) at (\xMake,-9.7) {Lancer\\Make};
+  \node[actbox] (deliverY) at (\xDel,-6.4) {Deliver};
+  \node[actbox] (deliverN) at (\xDel,-11.0) {Deliver};
+  \node[actbox] (recepClient) at (\xDel,-12.1) {Réception client};
+  \node[actbox] (cloture) at (\xDel,-13.0) {Clôture};
+  \node[startstop] (report) at (\xTac,-13.0) {Reporting};
 
-  % --- Flèches (flux de contrôle, style UML activité : lignes fines) ---
   \draw[amend] (start) -- (recep);
-  \draw[amend] (recep) -- (stock);
-  \draw[amend] (stock) -- (valid);
+  \draw[amend] (recep) -- (valid);
   \draw[amend] (valid) -- (decT);
   \draw[amend] (decT) -- node[left]{oui} (deliverY);
   \draw[amend] (decT) -- node[above]{non} (decM);
-  \draw[amend] (decM) -- node[left,pos=0.75]{oui} (make);
+  \draw[amend] (decM) -- node[left,pos=0.8]{oui} (make);
   \draw[amend] (decM) -- node[above]{non} (source);
   \draw[amend] (source) -- (make);
   \draw[amend] (make) -- (deliverN);
@@ -48,10 +45,5 @@
   \draw[amend] (deliverN) |- (recepClient);
   \draw[amend] (recepClient) -- (cloture);
   \draw[report] (cloture) -- (report);
-
-  \node[actlabel, text width=3.6cm, below=1mm of report, align=left] {
-    \textcolor{colAmend}{$\longrightarrow$} AMENDMENT/flux de contrôle \quad
-    \textcolor{colReport}{- - $\rightarrow$} REPORT
-  };
 
 \end{tikzpicture}

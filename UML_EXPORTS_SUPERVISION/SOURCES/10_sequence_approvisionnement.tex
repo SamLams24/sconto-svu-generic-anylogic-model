@@ -1,26 +1,21 @@
-\begin{tikzpicture}[font=\scriptsize]
-  \seqactor{0}{Tactical Source}{AT-sP2}
-  \seqactor{3.6}{Coordinator}{CA-sS1}
-  \seqactor{7.4}{Pilote Source}{AOp-sS1.1}
-  \seqactor{11.4}{Exéc. Source}{AOe-sS1.2 / .3}
-  \seqactor{15.6}{Supplier}{SupplierActor}
-  \seqactor{19.6}{Tactical Make}{AT-sP3}
+\begin{tikzpicture}[font=\small]
+  \seqactor{0}{Tact. Source}{AT-sP2}
+  \seqactor{4.4}{Coordinateur}{CA-sS1}
+  \seqactor{9.0}{Pilote}{AOp-sS1.1}
+  \seqactor{13.8}{Exécution}{AOe-sS1.2 / .3}
+  \seqactor{18.6}{Fournisseur}{SupplierActor}
+  \seqactor{23.2}{Tact. Make}{AT-sP3}
 
-  \seqline{0}{14.4} \seqline{3.6}{14.4} \seqline{7.4}{14.4}
-  \seqline{11.4}{14.4} \seqline{15.6}{14.4} \seqline{19.6}{14.4}
+  \seqline{0}{11.4} \seqline{4.4}{11.4} \seqline{9.0}{11.4}
+  \seqline{13.8}{11.4} \seqline{18.6}{11.4} \seqline{23.2}{11.4}
 
-  \seqmsg{amend}{1.2}{0}{3.6}{\emph{ProcurementPlan}}
-  \seqmsg{amend}{2.4}{3.6}{7.4}{\emph{ProcurementOrder}}
-  \seqmsg{amend}{3.6}{7.4}{11.4}{\emph{PurchaseOrderTask}}
-  \seqmsg{amend}{4.8}{11.4}{15.6}{\emph{PurchaseOrder}}
-  \draw[physflow] (15.6,-6.4) -- node[above,font=\scriptsize]{livraison physique matière} (11.4,-6.4);
-  \seqmsg{exec}{6.0}{15.6}{11.4}{\emph{InboundDelivery}}
-  \seqmsg{exec}{7.2}{11.4}{7.4}{\emph{MaterialReceived}}
-  \seqmsg{report}{8.4}{7.4}{3.6}{\emph{OperationalReport}}
-  \seqmsg{report}{9.6}{3.6}{0}{\emph{ProcurementCompleted}}
-  \seqmsg{report}{10.8}{0}{19.6}{\emph{MaterialAvailable}}
-
-  \seqnote{0}{12.0}{18cm}{\emph{MaterialAvailable} libère la production côté Make (figure SEQ-05) : la matière reçue est désormais
-   disponible pour l'ordre de fabrication en attente, qu'il s'agisse d'une commande MTO/ETO ou d'un ordre
-   \texttt{REAPPRO\_*}.}
+  \seqmsg{amend}{1.0}{0}{4.4}{\emph{ProcurementPlan}}
+  \seqmsg{amend}{2.0}{4.4}{9.0}{\emph{ProcurementOrder}}
+  \seqmsg{amend}{3.0}{9.0}{13.8}{\emph{PurchaseOrderTask}}
+  \seqmsg{amend}{4.0}{13.8}{18.6}{\emph{PurchaseOrder}}
+  \seqmsg{exec}{5.2}{18.6}{13.8}{\emph{InboundDelivery}}
+  \seqmsg{exec}{6.2}{13.8}{9.0}{\emph{MaterialReceived}}
+  \seqmsg{report}{7.2}{9.0}{4.4}{\emph{OperationalReport}}
+  \seqmsg{report}{8.2}{4.4}{0}{\emph{ProcurementCompleted}}
+  \seqmsg{report}{9.2}{0}{23.2}{\emph{MaterialAvailable}}
 \end{tikzpicture}

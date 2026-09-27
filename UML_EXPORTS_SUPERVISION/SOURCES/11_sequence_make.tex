@@ -1,29 +1,24 @@
-\begin{tikzpicture}[font=\scriptsize]
-  \seqactor{0}{Tactical Make}{AT-sP3}
-  \seqactor{4.0}{Coordinator}{CA-sM1}
-  \seqactor{8.4}{Pilote Make}{AOp-sM1.1}
-  \seqactor{13.0}{Exéc. Make}{AOe-sM1.2..7}
-  \seqactor{17.6}{Tactical Deliver}{AT-sP4}
+\begin{tikzpicture}[font=\small]
+  \seqactor{0}{Tact. Make}{AT-sP3}
+  \seqactor{4.8}{Coordinateur}{CA-sM1}
+  \seqactor{10.0}{Pilote}{AOp-sM1.1}
+  \seqactor{15.4}{Exécution}{AOe-sM1.2..7}
+  \seqactor{20.6}{Tact. Deliver}{AT-sP4}
 
-  \seqline{0}{15.6} \seqline{4.0}{15.6} \seqline{8.4}{15.6} \seqline{13.0}{15.6} \seqline{17.6}{15.6}
+  \seqline{0}{14.8} \seqline{4.8}{14.8} \seqline{10.0}{14.8} \seqline{15.4}{14.8} \seqline{20.6}{14.8}
 
-  \seqmsg{amend}{1.2}{0}{4.0}{\emph{ProductionPlan}}
-  \seqmsg{amend}{2.4}{4.0}{8.4}{\emph{ProductionOrder}}
-  \seqmsg{amend}{3.6}{8.4}{13.0}{\emph{ProductionTaskAssignment}}
-  \seqmsg{exec}{4.8}{13.0}{8.4}{\emph{ExecutionStart}}
+  \seqmsg{amend}{1.1}{0}{4.8}{\emph{ProductionPlan}}
+  \seqmsg{amend}{2.1}{4.8}{10.0}{\emph{ProductionOrder}}
+  \seqmsg{amend}{3.1}{10.0}{15.4}{\emph{ProductionTaskAssignment}}
+  \seqmsg{exec}{4.2}{15.4}{10.0}{\emph{ExecutionStart}}
 
-  % Fragment UML loop : unités du lot (pas de représentation individuelle).
-  \draw[colBoxLine] (7.9,-5.4) rectangle (17.4,-9.2);
-  \node[anchor=north west, font=\scriptsize\bfseries] at (7.95,-5.42) {loop [pour chaque unité du lot / de la commande]};
-  \seqmsg{exec}{6.6}{13.0}{8.4}{\emph{ExecutionProgress}}
-  \seqnote{13.5}{8.0}{3.6cm}{Traitement physique\\sur les micro-activités\\du poste (durée tirée\\de la loi de temps).}
+  \draw[colBoxLine] (9.5,-4.9) rectangle (20.4,-7.9);
+  \node[anchor=north west, font=\small\bfseries] at (9.55,-4.92) {loop [unités du lot]};
+  \seqmsg{exec}{6.2}{15.4}{10.0}{\emph{ExecutionProgress}}
+  \node[font=\scriptsize\itshape] at (12.7,-7.3) {Traitement des unités du lot};
 
-  \seqmsg{exec}{10.2}{13.0}{8.4}{\emph{ExecutionEnd}}
-  \seqmsg{report}{11.4}{8.4}{4.0}{\emph{OperationalReport}}
-  \seqmsg{report}{12.6}{4.0}{0}{\emph{ProductionCompleted}}
-  \seqmsg{report}{13.8}{0}{17.6}{\emph{ProductAvailableForDelivery}}
-
-  \seqnote{0}{14.8}{17.4cm}{\emph{ExecutionProgress} et \emph{ExecutionEnd} sont confirmés dans le code (\texttt{tracerFluxHierarchique}) mais
-   n'ont pas été retrouvés dans l'ABox du run de validation antérieur documenté en annexe -- statut
-   \og implémenté, non observé \fg{} plutôt qu'observé, malgré leur présence certaine dans le modèle.}
+  \seqmsg{exec}{9.4}{15.4}{10.0}{\emph{ExecutionEnd}}
+  \seqmsg{report}{10.5}{10.0}{4.8}{\emph{OperationalReport}}
+  \seqmsg{report}{11.6}{4.8}{0}{\emph{ProductionCompleted}}
+  \seqmsg{report}{12.7}{0}{20.6}{\emph{ProductAvailableForDelivery}}
 \end{tikzpicture}

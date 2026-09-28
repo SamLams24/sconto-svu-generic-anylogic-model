@@ -1,21 +1,23 @@
 \begin{tikzpicture}[font=\small]
-  \seqactor{0}{Coordinateur}{CA-sD1}
-  \seqactor{6.0}{Pilote}{AOp-sD1}
-  \seqactor{12.5}{Exécution}{AOe-sD1.8..12}
-  \seqactor{19.0}{Client}{CustomerActor}
+  \seqactor{0}{Tactique}{AT-sP4}
+  \seqactor{5.2}{Coordinateur}{CA-sD1}
+  \seqactor{11.2}{Pilote}{AOp-sD1.3 / .7}
+  \seqactor{17.7}{Exécution}{AOe-sD1.8..12}
+  \seqactor{24.2}{Client}{CustomerActor}
 
-  \seqline{0}{13.4} \seqline{6.0}{13.4} \seqline{12.5}{13.4} \seqline{19.0}{13.4}
+  \seqline{0}{14.6} \seqline{5.2}{14.6} \seqline{11.2}{14.6} \seqline{17.7}{14.6} \seqline{24.2}{14.6}
 
-  \seqmsg{amend}{1.1}{0}{6.0}{\emph{DeliveryOrder}}
-  \seqmsg{amend}{2.2}{6.0}{12.5}{\emph{ReserveInventory}}
-  \seqmsg{exec}{3.3}{12.5}{6.0}{\emph{InventoryReserved}}
-  \seqmsg{amend}{4.4}{6.0}{12.5}{\emph{PickingTask}}
-  \seqmsg{exec}{5.5}{12.5}{6.0}{\emph{PickingCompleted}}
-  \seqmsg{amend}{6.6}{6.0}{12.5}{\emph{PackingTask}}
-  \seqmsg{exec}{7.7}{12.5}{6.0}{\emph{PackingCompleted}}
-  \seqmsg{amend}{8.8}{6.0}{12.5}{\emph{LoadingTask}}
-  \seqmsg{exec}{9.9}{12.5}{6.0}{\emph{LoadingCompleted}}
-  \seqmsg{amend}{11.0}{6.0}{12.5}{\emph{ShipmentOrder}}
-  \draw[physflow] (12.5,-12.3) -- node[above,font=\small]{transport} (19.0,-12.3);
-  \seqmsg{exec}{13.2}{12.5}{6.0}{\emph{DeliveryCompleted}}
+  \seqmsg{amend}{1.1}{0}{5.2}{\emph{DeliveryPlan}}
+  \seqmsg{amend}{2.3}{5.2}{11.2}{\emph{DeliveryOrder}}
+  \seqmsg{amend}{3.4}{11.2}{17.7}{\emph{ReserveInventory}}
+  \seqmsg{exec}{4.5}{17.7}{11.2}{\emph{InventoryReserved}}
+  \seqmsg{amend}{5.6}{11.2}{17.7}{\emph{PickingTask}}
+  \seqmsg{exec}{6.7}{17.7}{11.2}{\emph{PickingCompleted}}
+  \seqmsg{amend}{7.8}{11.2}{17.7}{\emph{PackingTask}}
+  \seqmsg{exec}{8.9}{17.7}{11.2}{\emph{PackingCompleted}}
+  \seqmsg{amend}{10.0}{11.2}{17.7}{\emph{LoadingTask}}
+  \seqmsg{exec}{11.1}{17.7}{11.2}{\emph{LoadingCompleted}}
+  \seqmsg{amend}{12.2}{11.2}{17.7}{\emph{ShipmentOrder}}
+  \draw[physflow] (17.7,-13.5) -- node[above,font=\small]{transport} (24.2,-13.5);
+  \seqmsg{exec}{14.4}{17.7}{11.2}{\emph{DeliveryCompleted}}
 \end{tikzpicture}

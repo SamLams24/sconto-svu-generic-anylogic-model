@@ -2,8 +2,8 @@
 
   \node[startstop] (n0) {Stock PF suffisant};
   \node[actbox] (n1) [below=of n0] {Plan de livraison\\\scriptsize AT-sP4 $\to$ CA-sD1};
-  \node[actbox] (n2) [below=of n1] {Ordre de livraison\\\scriptsize CA-sD1 $\to$ AOp-sD1};
-  \node[actbox] (n3) [below=of n2] {Réservation stock\\\scriptsize AOp-sD1 $\leftrightarrow$ AOe-sD1.8};
+  \node[actbox] (n2) [below=of n1] {Ordre de livraison\\\scriptsize CA-sD1 $\to$ AOp-sD1.3};
+  \node[actbox] (n3) [below=of n2] {Réservation stock\\\scriptsize AOp-sD1.3 $\leftrightarrow$ AOe-sD1.8};
   \node[actbox] (n4) [below=of n3] {Prélèvement};
   \node[actbox] (n5) [below=of n4] {Conditionnement\\\scriptsize\itshape MAKE non déclenché};
   \node[actbox] (n6) [below=of n5] {Chargement};

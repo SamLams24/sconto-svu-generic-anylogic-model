@@ -43,7 +43,7 @@
 \vspace*{2cm}
 {\Huge\bfseries Communications inter-agents\\[0.3cm] du modèle SCONTO-SVU\par}
 \vspace{0.6cm}
-{\Large Diagrammes UML d'activités et de séquence\\ fondés sur le modèle générique validé\par}
+{\Large Diagrammes UML d'activités et de séquence\\ fondés sur le modèle générique audité\par}
 \vspace{1.5cm}
 {\large Modèle audité : \code{model/\allowbreak{}SCONTO\_SVU\_GENERIC\_MASTER.alp}\par}
 {\large Dépôt : \code{sconto-svu-generic-anylogic-model}, branche \code{docs/uml-agent-communications}\par}
@@ -93,6 +93,7 @@ Identifiant & Rôle \\
 \code{AOp} et \code{AOe} ne correspondent pas à des classes Java distinctes : \code{OperationalAgent} est une classe unique dont l'identifiant encode le rôle et l'activité. Cette distinction reste utile à la lecture des diagrammes.
 
 \subsection{Catégories AER}
+\label{sec:aer}
 
 \begin{itemize}
   \item \textbf{AMENDMENT} (\textcolor{colAmend}{bleu, trait plein}) : instruction, plan ou demande descendant dans l'organisation.
@@ -178,7 +179,7 @@ Ce tronc est commun aux commandes clientes MTS, MTO et ETO : aucune décision de
 \end{figure}
 \end{landscape}
 
-Le client déclenche le flux par \code{CustomerOrder}. L'information descend et remonte entre les niveaux d'exécution, de pilotage et de coordination du macro-processus Deliver, avant qu'une décision de stratégie ne soit demandée au niveau tactique.
+Le client déclenche le flux par \code{CustomerOrder}. L'information descend et remonte entre les niveaux d'exécution, de pilotage et de coordination du macro-processus Deliver, avant qu'une décision de stratégie ne soit demandée au niveau tactique. Deux pilotes distincts interviennent : \code{AOp-sD1.1} traite la réception et la validation, \code{AOp-sD1.3} traite la disponibilité de stock ; le Run 01 ne journalise pas de message AER explicite entre ces deux rôles.
 
 \statut{\stRUN.}
 
@@ -208,7 +209,7 @@ Lorsque le stock de produit fini suffit, la commande est livrée directement : M
 \end{figure}
 \end{landscape}
 
-Chaque étape physique (prélèvement, conditionnement, chargement) est encadrée par une instruction (AMENDMENT) et un constat (EXECUTION), avant le transport vers le client.
+La séquence part de \code{DeliveryPlan}, émis par le tactique Deliver, cohérent avec le tronc ACT-03 (\S\ref{sec:mts}). Chaque étape physique (prélèvement, conditionnement, chargement) est encadrée par une instruction (AMENDMENT) et un constat (EXECUTION), avant le transport vers le client. La colonne \og{}~Pilote~\fg{} est une vue agrégée : \code{AOp-sD1.3} porte les étapes de préparation, \code{AOp-sD1.7} reçoit \code{DeliveryCompleted} et déclenche le reporting (\S\ref{sec:reporting}). La colonne \og{}~Exécution~\fg{} agrège de même les micro-activités \code{AOe-sD1.8} à \code{.12}.
 
 \statut{\stRUN.}
 
@@ -269,7 +270,7 @@ Une fois la réponse de faisabilité fournisseur reçue (\S\ref{sec:source}), le
 \end{figure}
 \end{landscape}
 
-L'approvisionnement se conclut par \code{MaterialAvailable}, transmis au tactique Make, qui peut alors lancer la production (\S\ref{sec:make}).
+L'approvisionnement se conclut par \code{MaterialAvailable}, transmis au tactique Make, qui peut alors lancer la production (\S\ref{sec:make}). La colonne \og{}~Exécution~\fg{} est une vue agrégée de deux agents distincts : \code{AOe-sS1.2} émet la commande fournisseur, \code{AOe-sS1.3} réceptionne la livraison physique.
 
 \statut{\stRUN : chaque message de la chaîne d'approvisionnement, de \code{ProcurementPlan} à \code{MaterialAvailable}, est présent dans l'ABox du Run 01 pour \code{REAPPRO\_1} (détail en annexe, tableau \ref{tab:synthese}).}
 
@@ -286,7 +287,7 @@ L'approvisionnement se conclut par \code{MaterialAvailable}, transmis au tactiqu
 \label{fig:seq05}
 \end{figure}
 
-Le fragment \emph{loop} représente le traitement répété des unités du lot par l'exécution, sans représenter individuellement chaque unité.
+Le fragment \emph{loop} représente le traitement répété des unités du lot par l'exécution, sans représenter individuellement chaque unité. La colonne \og{}~Exécution~\fg{} est une vue agrégée des agents d'exécution du poste Make (\code{AOe-sM1.2} à \code{.7}), non une instance unique.
 
 \statut{La planification (\code{ProductionPlan}, \code{ProductionOrder}, \code{ProductionTaskAssignment}) et \code{ExecutionStart} (3 occurrences) sont \stRUN, de même que \code{ExecutionProgress} (50 occurrences, correspondant aux 50 unités \code{REAPPRO\_1\_F\_1} à \code{REAPPRO\_1\_F\_50} des traces d'exécution). \code{ExecutionEnd}, \code{ProductionCompleted} et \code{ProductAvailableForDelivery} restent \stIMP{} : ils ne figurent dans aucune des deux ABox disponibles, alors même que l'ordre \code{REAPPRO\_1} est clos avec le statut \code{SERVIE}. La clôture d'un ordre n'implique donc pas que chacun de ses messages de fin de chaîne ait été journalisé individuellement.}
 
@@ -303,9 +304,9 @@ Le fragment \emph{loop} représente le traitement répété des unités du lot p
 \label{fig:seq06}
 \end{figure}
 
-\code{DeliveryCompleted} marque la réception effective par le client et la clôture opérationnelle de l'ordre, qu'il s'agisse d'une commande cliente ou, par le même mécanisme, d'un ordre \code{REAPPRO\_*}.
+\code{DeliveryCompleted} marque la fin du processus de livraison client dans le chemin Deliver observé.
 
-\statut{\stRUN pour \code{DeliveryCompleted} des commandes \code{CMD\_1} et \code{CMD\_2}.}
+\statut{\stRUN{} pour \code{DeliveryCompleted} des commandes \code{CMD\_1} et \code{CMD\_2}. Dans le Run 01, l'ordre \code{REAPPRO\_1} est clos par le champ \code{orderStatus} \og{}~SERVIE~\fg{} porté directement sur l'ordre, sans message \code{DeliveryCompleted} propre à cet ordre dans l'ABox.}
 
 % ============================================================
 % 11. RÉAPPROVISIONNEMENT AUTONOME
@@ -322,7 +323,7 @@ Le fragment \emph{loop} représente le traitement répété des unités du lot p
 
 La reconstitution du stock de produit fini est pilotée par une politique de seuil autonome, indépendante des commandes clientes, mais empruntant les mêmes points d'entrée Source et Make (\S\ref{sec:stock-insuffisant} à \S\ref{sec:make}). Un ordre \code{REAPPRO\_*} n'est pas une commande cliente : il est explicitement exclu de tout comptage de commandes clientes, mais sa clôture contribue à la terminalité opérationnelle globale au même titre qu'une commande cliente ouverte.
 
-C'est cet ordre, \code{REAPPRO\_1}, qui a exercé dans le Run 01 la totalité de la chaîne Source et Make décrite aux sections \ref{sec:stock-insuffisant} à \ref{sec:make} : le seuil de stock a été atteint, la matière a été jugée insuffisante, le fournisseur a été consulté, la production a été lancée sur 50 unités, et l'ordre a été clos avec le statut \code{SERVIE}. Le code journalise par ailleurs, pour cet ordre interne, une séquence de messages de confirmation (\code{PromisedDeliveryDate}, \code{OrderConfirmationOrder}, \code{CustomerConfirmationTask}, \code{OrderConfirmed}) normalement associée à une commande cliente : il s'agit d'une réutilisation générique du mécanisme de confirmation par le code plutôt que d'une notification effective à un client externe.
+C'est cet ordre, \code{REAPPRO\_1}, qui a exercé dans le Run 01 la chaîne Source et l'exécution Make observées aux sections \ref{sec:stock-insuffisant} à \ref{sec:make} : le seuil de stock a été atteint, la matière a été jugée insuffisante, le fournisseur a été consulté, la production a été lancée sur 50 unités, et l'ordre a été clos avec le statut \code{SERVIE}. Le modèle réutilise pour \code{REAPPRO\_1} une chaîne de confirmation normalement associée aux commandes clientes (\code{PromisedDeliveryDate}, \code{OrderConfirmationOrder}, \code{CustomerConfirmationTask}), jusqu'à l'émission de \code{OrderConfirmed} vers \code{CustomerActor}. Cette réutilisation doit être distinguée de la logique métier attendue pour un ordre interne : elle est signalée ici comme une particularité de l'implémentation actuelle, sans qu'on en déduise un comportement métier souhaité.
 
 \statut{\stRUN.}
 
@@ -332,7 +333,7 @@ C'est cet ordre, \code{REAPPRO\_1}, qui a exercé dans le Run 01 la totalité de
 \section{Reporting hiérarchique}
 \label{sec:reporting}
 
-Le reporting suit la catégorie REPORT introduite en \S\ref{sec:reception} (paramètre \code{tracerFluxHierarchique}) : chaque niveau consolide l'information reçue du niveau inférieur avant de la transmettre au niveau supérieur. Pour le macro-processus Deliver, la chaîne observée est \code{OperationalReport} $\to$ \code{ProcessStatusReport} $\to$ \code{MacroProcessReport}, visible sur la figure \ref{fig:seq06} (\S\ref{sec:deliver}). Pour Source, seul \code{OperationalReport} a été observé dans le Run 01 ; sa remontée au niveau stratégique n'a pas été isolée séparément. Pour Make, aucun message de reporting n'a été observé (\S\ref{sec:make}).
+Le reporting suit la catégorie REPORT introduite en \S\ref{sec:aer} (paramètre \code{tracerFluxHierarchique}) : chaque niveau consolide l'information reçue du niveau inférieur avant de la transmettre au niveau supérieur. Pour le macro-processus Deliver, la chaîne observée est \code{OperationalReport} $\to$ \code{ProcessStatusReport} $\to$ \code{MacroProcessReport}, visible sur la figure \ref{fig:seq06} (\S\ref{sec:deliver}). Pour Source, seul \code{OperationalReport} a été observé dans le Run 01 ; sa remontée au niveau stratégique n'a pas été isolée séparément. Pour Make, aucun message de reporting n'a été observé (\S\ref{sec:make}).
 
 \statut{\stRUN{} pour Deliver ; \stRUN{} pour \code{OperationalReport} de Source ; \stIMP{} pour le reporting de Make.}
 
@@ -342,7 +343,7 @@ Le reporting suit la catégorie REPORT introduite en \S\ref{sec:reception} (para
 \section{Couverture des stratégies MTS, MTO et ETO}
 \label{sec:mts-mto-eto}
 
-Ce document ne construit pas trois architectures différentes pour MTS, MTO et ETO, parce que le modèle lui-même n'en construit pas trois.
+Le modèle utilise un traitement largement partagé entre MTS, MTO et ETO ; les diagrammes de ce document ne dupliquent donc pas artificiellement ce flux pour chaque stratégie.
 
 \textbf{MTS} est observé en runtime dans le Run 01 (\S\ref{sec:mts}) : deux commandes clientes, \code{CMD\_1} et \code{CMD\_2}, ont suivi ce chemin de bout en bout.
 
@@ -385,7 +386,7 @@ Chaque message représenté dans ce document porte un nom retrouvé littéraleme
 % ============================================================
 \section{Conclusion}
 
-Le modèle générique SCONTO-SVU implémente une architecture de communication multi-agents cataloguée : trois catégories AER, cinq niveaux de pilotage, et un vocabulaire de messages stable entre les fichiers modèles audités. Le Run 01 confirme non seulement le chemin MTS complet, mais aussi la chaîne Source et Make dans son intégralité, exercée par l'ordre de réapprovisionnement autonome \code{REAPPRO\_1}. Les chemins MTO et ETO restent implémentés mais non exercés par un run documenté à ce jour ; ce document ne les présente pas comme validés.
+Le modèle met en \oe{}uvre une architecture de communication multi-agents structurée : trois catégories AER, cinq niveaux de pilotage, et un vocabulaire de messages stable entre les fichiers modèles audités. Le Run 01 confirme le chemin MTS complet, ainsi que la chaîne Source et l'exécution Make observées via l'ordre de réapprovisionnement autonome \code{REAPPRO\_1}. Les chemins MTO et ETO restent implémentés mais non exercés par un run documenté à ce jour ; ce document ne les présente pas comme validés.
 
 \appendix
 \newpage
@@ -438,71 +439,72 @@ Ce catalogue reprend l'ensemble des messages représentés dans les figures du c
 \endhead
 \bottomrule
 \endlastfoot
-CustomerActor & AOe-sD1.2 & CustomerOrder & EXECUTION & Deliver & Réception commande & \stRUN{} (x2) \\
-AOe-sD1.2 & AOp-sD1.1 & OrderReceived & REPORT & Deliver & Réception commande & \stRUN{} (x2) \\
-AOp-sD1.3 & AOe-sD1.8 & InventoryCheckRequest & AMENDMENT & Deliver & Réception commande & \stRUN{} (x2) \\
-AOe-sD1.8 & AOp-sD1.3 & InventoryAvailabilityResponse & REPORT & Deliver & Réception commande & \stRUN{} (x2) \\
-AOp-sD1.1 & CA-sD1 & OrderValidated & REPORT & Deliver & Réception commande & \stRUN{} (x2) \\
-CA-sD1 & AT-sP4 & OrderFeasibilityRequest & REPORT & Plan/\allowbreak{}Deliver & Réception commande & \stRUN{} (x2) \\
-AT-sP4 & CA-sD1 & DeliveryPlan & AMENDMENT & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
-CA-sD1 & AOp-sD1 & DeliveryOrder & AMENDMENT & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
-AOp-sD1 & AOe-sD1.8 & ReserveInventory & AMENDMENT & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
-AOe-sD1.8 & AOp-sD1 & InventoryReserved & EXECUTION & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
-AOp-sD1 & AOe-sD1.9 & PickingTask & AMENDMENT & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
-AOe-sD1.9 & AOp-sD1 & PickingCompleted & EXECUTION & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
-AOp-sD1 & AOe-sD1.10 & PackingTask & AMENDMENT & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
-AOe-sD1.10 & AOp-sD1 & PackingCompleted & EXECUTION & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
-AOp-sD1 & AOe-sD1.11 & LoadingTask & AMENDMENT & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
-AOe-sD1.11 & AOp-sD1 & LoadingCompleted & EXECUTION & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
-AOp-sD1 & AOe-sD1.12 & ShipmentOrder & AMENDMENT & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
-AOe-sD1.12 & AOp-sD1 & DeliveryCompleted & EXECUTION & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
-AOp-sD1.3 & AOe-sD1.2 & OrderConfirmationOrder / CustomerConfirmationTask & AMENDMENT & Deliver & Confirmation commande & \stRUN{} (REAPPRO\_1) \\
-AOe-sD1.2 & CustomerActor & OrderConfirmed & EXECUTION & Deliver & Confirmation commande & \stRUN{} (REAPPRO\_1) \\
-AT-sP3 & AT-sP4 & PromisedDeliveryDate & REPORT & Make/\allowbreak{}Deliver & Confirmation commande & \stRUN{} (REAPPRO\_1) \\
-AOp-sD1.7 & CA-sD1 & OperationalReport & REPORT & Deliver & Livraison/reporting & \stRUN{} (x2) \\
-CA-sD1 & AT-sP4 & ProcessStatusReport & REPORT & Deliver & Livraison/reporting & \stRUN{} (x2) \\
-AT-sP4 & AS-sP1 & MacroProcessReport & REPORT & Deliver & Livraison/reporting & \stRUN{} (x2) \\
-AT-sP3 & CA-sM1 & MakeFeasibilityCheck & AMENDMENT & Make & Stock insuffisant & \stRUN{} (REAPPRO\_1) \\
-CA-sM1 & AOp-sM1.1 & CapacityAndMaterialCheckOrder & AMENDMENT & Make & Stock insuffisant & \stRUN{} (REAPPRO\_1) \\
-AOp-sM1.1 & AOe-sM1.2..7 & CapacityCheckRequest / MaterialCheckRequest & AMENDMENT & Make & Stock insuffisant & \stRUN{} (REAPPRO\_1) \\
-AOe-sM1.2..7 & AOp-sM1.1 & CapacityAvailabilityResponse / MaterialAvailabilityResponse & REPORT & Make & Stock insuffisant & \stRUN{} (REAPPRO\_1) \\
-AOe-sM1.2..7 & AOp-sM1.1 & MaterialShortageDetected & REPORT & Make & Stock insuffisant & \stRUN{} (REAPPRO\_1) \\
-AOp-sM1.1 & CA-sM1 & MakeConstraintReport & REPORT & Make & Stock insuffisant & \stRUN{} (REAPPRO\_1) \\
-CA-sM1 & AT-sP3 & MakeFeasibilityResponse & REPORT & Make & Stock insuffisant & \stRUN{} (x2, REAPPRO\_1) \\
-AT-sP3 & AT-sP2 & MaterialAvailabilityRequest & AMENDMENT & Source & Consultation fournisseur & \stRUN{} (REAPPRO\_1) \\
-AT-sP2 & CA-sS1 & SourceFeasibilityRequest & AMENDMENT & Source & Consultation fournisseur & \stRUN{} (REAPPRO\_1) \\
-CA-sS1 & AOp-sS1.1 & SupplierCheckOrder & AMENDMENT & Source & Consultation fournisseur & \stRUN{} (REAPPRO\_1) \\
-AOp-sS1.1 & AOe-sS1.2 & SupplierAvailabilityCheck & AMENDMENT & Source & Consultation fournisseur & \stRUN{} (REAPPRO\_1) \\
-AOe-sS1.2 & SupplierActor & RequestForAvailability & AMENDMENT & Source & Consultation fournisseur & \stRUN{} (REAPPRO\_1) \\
-SupplierActor & AOe-sS1.2 & SupplierCommitment & REPORT & Source & Consultation fournisseur & \stRUN{} (REAPPRO\_1) \\
-AOe-sS1.2 & AOp-sS1.1 & SupplierAvailabilityResponse & REPORT & Source & Consultation fournisseur & \stRUN{} (REAPPRO\_1) \\
-AOp-sS1.1 & CA-sS1 & SourceOperationalFeasibility & REPORT & Source & Consultation fournisseur & \stRUN{} (REAPPRO\_1) \\
-CA-sS1 & AT-sP2 & SourceFeasibilityResponse & REPORT & Source & Consultation fournisseur & \stRUN{} (REAPPRO\_1) \\
-AT-sP2 & AT-sP3 & MaterialAvailabilityResponse & REPORT & Source & Consultation fournisseur & \stRUN{} (REAPPRO\_1) \\
-AT-sP2 & CA-sS1 & ProcurementPlan & AMENDMENT & Source & Approvisionnement & \stRUN{} (REAPPRO\_1) \\
-CA-sS1 & AOp-sS1.1 & ProcurementOrder & AMENDMENT & Source & Approvisionnement & \stRUN{} (REAPPRO\_1) \\
-AOp-sS1.1 & AOe-sS1.2 & PurchaseOrderTask & AMENDMENT & Source & Approvisionnement & \stRUN{} (REAPPRO\_1) \\
-AOe-sS1.2 & SupplierActor & PurchaseOrder & AMENDMENT & Source & Approvisionnement & \stRUN{} (REAPPRO\_1) \\
-SupplierActor & AOe-sS1.3 & InboundDelivery & EXECUTION & Source & Approvisionnement (flux physique) & \stRUN{} (REAPPRO\_1) \\
-AOe-sS1.3 & AOp-sS1.1 & MaterialReceived & EXECUTION & Source & Approvisionnement & \stRUN{} (REAPPRO\_1) \\
-AOp-sS1.1 & CA-sS1 & OperationalReport & REPORT & Source & Approvisionnement & \stRUN{} (REAPPRO\_1) \\
-CA-sS1 & AT-sP2 & ProcurementCompleted & REPORT & Source & Approvisionnement & \stRUN{} (REAPPRO\_1) \\
-AT-sP2 & AT-sP3 & MaterialAvailable & REPORT & Source & Approvisionnement & \stRUN{} (REAPPRO\_1) \\
-AT-sP3 & CA-sM1 & ProductionPlan & AMENDMENT & Make & Planification Make & \stRUN{} (REAPPRO\_1) \\
-CA-sM1 & AOp-sM1.1 & ProductionOrder & AMENDMENT & Make & Planification Make & \stRUN{} (REAPPRO\_1) \\
-AOp-sM1.1 & AOe-sM1.2..7 & ProductionTaskAssignment & AMENDMENT & Make & Planification Make & \stRUN{} (REAPPRO\_1) \\
-AOe-sM1.2..7 & AOp-sM1.1 & ExecutionStart & EXECUTION & Make & Planification Make & \stRUN{} (x3, REAPPRO\_1) \\
-AOe-sM1.2..7 & AOp-sM1.1 & ExecutionProgress & EXECUTION & Make & Planification Make & \stRUN{} (x50, REAPPRO\_1) \\
-AOe-sM1.2..7 & AOp-sM1.1 & ExecutionEnd & EXECUTION & Make & Planification Make & \stIMP \\
-AOp-sM1.1 & CA-sM1 & OperationalReport & REPORT & Make & Planification Make & \stIMP \\
-CA-sM1 & AT-sP3 & ProductionCompleted & REPORT & Make & Planification Make & \stIMP \\
-AT-sP3 & AT-sP4 & ProductAvailableForDelivery & REPORT & Make & Planification Make & \stIMP \\
-SupplierActor & AOp-sS1.1 & SupplierDelayAlert & REPORT & Source & Perturbation (hors chemin nominal) & \stIMP \\
-AOp-sS1.1 & CA-sS1 & OperationalException & REPORT & Source & Perturbation (hors chemin nominal) & \stIMP \\
-CA-sS1 & AT-sP2 & ProcessDeviationReport & REPORT & Source & Perturbation (hors chemin nominal) & \stIMP \\
-AT-sP2 & AT-sP3 & RevisedMaterialAvailability & REPORT & Source & Perturbation (hors chemin nominal) & \stIMP \\
-AT-sP3 & AT-sP4 & RevisedProductionCompletionDate & REPORT & Make & Perturbation (hors chemin nominal) & \stIMP \\
-AT-sP4 & CA-sD1 & RevisedDeliveryPlan & AMENDMENT & Deliver & Perturbation (hors chemin nominal) & \stIMP \\
+CustomerActor & AOe-sD1.2 & \mbox{CustomerOrder} & EXECUTION & Deliver & Réception commande & \stRUN{} (x2) \\
+AOe-sD1.2 & AOp-sD1.1 & \mbox{OrderReceived} & REPORT & Deliver & Réception commande & \stRUN{} (x2) \\
+AOp-sD1.3 & AOe-sD1.8 & \mbox{InventoryCheckRequest} & AMENDMENT & Deliver & Réception commande & \stRUN{} (x2) \\
+AOe-sD1.8 & AOp-sD1.3 & \mbox{InventoryAvailabilityResponse} & REPORT & Deliver & Réception commande & \stRUN{} (x2) \\
+AOp-sD1.1 & CA-sD1 & \mbox{OrderValidated} & REPORT & Deliver & Réception commande & \stRUN{} (x2) \\
+CA-sD1 & AT-sP4 & \mbox{OrderFeasibilityRequest} & REPORT & Plan/\allowbreak{}Deliver & Réception commande & \stRUN{} (x2) \\
+AT-sP4 & CA-sD1 & \mbox{DeliveryPlan} & AMENDMENT & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
+CA-sD1 & AOp-sD1.3 & \mbox{DeliveryOrder} & AMENDMENT & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
+AOp-sD1.3 & AOe-sD1.8 & \mbox{ReserveInventory} & AMENDMENT & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
+AOe-sD1.8 & AOp-sD1.3 & \mbox{InventoryReserved} & EXECUTION & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
+AOp-sD1.3 & AOe-sD1.9 & \mbox{PickingTask} & AMENDMENT & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
+AOe-sD1.9 & AOp-sD1.3 & \mbox{PickingCompleted} & EXECUTION & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
+AOp-sD1.3 & AOe-sD1.10 & \mbox{PackingTask} & AMENDMENT & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
+AOe-sD1.10 & AOp-sD1.3 & \mbox{PackingCompleted} & EXECUTION & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
+AOp-sD1.3 & AOe-sD1.11 & \mbox{LoadingTask} & AMENDMENT & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
+AOe-sD1.11 & AOp-sD1.3 & \mbox{LoadingCompleted} & EXECUTION & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
+AOp-sD1.3 & AOe-sD1.12 & \mbox{ShipmentOrder} & AMENDMENT & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
+AOe-sD1.12 & AOp-sD1.7 & \mbox{DeliveryCompleted} & EXECUTION & Deliver & MTS stock suffisant & \stRUN{} (x2) \\
+AT-sP4 & CA-sD1 & \mbox{PromisedDeliveryDate} & AMENDMENT & Deliver & Confirmation commande & \stRUN{} (REAPPRO\_1) \\
+CA-sD1 & AOp-sD1.3 & \mbox{OrderConfirmationOrder} & AMENDMENT & Deliver & Confirmation commande & \stRUN{} (REAPPRO\_1) \\
+AOp-sD1.3 & AOe-sD1.2 & \mbox{CustomerConfirmationTask} & AMENDMENT & Deliver & Confirmation commande & \stRUN{} (REAPPRO\_1) \\
+AOe-sD1.2 & CustomerActor & \mbox{OrderConfirmed} & REPORT & Deliver & Confirmation commande & \stRUN{} (REAPPRO\_1) \\
+AOp-sD1.7 & CA-sD1 & \mbox{OperationalReport} & REPORT & Deliver & Livraison/reporting & \stRUN{} (x2) \\
+CA-sD1 & AT-sP4 & \mbox{ProcessStatusReport} & REPORT & Deliver & Livraison/reporting & \stRUN{} (x2) \\
+AT-sP4 & AS-sP1 & \mbox{MacroProcessReport} & REPORT & Deliver & Livraison/reporting & \stRUN{} (x2) \\
+AT-sP3 & CA-sM1 & \mbox{MakeFeasibilityCheck} & AMENDMENT & Make & Stock insuffisant & \stRUN{} (REAPPRO\_1) \\
+CA-sM1 & AOp-sM1.1 & \mbox{CapacityAndMaterialCheckOrder} & AMENDMENT & Make & Stock insuffisant & \stRUN{} (REAPPRO\_1) \\
+AOp-sM1.1 & AOe-sM1.2..7 & \mbox{CapacityCheckRequest} / \mbox{MaterialCheckRequest} & AMENDMENT & Make & Stock insuffisant & \stRUN{} (REAPPRO\_1) \\
+AOe-sM1.2..7 & AOp-sM1.1 & \mbox{CapacityAvailabilityResponse} / \mbox{MaterialAvailabilityResponse} & REPORT & Make & Stock insuffisant & \stRUN{} (REAPPRO\_1) \\
+AOe-sM1.2..7 & AOp-sM1.1 & \mbox{MaterialShortageDetected} & REPORT & Make & Stock insuffisant & \stRUN{} (REAPPRO\_1) \\
+AOp-sM1.1 & CA-sM1 & \mbox{MakeConstraintReport} & REPORT & Make & Stock insuffisant & \stRUN{} (REAPPRO\_1) \\
+CA-sM1 & AT-sP3 & \mbox{MakeFeasibilityResponse} & REPORT & Make & Stock insuffisant & \stRUN{} (x2, REAPPRO\_1) \\
+AT-sP3 & AT-sP2 & \mbox{MaterialAvailabilityRequest} & AMENDMENT & Source & Consultation fournisseur & \stRUN{} (REAPPRO\_1) \\
+AT-sP2 & CA-sS1 & \mbox{SourceFeasibilityRequest} & AMENDMENT & Source & Consultation fournisseur & \stRUN{} (REAPPRO\_1) \\
+CA-sS1 & AOp-sS1.1 & \mbox{SupplierCheckOrder} & AMENDMENT & Source & Consultation fournisseur & \stRUN{} (REAPPRO\_1) \\
+AOp-sS1.1 & AOe-sS1.2 & \mbox{SupplierAvailabilityCheck} & AMENDMENT & Source & Consultation fournisseur & \stRUN{} (REAPPRO\_1) \\
+AOe-sS1.2 & SupplierActor & \mbox{RequestForAvailability} & AMENDMENT & Source & Consultation fournisseur & \stRUN{} (REAPPRO\_1) \\
+SupplierActor & AOe-sS1.2 & \mbox{SupplierCommitment} & REPORT & Source & Consultation fournisseur & \stRUN{} (REAPPRO\_1) \\
+AOe-sS1.2 & AOp-sS1.1 & \mbox{SupplierAvailabilityResponse} & REPORT & Source & Consultation fournisseur & \stRUN{} (REAPPRO\_1) \\
+AOp-sS1.1 & CA-sS1 & \mbox{SourceOperationalFeasibility} & REPORT & Source & Consultation fournisseur & \stRUN{} (REAPPRO\_1) \\
+CA-sS1 & AT-sP2 & \mbox{SourceFeasibilityResponse} & REPORT & Source & Consultation fournisseur & \stRUN{} (REAPPRO\_1) \\
+AT-sP2 & AT-sP3 & \mbox{MaterialAvailabilityResponse} & REPORT & Source & Consultation fournisseur & \stRUN{} (REAPPRO\_1) \\
+AT-sP2 & CA-sS1 & \mbox{ProcurementPlan} & AMENDMENT & Source & Approvisionnement & \stRUN{} (REAPPRO\_1) \\
+CA-sS1 & AOp-sS1.1 & \mbox{ProcurementOrder} & AMENDMENT & Source & Approvisionnement & \stRUN{} (REAPPRO\_1) \\
+AOp-sS1.1 & AOe-sS1.2 & \mbox{PurchaseOrderTask} & AMENDMENT & Source & Approvisionnement & \stRUN{} (REAPPRO\_1) \\
+AOe-sS1.2 & SupplierActor & \mbox{PurchaseOrder} & AMENDMENT & Source & Approvisionnement & \stRUN{} (REAPPRO\_1) \\
+SupplierActor & AOe-sS1.3 & \mbox{InboundDelivery} & EXECUTION & Source & Approvisionnement (flux physique) & \stRUN{} (REAPPRO\_1) \\
+AOe-sS1.3 & AOp-sS1.1 & \mbox{MaterialReceived} & EXECUTION & Source & Approvisionnement & \stRUN{} (REAPPRO\_1) \\
+AOp-sS1.1 & CA-sS1 & \mbox{OperationalReport} & REPORT & Source & Approvisionnement & \stRUN{} (REAPPRO\_1) \\
+CA-sS1 & AT-sP2 & \mbox{ProcurementCompleted} & REPORT & Source & Approvisionnement & \stRUN{} (REAPPRO\_1) \\
+AT-sP2 & AT-sP3 & \mbox{MaterialAvailable} & REPORT & Source & Approvisionnement & \stRUN{} (REAPPRO\_1) \\
+AT-sP3 & CA-sM1 & \mbox{ProductionPlan} & AMENDMENT & Make & Planification Make & \stRUN{} (REAPPRO\_1) \\
+CA-sM1 & AOp-sM1.1 & \mbox{ProductionOrder} & AMENDMENT & Make & Planification Make & \stRUN{} (REAPPRO\_1) \\
+AOp-sM1.1 & AOe-sM1.2..7 & \mbox{ProductionTaskAssignment} & AMENDMENT & Make & Planification Make & \stRUN{} (REAPPRO\_1) \\
+AOe-sM1.2..7 & AOp-sM1.1 & \mbox{ExecutionStart} & EXECUTION & Make & Planification Make & \stRUN{} (x3, REAPPRO\_1) \\
+AOe-sM1.2..7 & AOp-sM1.1 & \mbox{ExecutionProgress} & EXECUTION & Make & Planification Make & \stRUN{} (x50, REAPPRO\_1) \\
+AOe-sM1.2..7 & AOp-sM1.1 & \mbox{ExecutionEnd} & EXECUTION & Make & Planification Make & \stIMP \\
+AOp-sM1.1 & CA-sM1 & \mbox{OperationalReport} & REPORT & Make & Planification Make & \stIMP \\
+CA-sM1 & AT-sP3 & \mbox{ProductionCompleted} & REPORT & Make & Planification Make & \stIMP \\
+AT-sP3 & AT-sP4 & \mbox{ProductAvailableForDelivery} & REPORT & Make & Planification Make & \stIMP \\
+SupplierActor & AOp-sS1.1 & \mbox{SupplierDelayAlert} & REPORT & Source & Perturbation (hors chemin nominal) & \stIMP \\
+AOp-sS1.1 & CA-sS1 & \mbox{OperationalException} & REPORT & Source & Perturbation (hors chemin nominal) & \stIMP \\
+CA-sS1 & AT-sP2 & \mbox{ProcessDeviationReport} & REPORT & Source & Perturbation (hors chemin nominal) & \stIMP \\
+AT-sP2 & AT-sP3 & \mbox{RevisedMaterialAvailability} & REPORT & Source & Perturbation (hors chemin nominal) & \stIMP \\
+AT-sP3 & AT-sP4 & \mbox{RevisedProductionCompletionDate} & REPORT & Make & Perturbation (hors chemin nominal) & \stIMP \\
+AT-sP4 & CA-sD1 & \mbox{RevisedDeliveryPlan} & AMENDMENT & Deliver & Perturbation (hors chemin nominal) & \stIMP \\
 \end{longtable}
 }
 \end{landscape}

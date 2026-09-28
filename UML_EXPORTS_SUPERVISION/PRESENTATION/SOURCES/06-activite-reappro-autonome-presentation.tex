@@ -1,0 +1,22 @@
+\begin{tikzpicture}[font=\small]
+
+  \node[startstop] (n0) at (0,0) {Politique de stock};
+  \node[decbox] (dec) at (3.4,0) {Seuil\\atteint ?};
+  \node[actbox] (n1) at (7.0,0) {Création\\\texttt{REAPPRO\_n}};
+  \node[actbox] (n2) at (10.4,0) {Contrôle matière};
+
+  \node[actbox] (n3) at (10.4,-2.6) {Source si nécessaire};
+  \node[actbox] (n4) at (7.0,-2.6) {Make};
+  \node[actbox] (n5) at (3.4,-2.6) {Reconstitution\\stock PF};
+  \node[startstop] (n6) at (0,-2.6) {Clôture \texttt{REAPPRO\_n}};
+
+  \draw[amend] (n0) -- (dec);
+  \draw[amend] (dec) -- node[above]{oui} (n1);
+  \node[actlabel, below=3mm of dec, text width=2.4cm] {non : cycle suivant};
+  \draw[amend] (n1) -- (n2);
+  \draw[amend] (n2.south) -- (n3.north);
+  \draw[amend] (n3) -- (n4);
+  \draw[amend] (n4) -- (n5);
+  \draw[amend] (n5) -- (n6);
+
+\end{tikzpicture}

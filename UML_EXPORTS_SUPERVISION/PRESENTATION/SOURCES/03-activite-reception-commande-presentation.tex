@@ -1,0 +1,19 @@
+\begin{tikzpicture}[font=\small]
+
+  \node[startstop] (n0) at (0,0) {Commande reçue};
+  \node[actbox] (n1) at (3.4,0) {Enregistrement\\\scriptsize AOe-sD1.2 $\to$ AOp-sD1.1};
+  \node[actbox] (n2) at (6.8,0) {Demande état stock\\\scriptsize AOp-sD1.3 $\to$ AOe-sD1.8};
+  \node[actbox] (n3) at (10.2,0) {Réponse stock\\\scriptsize AOe-sD1.8 $\to$ AOp-sD1.3};
+
+  \node[actbox] (n4) at (10.2,-2.6) {Validation\\\scriptsize AOp-sD1.1 $\to$ CA-sD1};
+  \node[actbox] (n5) at (6.8,-2.6) {Transmission décision\\\scriptsize CA-sD1 $\to$ AT-sP4};
+  \node[startstop] (n6) at (3.4,-2.6) {Décision tactique};
+
+  \draw[amend] (n0) -- (n1);
+  \draw[report] (n1) -- (n2);
+  \draw[amend] (n2) -- (n3);
+  \draw[report] (n3.south) -- (n4.north);
+  \draw[report] (n4) -- (n5);
+  \draw[report] (n5) -- (n6);
+
+\end{tikzpicture}

@@ -1,10 +1,10 @@
 \begin{tikzpicture}[node distance=8mm, font=\small]
 
   \node[startstop] (n0) {Commande reçue};
-  \node[actbox] (n1) [below=of n0] {Enregistrement\\\scriptsize AOe-sD1.2 $\to$ AOp-sD1};
-  \node[actbox] (n2) [below=of n1] {Demande état stock\\\scriptsize AOp-sD1 $\to$ AOe-sD1.8};
-  \node[actbox] (n3) [below=of n2] {Réponse stock\\\scriptsize AOe-sD1.8 $\to$ AOp-sD1};
-  \node[actbox] (n4) [below=of n3] {Validation\\\scriptsize AOp-sD1 $\to$ CA-sD1};
+  \node[actbox] (n1) [below=of n0] {Enregistrement\\\scriptsize AOe-sD1.2 $\to$ AOp-sD1.1};
+  \node[actbox] (n2) [below=of n1] {Demande état stock\\\scriptsize AOp-sD1.3 $\to$ AOe-sD1.8};
+  \node[actbox] (n3) [below=of n2] {Réponse stock\\\scriptsize AOe-sD1.8 $\to$ AOp-sD1.3};
+  \node[actbox] (n4) [below=of n3] {Validation\\\scriptsize AOp-sD1.1 $\to$ CA-sD1};
   \node[actbox] (n5) [below=of n4] {Transmission décision\\\scriptsize CA-sD1 $\to$ AT-sP4};
   \node[startstop] (n6) [below=of n5] {Décision tactique};
 

@@ -1,0 +1,25 @@
+\begin{tikzpicture}[font=\small]
+
+  \node[startstop] (n0) at (0,0) {Stock PF suffisant};
+  \node[actbox] (n1) at (3.4,0) {Plan de livraison\\\scriptsize AT-sP4 $\to$ CA-sD1};
+  \node[actbox] (n2) at (6.8,0) {Ordre de livraison\\\scriptsize CA-sD1 $\to$ AOp-sD1.3};
+  \node[actbox] (n3) at (10.2,0) {Réservation stock\\\scriptsize AOp-sD1.3 $\leftrightarrow$ AOe-sD1.8};
+  \node[actbox] (n4) at (13.6,0) {Prélèvement};
+
+  \node[actbox] (n5) at (13.6,-2.6) {Conditionnement\\\scriptsize\itshape MAKE non déclenché};
+  \node[actbox] (n6) at (10.2,-2.6) {Chargement};
+  \node[actbox] (n7) at (6.8,-2.6) {Expédition};
+  \node[actbox] (n8) at (3.4,-2.6) {Réception client};
+  \node[startstop] (n9) at (0,-2.6) {Clôture (SERVIE)};
+
+  \draw[amend] (n0) -- (n1);
+  \draw[amend] (n1) -- (n2);
+  \draw[amend] (n2) -- (n3);
+  \draw[amend] (n3) -- (n4);
+  \draw[amend] (n4.south) -- (n5.north);
+  \draw[amend] (n5) -- (n6);
+  \draw[amend] (n6) -- (n7);
+  \draw[exec]  (n7) -- (n8);
+  \draw[amend] (n8) -- (n9);
+
+\end{tikzpicture}

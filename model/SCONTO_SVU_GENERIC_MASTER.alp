@@ -2185,6 +2185,14 @@ public long seedExperiment = -1;
 public long seedExperimentEffective = -1;
 public String seedExperimentSource = "NON_INITIALISEE";
 
+// C1 -- nom de l'artefact .alp maitre courant, source unique reutilisee par
+// le manifeste legacy et l'export ABox (AN-04). Aucune API AnyLogic fiable
+// n'expose le nom du fichier .alp a l'execution (non verifiee disponible ;
+// une inference via getClass() serait une reflexion fragile, ecartee).
+// Mettre a jour cette constante uniquement si le fichier .alp maitre est
+// renomme.
+public static final String MODEL_ARTIFACT_NAME = "SCONTO_SVU_GENERIC_MASTER.alp";
+
 public java.time.LocalDateTime userStartDate = java.time.LocalDateTime.of(2026, 3, 10, 8, 0, 0);
 public long simStartRealMillis = 0L;
 public String realTimer = "Temps simule non demarre";
@@ -2488,10 +2496,10 @@ Object[][] manifesteRunRows() {
         {"matiereCiblee", retardFournisseurCible == null ? "" : retardFournisseurCible, "Perturbation runtime"},
         {"facteurRetard", String.valueOf(facteurRetardFournisseur), "Perturbation runtime"},
         {"premiereReceptionSeulement", retardFournisseurUneSeuleReception ? "OUI" : "NON", "Perturbation runtime"},
-        {"graineAleatoire", "NON_ACCESSIBLE_DANS_MAIN", "A renseigner depuis l'experience AnyLogic si disponible"},
+        {"graineAleatoire", seedExperimentEffective>=0 ? String.valueOf(seedExperimentEffective) : "NON_APPLICABLE", "Graine effectivement appliquee (EXP-0, seedExperimentEffective)"},
         {"timestampCloture", aboxIsoAt(time()), "Horloge runtime"},
         {"presetJson", scenarioJsonFileName(), "Nom du preset accessible au modele"},
-        {"modeleCandidate", "SCONTO_SVU_FINAL_VSM_FIX_CANDIDATE.alp", "Artefact a valider"}
+        {"modeleCandidate", MODEL_ARTIFACT_NAME, "Artefact .alp maitre courant"}
     };
 }
 
@@ -9582,11 +9590,12 @@ public String exporterABoxRuntimeTTL(String raison) {
         aboxTriple(pw,run,"run:supplierDelayTarget",aboxLit(retardFournisseurCible));
         aboxTriple(pw,run,"run:supplierDelayFactor",aboxDec(facteurRetardFournisseur));
         aboxTriple(pw,run,"run:firstReceiptOnly",aboxLit(retardFournisseurUneSeuleReception ? "OUI" : "NON"));
-        aboxTriple(pw,run,"run:randomSeed",aboxLit("NON_ACCESSIBLE_DANS_MAIN"));
-        // EXP-0 -- graine experimentale explicite (champ existant run:randomSeed
-        // conserve tel quel ci-dessus, format non casse ; ces trois champs sont
-        // additifs). Voir seedExperiment/seedExperimentEffective/
-        // seedExperimentSource, appliques en tete de demarrerSimulation().
+        aboxTriple(pw,run,"run:randomSeed",aboxLit(seedExperimentEffective>=0 ? String.valueOf(seedExperimentEffective) : "NON_APPLICABLE"));
+        // C1 -- run:randomSeed exporte desormais la graine effectivement
+        // appliquee (seedExperimentEffective) au lieu d'une constante figee
+        // (AN-03) ; meme predicat, meme format, valeur corrigee uniquement.
+        // Voir seedExperiment/seedExperimentEffective/seedExperimentSource,
+        // appliques en tete de demarrerSimulation().
         aboxTriple(pw,run,"run:experimentSeed",aboxLit(seedExperiment>=0 ? String.valueOf(seedExperiment) : "NON_RENSEIGNEE"));
         aboxTriple(pw,run,"run:experimentSeedEffective",aboxLit(seedExperimentEffective>=0 ? String.valueOf(seedExperimentEffective) : "NON_APPLICABLE"));
         aboxTriple(pw,run,"run:experimentSeedSource",aboxLit(seedExperimentSource==null?"":seedExperimentSource));
@@ -9597,7 +9606,7 @@ public String exporterABoxRuntimeTTL(String raison) {
         aboxTriple(pw,run,"run:runStartSimulationTime",aboxDec(tempsDebutSimulation));
         aboxTriple(pw,run,"run:closureTimestamp",aboxLit(aboxIsoAt(time()))+"^^xsd:dateTime");
         aboxTriple(pw,run,"run:jsonPresetName",aboxLit(scenarioJsonFileName()));
-        aboxTriple(pw,run,"run:modelArtifact",aboxLit("SCONTO_SVU_FINAL_VSM_FIX_CANDIDATE.alp"));
+        aboxTriple(pw,run,"run:modelArtifact",aboxLit(MODEL_ARTIFACT_NAME));
         // EXP-0 -- condition terminale operationnelle (Bloc EXP-0.1 a EXP-0.7) :
         // distincte de la fin de generation de la demande. diagnosticEtatTerminal()
         // reste la source unique de ces compteurs (aucun recalcul ici).

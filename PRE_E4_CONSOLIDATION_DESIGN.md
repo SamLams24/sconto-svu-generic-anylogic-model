@@ -757,3 +757,43 @@ E4 ne doit commencer que lorsque :
 Voir réponse de fin de tour pour le format demandé en 19 points ; ce
 document constitue le livrable complet (`PRE_E4_CONSOLIDATION_DESIGN.md`),
 non commité à ce stade, conformément à la consigne.
+
+---
+
+## 18. Suivi C1 — corrections métadonnées/export
+
+**AN-03 (seed) corrigée.** `graineAleatoire` (manifeste legacy) et
+`run:randomSeed` (ABox) exportent désormais `seedExperimentEffective`
+(`String.valueOf(long)`, sans passage par `double`, cohérent avec
+`run:experimentSeedEffective` déjà présent), avec le même repli
+`"NON_APPLICABLE"` que ce champ jumeau plutôt qu'une nouvelle constante.
+Confirmé par lecture directe de `demarrerSimulation()` :
+`seedExperimentEffective` est bien la variable écrite immédiatement après
+`getDefaultRandomGenerator().setSeed(seedExperiment)`. `run:experimentSeed`,
+`run:experimentSeedEffective` et `run:experimentSeedSource` n'ont pas été
+touchés (déjà corrects).
+
+**AN-04 (modelArtifact) corrigée.** Aucune API AnyLogic fiable pour le nom
+du `.alp` courant n'a été trouvée (et une inférence via `getClass()` aurait
+été une réflexion fragile, écartée). Stratégie retenue : **Option B**,
+constante centralisée `MODEL_ARTIFACT_NAME = "SCONTO_SVU_GENERIC_MASTER.alp"`,
+réutilisée par le manifeste legacy (`modeleCandidate`) et l'export ABox
+(`run:modelArtifact`). Un troisième site contenant l'ancien littéral,
+non documenté dans ce fichier lors du C0 (`modeleCandidate` dans
+`manifesteRunRows()`), a été découvert pendant l'audit C1 et corrigé pour
+la même raison qu'AN-04.
+
+**Validation statique** : XML bien formé (reparsé avec succès), aucun
+identifiant AnyLogic ajouté ou dupliqué (modification limitée au code Java
+en CDATA), aucune variable non résolue, aucune occurrence résiduelle de
+`NON_ACCESSIBLE_DANS_MAIN` ni de `SCONTO_SVU_FINAL_VSM_FIX_CANDIDATE.alp`
+dans le master générique. Diff limité aux fonctions `manifesteRunRows()`
+et `exporterABoxRuntimeTTL()` plus la nouvelle constante ; aucun `x1`–`x4`,
+AN-05, AER, SCOR, KPI, stock, ordonnancement ou RNG touché.
+
+**Runtime restant à vérifier.** AnyLogic 8.9 est installé localement, mais
+aucune build/validation dans l'IDE n'a été effectuée pendant cette passe
+(interaction GUI hors de portée de cet environnement d'exécution). **Le
+test runtime (re-export ABox sur un run court, vérification visuelle des
+champs `run:randomSeed`/`run:modelArtifact`) n'est pas marqué PASS** et
+reste une étape manuelle à exécuter avant de considérer C1 clos.

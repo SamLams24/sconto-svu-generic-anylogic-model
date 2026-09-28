@@ -72,16 +72,40 @@ seule la disposition change.
 Chaque PDF a été recompilé et inspecté visuellement page par page. Chaque
 PNG a été rendu à la résolution cible et inspecté. Chaque SVG a été
 rasterisé (Chromium headless) et inspecté, pas seulement validé comme
-XML bien formé. Cette vérification a révélé un défaut d'un outil de
-conversion PDF vers SVG (`pdftocairo` et `dvisvgm`, de façon identique) :
-sur `09_sequence_consultation_fournisseur` uniquement, deux libellés
-contenant « Feasibility » étaient mal dessinés (glyphe erroné, non
-présent dans le PDF source ni dans son rendu raster). Aucune autre figure
-n'est affectée. Le SVG de `09_sequence_consultation_fournisseur` est donc
-fourni sous une forme alternative : image PNG haute résolution encapsulée
-dans un conteneur SVG, garantissant un texte identique au PDF source. Il
-reste un fichier `.svg` valide et à l'échelle correcte, mais n'est pas
-vectoriel texte pour cette figure spécifique.
+XML bien formé.
+
+### Exception documentée : `09_sequence_consultation_fournisseur.svg`
+
+Sur cette figure uniquement, deux libellés contenant « Feasibility »
+étaient mal dessinés lors de la conversion en SVG (glyphe erroné, absent
+du PDF source et de son rendu raster). Quatre méthodes locales ont été
+essayées avant de conclure :
+
+1. `pdftocairo -svg` (référence de police intégrée) : défaut présent.
+2. `dvisvgm --pdf` (référence de police intégrée, format alternatif) : même défaut.
+3. `dvisvgm --pdf --no-fonts` (conversion des glyphes en chemins vectoriels,
+   sans aucune référence de police) : même défaut. Ce test isole le
+   problème dans les contours de glyphe eux-mêmes tels qu'intégrés dans le
+   PDF par la chaîne XeLaTeX/xdvipdfmx, pas dans un outil de conversion SVG.
+4. Conversion native XeLaTeX → XDV → `dvisvgm` (sans passer par le PDF) :
+   techniquement inapplicable, le positionnement absolu de TikZ sous
+   XeLaTeX dépendant du greffon PDF (xdvipdfmx) et ne se reconstruisant pas
+   correctement à partir du XDV seul.
+
+Un test isolé (les mêmes mots seuls, hors du diagramme complet) démontre
+que le défaut n'est pas une faute de frappe dans le code source : les
+mêmes mots s'y affichent correctement. Le défaut n'apparaît que dans ce
+diagramme précis, avec ses répétitions particulières de sous-chaînes, et
+uniquement lors de l'extraction de glyphes pour le SVG.
+
+Aucune des méthodes locales disponibles ne produit un SVG vectoriel texte
+correct pour cette figure. Le SVG de `09_sequence_consultation_fournisseur`
+est donc fourni sous forme alternative : image PNG haute résolution
+encapsulée dans un conteneur SVG, garantissant un texte identique au PDF
+source. C'est un fichier `.svg` valide et à l'échelle correcte, mais ce
+n'est pas un vectoriel texte pour cette figure spécifique. Les 11 autres
+SVG du dossier (et les 3 SVG de `PRESENTATION/`) sont du texte vectoriel
+réel, confirmé par inspection rasterisée.
 
 ## Sources de vérité
 

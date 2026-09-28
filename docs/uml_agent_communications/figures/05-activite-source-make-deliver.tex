@@ -12,14 +12,14 @@
   \node[actbox] (n4) at (0,-11.8) {Produit fini\\disponible};
   \node[startstop] (n5) at (0,-13.4) {Deliver};
 
-  \draw[amend] (n0) -- (n1);
-  \draw[amend] (n1) -- (dec);
-  \draw[amend] (dec) -- node[above,sloped]{oui} (nY);
-  \draw[amend] (dec) -- node[above,sloped]{non} (n2);
-  \draw[amend] (n2) -- (n3);
-  \draw[amend] (nY.south) to[out=-90,in=180] (nMake.west);
-  \draw[amend] (n3.south) to[out=-90,in=0] (nMake.east);
-  \draw[amend] (nMake) -- (n4);
-  \draw[amend] (n4) -- (n5);
+  \draw[activityflow] (n0) -- (n1);
+  \draw[activityflow] (n1) -- (dec);
+  \draw[activityflow] (dec) -- node[above,sloped]{oui} (nY);
+  \draw[activityflow] (dec) -- node[above,sloped]{non} (n2);
+  \draw[activityflow] (n2) -- (n3);
+  \draw[activityflow] (nY.south) to[out=-90,in=180] (nMake.west);
+  \draw[activityflow] (n3.south) to[out=-90,in=0] (nMake.east);
+  \draw[activityflow] (nMake) -- (n4);
+  \draw[activityflow] (n4) -- (n5);
 
 \end{tikzpicture}

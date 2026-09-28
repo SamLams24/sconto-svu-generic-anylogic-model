@@ -32,18 +32,18 @@
   \node[actbox] (cloture) at (\xDel,-13.0) {Clôture};
   \node[startstop] (report) at (\xTac,-13.0) {Reporting};
 
-  \draw[amend] (start) -- (recep);
-  \draw[amend] (recep) -- (valid);
-  \draw[amend] (valid) -- (decT);
-  \draw[amend] (decT) -- node[left]{oui} (deliverY);
-  \draw[amend] (decT) -- node[above]{non} (decM);
-  \draw[amend] (decM) -- node[left,pos=0.8]{oui} (make);
-  \draw[amend] (decM) -- node[above]{non} (source);
-  \draw[amend] (source) -- (make);
-  \draw[amend] (make) -- (deliverN);
-  \draw[amend] (deliverY) -- (recepClient);
-  \draw[amend] (deliverN) |- (recepClient);
-  \draw[amend] (recepClient) -- (cloture);
-  \draw[report] (cloture) -- (report);
+  \draw[activityflow] (start) -- (recep);
+  \draw[activityflow] (recep) -- (valid);
+  \draw[activityflow] (valid) -- (decT);
+  \draw[activityflow] (decT) -- node[left]{oui} (deliverY);
+  \draw[activityflow] (decT) -- node[above]{non} (decM);
+  \draw[activityflow] (decM) -- node[left,pos=0.8]{oui} (make);
+  \draw[activityflow] (decM) -- node[above]{non} (source);
+  \draw[activityflow] (source) -- (make);
+  \draw[activityflow] (make) -- (deliverN);
+  \draw[activityflow] (deliverY) -- (recepClient);
+  \draw[activityflow] (deliverN) |- (recepClient);
+  \draw[activityflow] (recepClient) -- (cloture);
+  \draw[activityflow] (cloture) -- (report);
 
 \end{tikzpicture}

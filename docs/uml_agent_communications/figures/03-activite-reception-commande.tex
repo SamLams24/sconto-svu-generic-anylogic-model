@@ -8,11 +8,11 @@
   \node[actbox] (n5) [below=of n4] {Transmission décision\\\scriptsize CA-sD1 $\to$ AT-sP4};
   \node[startstop] (n6) [below=of n5] {Décision tactique};
 
-  \draw[amend] (n0) -- (n1);
-  \draw[report] (n1) -- (n2);
-  \draw[amend] (n2) -- (n3);
-  \draw[report] (n3) -- (n4);
-  \draw[report] (n4) -- (n5);
-  \draw[report] (n5) -- (n6);
+  \draw[activityflow] (n0) -- (n1);
+  \draw[activityflow] (n1) -- (n2);
+  \draw[activityflow] (n2) -- (n3);
+  \draw[activityflow] (n3) -- (n4);
+  \draw[activityflow] (n4) -- (n5);
+  \draw[activityflow] (n5) -- (n6);
 
 \end{tikzpicture}

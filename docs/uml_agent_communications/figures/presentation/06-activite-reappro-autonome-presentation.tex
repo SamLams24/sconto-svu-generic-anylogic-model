@@ -10,13 +10,13 @@
   \node[actbox] (n5) at (3.4,-2.6) {Reconstitution\\stock PF};
   \node[startstop] (n6) at (0,-2.6) {Clôture \texttt{REAPPRO\_n}};
 
-  \draw[amend] (n0) -- (dec);
-  \draw[amend] (dec) -- node[above]{oui} (n1);
+  \draw[activityflow] (n0) -- (dec);
+  \draw[activityflow] (dec) -- node[above]{oui} (n1);
   \node[actlabel, below=3mm of dec, text width=2.4cm] {non : cycle suivant};
-  \draw[amend] (n1) -- (n2);
-  \draw[amend] (n2.south) -- (n3.north);
-  \draw[amend] (n3) -- (n4);
-  \draw[amend] (n4) -- (n5);
-  \draw[amend] (n5) -- (n6);
+  \draw[activityflow] (n1) -- (n2);
+  \draw[activityflow] (n2.south) -- (n3.north);
+  \draw[activityflow] (n3) -- (n4);
+  \draw[activityflow] (n4) -- (n5);
+  \draw[activityflow] (n5) -- (n6);
 
 \end{tikzpicture}

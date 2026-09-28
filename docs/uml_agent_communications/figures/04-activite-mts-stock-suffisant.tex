@@ -11,14 +11,14 @@
   \node[actbox] (n8) [below=of n7] {Réception client};
   \node[startstop] (n9) [below=of n8] {Clôture (SERVIE)};
 
-  \draw[amend] (n0) -- (n1);
-  \draw[amend] (n1) -- (n2);
-  \draw[amend] (n2) -- (n3);
-  \draw[amend] (n3) -- (n4);
-  \draw[amend] (n4) -- (n5);
-  \draw[amend] (n5) -- (n6);
-  \draw[amend] (n6) -- (n7);
-  \draw[exec]  (n7) -- (n8);
-  \draw[amend] (n8) -- (n9);
+  \draw[activityflow] (n0) -- (n1);
+  \draw[activityflow] (n1) -- (n2);
+  \draw[activityflow] (n2) -- (n3);
+  \draw[activityflow] (n3) -- (n4);
+  \draw[activityflow] (n4) -- (n5);
+  \draw[activityflow] (n5) -- (n6);
+  \draw[activityflow] (n6) -- (n7);
+  \draw[physflow] (n7) -- (n8);
+  \draw[activityflow] (n8) -- (n9);
 
 \end{tikzpicture}

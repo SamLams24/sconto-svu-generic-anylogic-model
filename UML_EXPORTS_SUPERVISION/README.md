@@ -1,9 +1,9 @@
-# Export des diagrammes UML — Communications inter-agents SCONTO-SVU (V2.1)
+# Export des diagrammes UML — Communications inter-agents SCONTO-SVU (V2.2)
 
 Ce dossier contient chaque diagramme du document
 `docs/uml_agent_communications/SCONTO_SVU_UML_Communications_Agents.pdf`
 exporté individuellement, pour envoi séparé ou intégration dans une
-présentation. Version V2.1 : corrections factuelles (attribution exacte de
+présentation. Version V2.2 : corrections factuelles (attribution exacte de
 `PromisedDeliveryDate`, chaîne de confirmation détaillée message par
 message, identifiants de pilotes précisés), typographie corrigée.
 
@@ -14,7 +14,7 @@ UML_EXPORTS_SUPERVISION/
 ├── README.md          (ce fichier)
 ├── PDF/                12 fichiers, vectoriel
 ├── PNG/                12 fichiers, raster haute résolution (~2500 px de large)
-├── SVG/                12 fichiers, vectoriel
+├── SVG/                12 fichiers SVG (11 vectoriels + 1 exception raster documentée)
 ├── SOURCES/            12 fichiers .tex (TikZ/PGF) + uml-style.tex (style partagé)
 └── PRESENTATION/       variantes compactes (paysage) de 3 figures verticales,
                         pour PowerPoint / projection / partage mobile

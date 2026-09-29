@@ -791,9 +791,307 @@ dans le master générique. Diff limité aux fonctions `manifesteRunRows()`
 et `exporterABoxRuntimeTTL()` plus la nouvelle constante ; aucun `x1`–`x4`,
 AN-05, AER, SCOR, KPI, stock, ordonnancement ou RNG touché.
 
-**Runtime restant à vérifier.** AnyLogic 8.9 est installé localement, mais
-aucune build/validation dans l'IDE n'a été effectuée pendant cette passe
-(interaction GUI hors de portée de cet environnement d'exécution). **Le
-test runtime (re-export ABox sur un run court, vérification visuelle des
-champs `run:randomSeed`/`run:modelArtifact`) n'est pas marqué PASS** et
-reste une étape manuelle à exécuter avant de considérer C1 clos.
+**Validation runtime — PASS.** Un run manuel dans l'IDE AnyLogic (hors de
+cet environnement d'exécution) a produit les preuves suivantes :
+
+- ABox : `run:randomSeed = 1001`, `run:experimentSeed = 1001`,
+  `run:experimentSeedEffective = 1001`,
+  `run:experimentSeedSource = PARAMETRE_EXPLICITE_seedExperiment`,
+  `run:modelArtifact = SCONTO_SVU_GENERIC_MASTER.alp`.
+- Manifeste Excel : `graineAleatoire = 1001`,
+  `modeleCandidate = SCONTO_SVU_GENERIC_MASTER.alp`.
+- Terminalité : `demandGenerationFinished = OUI`, `terminalReached = OUI`,
+  `openCustomerOrders = 0`, `openReplenishments = 0`,
+  `entitiesInProcessAtPosts = 0`, `pendingBusinessActions = 0` ; 10
+  commandes clientes + `REAPPRO_1` closes `SERVIE`, WIP final = 0.
+- 0 occurrence de `NON_ACCESSIBLE_DANS_MAIN` ou de
+  `SCONTO_SVU_FINAL_VSM_FIX_CANDIDATE.alp` dans les exports du run.
+
+**Précision honnête sur la portée de cette preuve** : ce run a été exécuté
+avec `nombreCommandes = 10`, alors que le Run 01 historique utilisé comme
+baseline de référence (EXP-0, seed 1001) avait `nombreCommandes = 2`. Ce
+n'est **pas une reproduction numérique stricte du Run 01 historique** ;
+c'est une validation, sur un scénario MTS/ZENER différent en taille mais
+comparable en nature, que (a) les métadonnées d'export corrigées en C1
+sont cohérentes entre elles et avec la graine réellement appliquée, et
+(b) la terminalité et le comportement fonctionnel général (clôture des
+commandes, réapprovisionnement autonome, WIP à 0) ne présentent aucune
+régression. La reproductibilité numérique exacte du Run 01 (mêmes 2
+commandes, même chronologie) n'a pas été retestée dans cette passe.
+
+**C1 : PASS RUNTIME / CLÔTURÉ.**
+
+---
+
+## 19. C2-A — Audit de généricité AN-05
+
+**Nature de cette section : audit uniquement. Aucun fichier `.alp` n'a été
+modifié pour la produire.** Elle prolonge et referme la préparation
+laissée ouverte au §12 (AN-05, « stratégie de migration à valider, pas
+appliquée »), avec une recherche exhaustive à l'échelle du dépôt entier
+et non plus seulement de la fonction d'export.
+
+### 19.1 Périmètre et méthode
+
+Recherche exhaustive, sur `model/SCONTO_SVU_GENERIC_MASTER.alp` (HEAD
+`4cfba20034095c88cfd0b646addd2c5560cd1a17`), de toute occurrence
+insensible à la casse de « zener », puis classification individuelle de
+chaque occurrence. **155 correspondances brutes sur 127 lignes** ont été
+recensées et revues une à une. En complément, une recherche a été menée
+sur l'ensemble du dépôt (hors `.alp` maître) pour les 8 identifiants
+listés dans la demande, afin de détecter d'éventuels consommateurs
+versionnés.
+
+### 19.2 Occurrences réellement concernées par AN-05
+
+Les 8 identifiants listés dans la demande, avec leur nombre exact
+d'occurrences dans `SCONTO_SVU_GENERIC_MASTER.alp` :
+
+| Identifiant | Occurrences | Nature |
+|---|---|---|
+| `kpiZener` | 32 | champ `BlackboardAgent` + producteur + reset + ~26 sites de lecture |
+| `zener_process_time` | 1 | clé d'export ABox (URI `vsm:zener_process_time`) |
+| `zener_waiting_time` | 1 | clé d'export ABox (URI `vsm:zener_waiting_time`) |
+| `zener_estimated_pce` | 1 | clé d'export ABox (URI `vsm:zener_estimated_pce`) |
+| `ZENER_ACT_4_ONLY` | 1 | valeur littérale du prédicat `run:measurementScope` |
+| `ctxZener` | 5 | variable locale (contexte d'observation ABox) |
+| `"ZENER Process Time"` | 1 (+1 en-tête Excel identique) | `rdfs:label` ABox + colonne Excel |
+| `"ZENER Waiting Time"` | 1 (+1 en-tête Excel identique) | `rdfs:label` ABox + colonne Excel |
+| `"ZENER Estimated PCE"` | 1 (+1 en-tête Excel identique) | `rdfs:label` ABox + colonne Excel |
+
+L'audit exhaustif a fait remonter trois occurrences supplémentaires,
+structurellement identiques (même schéma « nom générique masqué par un
+libellé/identifiant ZENER en dur ») mais non listées nommément dans la
+demande initiale, couvertes par la clause « ainsi que toute autre
+clé/URI/libellé ZENER utilisée dans une structure censée être
+générique » :
+
+- `resumeSourceVAZener()` (ligne 2478) : nom de fonction portant
+  « Zener », mais **corps entièrement générique** (retourne la chaîne
+  fixe `"VA ESTIMEE, TAUX CONFIGURES OU FALLBACK SELON LE POSTE"`, sans
+  aucune référence à ZENER) ; appelée uniquement en interne, ligne 21014.
+- `multiProduitZenerColumns()` / `multiProduitZenerRows()` (lignes
+  24991, 25011) : mêmes constats — colonnes génériques ("Produit
+  enregistré", "Origine de la configuration", etc.) et corps qui
+  délègue à `multiProduitConfigurationRows()`, déjà nommée
+  génériquement. Le nom de feuille Excel associé, `"Multi-produit
+  ZENER"` (ligne 22742), et l'en-tête `"Source de la valeur ajoutee
+  ZENER"` (ligne 20978, colonne Excel liée à `resumeSourceVAZener()`),
+  et le champ CSV littéral `VSM_ZENER` (ligne 49180, `"%s;VSM_ZENER;ACT_4;..."`)
+  portent la même dette de nommage.
+- `nomEntreprise` (ligne 11144) : champ **déjà nommé génériquement**,
+  mais dont la valeur d'initialisation par défaut est la chaîne
+  littérale `"ZENER_SA_Togo"`. Ce n'est pas une clé de schéma d'export
+  et ce champ est normalement réécrit par le chargement du scénario
+  JSON ; il s'agit d'un défaut de repli avant chargement, pas d'un
+  identifiant public. Signalé pour complétude, mais **hors périmètre
+  strict des 8 identifiants audités** et non traité ici.
+
+### 19.3 Occurrences légitimement spécifiques au scénario (hors AN-05)
+
+Sur les 127 lignes revues, la majorité (plus d'une centaine) relève de
+texte narratif ou de commentaires liés au scénario de validation ZENER
+lui-même, sans lien avec un schéma censé être générique :
+
+- Commentaires historiques et de conception (`C14.22`, `C14.23`,
+  `C14.28`, `C14.67`, etc.) mentionnant ZENER pour expliquer une
+  décision passée : catégorie E, aucune action.
+- Chaînes narratives passées en argument à `ajouterSuiviDetaille(...)`,
+  `enregistrerFluxSupplyChainMetier(...)` et `afficherPopupMetier(...)`
+  dans le flux Deliver (18 occurrences de `"ZENER SA Togo"`, lignes
+  ~13692 à ~14064) : ce sont des libellés d'audit/journalisation
+  illustrant le scénario de validation, pas des clés de schéma exporté.
+  Le calcul et le routage sous-jacents restent génériques (basés sur
+  `cmd`/`ScenarioFlux`). C'est une dette de nommage réelle mais
+  **distincte** de AN-05 par sa nature (texte narratif, pas identifiant
+  de schéma) et par son volume (18 sites dispersés dans une seule
+  fonction narrative plutôt que 8 clés d'export centralisées) ; elle
+  n'a pas été demandée dans cette passe et n'est pas traitée ici.
+- `acteurCourtF()` (ligne 578) : utilitaire d'abréviation d'acteur pour
+  affichage, avec une correspondance directe en dur pour les 5 acteurs
+  connus du scénario ZENER (dont `"ZENER"` lui-même) et un repli
+  générique par troncature pour tout acteur non reconnu. Catégorie E,
+  hors périmètre strict, non traité.
+- `estScenarioCasTest()` / `indexScenarioNominal()` (lignes 4625-4636) :
+  heuristique de sélection de scénario par correspondance de
+  sous-chaîne sur le nom du scénario (`"ZENER CAS 1/2/3"`,
+  `"DISTRIBUTION"`, `"ZENER"`), le nom provenant du champ `typeProduit`
+  du JSON de scénario. Catégorie F : dépend de la convention de
+  nommage réelle des fichiers de scénario du dépôt, pas d'un
+  identifiant exporté. Hors périmètre strict, non traité.
+
+### 19.4 Producteurs et consommateurs de `kpiZener`
+
+**Producteur** : `kpiZener.addObservation(cycleTime, waitTime, vat,
+quantityWeight)` (ligne 48208, dans la fonction d'agrégation VSM,
+commentaire `C14.22` : agrégation réelle mesurée poste par poste pour
+l'acteur `ENTREPRISE_FOCALE`) ; réinitialisation à `new KPIBundle()`
+ligne 48441 (`demarrerSimulation()`/reset de run).
+
+**Consommateurs** (tous internes au même `.alp`) :
+- 3 widgets de tableau de bord (`TextCode`, lignes 31409, 33184, 33206) ;
+- construction de lignes Excel (lignes 18886-18890, 21011-21013) ;
+- export CSV (lignes 49180-49181) ;
+- constructeurs de chaînes de log/dashboard (lignes 17742, 49104-49105) ;
+- export ABox (`zenerInds`, dans `exporterABoxRuntimeTTL()`) ;
+- fonctions d'aide au calcul de PCE affiché (lignes 16957-16999, 7721).
+
+Aucun test automatisé, aucun script, aucune requête n'a été trouvé
+consommant `kpiZener` autrement que par lecture directe de champ Java
+dans le même fichier `.alp`.
+
+### 19.5 Clés ABox publiques et colonnes Excel/CSV concernées
+
+Clés/URI ABox : `vsm:zener_process_time`, `vsm:zener_waiting_time`,
+`vsm:zener_estimated_pce`, `run:ctx_zener_vsm_<runId>` (préfixe
+`"zener_vsm_"` injecté directement dans l'URI via `ctxZener =
+aboxUri("ctx","zener_vsm_"+runId)`), valeur littérale
+`"ZENER_ACT_4_ONLY"` du prédicat `run:measurementScope`, et les trois
+`rdfs:label` (`"ZENER Process Time"`, `"ZENER Waiting Time"`, `"ZENER
+Estimated PCE"`). Le prédicat/type RDF associé à chaque mesure
+(`core:CycleTime`, `core:WaitingTime`,
+`run:EstimatedProcessCycleEfficiency`) est, lui, **déjà générique** et
+n'est pas concerné.
+
+Colonnes Excel : `"ZENER Process Time (secondes)"`, `"ZENER Waiting
+Time (secondes)"`, `"ZENER Estimated PCE (%)"`, `"Source de la valeur
+ajoutee ZENER"` (lignes 20975-20978), plus le nom de feuille
+`"Multi-produit ZENER"` (ligne 22742).
+
+Colonne/champ CSV : littéral `VSM_ZENER` dans la ligne d'export CSV
+(ligne 49180).
+
+### 19.6 Recherche de consommateurs externes versionnés dans le dépôt
+
+Recherche menée sur l'ensemble du dépôt (scripts `.py`/`.sh`/`.ps1`/
+`.js`, `.sparql`/`.rq`, notebooks, `.owl`, tout `.ttl` versionné,
+documentation), en excluant `SCONTO_SVU_GENERIC_MASTER.alp` lui-même,
+pour les 8 identifiants de la demande.
+
+**Aucun consommateur versionné dans le dépôt trouvé.** Aucun script,
+requête SPARQL, notebook, parseur ou test versionné ne lit ou ne
+recherche `kpiZener`, `zener_process_time`, `zener_waiting_time`,
+`zener_estimated_pce`, `ZENER_ACT_4_ONLY`, `ctxZener`, le préfixe d'URI
+`zener_vsm_`, ou les trois libellés cités. Ceci ne permet pas de
+conclure qu'aucun consommateur externe au dépôt n'existe (tableau de
+bord de supervision, reasoner OWL externe, script personnel non
+versionné restent hors de portée de cette recherche).
+
+Trois éléments versionnés, non fonctionnels mais pertinents, ont
+cependant été trouvés et doivent être distingués d'un « consommateur » :
+
+1. `model/run 01/SCONTO_SVU_ABOX_ZENER_SA_Togo_RUN_1773129600000_1790628407881.ttl`
+   : export ABox historique archivé, contenant réellement ces clés
+   comme triples RDF (`run:vsm_zener_process_time`,
+   `run:vsm_zener_waiting_time`, `run:vsm_zener_estimated_pce`,
+   `run:ctx_zener_vsm_RUN_...`, `run:measurementScope
+   "ZENER_ACT_4_ONLY"`). C'est un instantané figé, pas un consommateur
+   actif ; aucun script ne le relit. Un renommage ne le rendrait pas
+   invalide, mais romprait la continuité de nommage entre ce run
+   archivé et tout nouvel export.
+2. `POST_MERGE_COMPLETENESS_AUDIT.md` (racine du dépôt) contient déjà,
+   indépendamment de cette passe, une classification quasi identique
+   de la même anomalie (catégorie C, §512, §741, §748) et propose déjà
+   les mêmes noms candidats génériques. C'est un document de suivi,
+   pas un consommateur fonctionnel, mais il corrobore fortement le
+   diagnostic ci-dessus.
+3. Trois fichiers `.alp` frères, versionnés dans ce même dépôt,
+   reproduisent le schéma ZENER-nommé à l'identique :
+   `model/SCONTO_SVU_DATACO_FINAL.alp`,
+   `reference/colleague/SCONTO_SVU_GENERIC10-4_COLLEAGUE.alp`,
+   `reference/dataco-multiproduct/SCONTO_SVU_FINAL_VALIDATED_FORECAST_DATACO_MULTIPRODUCT_CONCURRENT_FIX.alp`.
+   Ce ne sont pas des consommateurs de l'export du maître (chaque
+   `.alp` est autonome et produit son propre export), mais un
+   renommage limité au seul maître créerait une **divergence de
+   nommage** entre le maître et ces fichiers frères. Ces fichiers sont
+   explicitement hors périmètre de la mission de fusion générique
+   (règle ZENER et interdiction DataCo du `CLAUDE.md` du dépôt) et ne
+   sont pas modifiés ici.
+
+### 19.7 Deux stratégies de correction
+
+**A. Remplacement direct**
+
+- Avantages : schéma d'export propre immédiatement pour tout scénario
+  non-ZENER ; aligné sur la règle déjà écrite dans le `CLAUDE.md` du
+  dépôt (« ZENER est un scénario de validation, pas le comportement
+  codé en dur du moteur ») ; dette technique nulle après coup ; cohérent
+  avec les renommages sans risque déjà identifiés
+  (`resumeSourceVAZener`, `multiProduitZenerColumns/Rows`).
+- Coût : environ 40 sites à modifier dans le `.alp` maître (32
+  `kpiZener` + 8 clés/URI/libellés d'export), changement mécanique,
+  aucune logique modifiée.
+- Risque : nul en interne (aucun consommateur versionné dans le dépôt) ;
+  risque externe non mesurable depuis le dépôt ; perte de continuité de
+  nommage avec l'export archivé `run 01/*.ttl` ; divergence de nommage
+  avec les trois `.alp` frères (qui restent inchangés, hors périmètre).
+- Dette technique : nulle.
+
+**B. Migration transitoire (double export ancien + nouveau)**
+
+- Avantages : compatibilité descendante totale pour un éventuel
+  consommateur externe non versionné déjà branché sur les noms actuels ;
+  réversible, migration progressive.
+- Coût : doublement des lignes d'export ABox concernées (environ 6 à 9
+  triples supplémentaires par run) et des colonnes Excel/CSV
+  correspondantes (4 colonnes dupliquées) ; complexifie
+  `exporterABoxRuntimeTTL()` et les fonctions Excel/CSV associées.
+- Risque : dette technique qui persiste tant que l'ancien nom n'est pas
+  retiré (échéance à fixer explicitement, sinon oubli permanent) ; un
+  lecteur humain du TTL/Excel verrait deux fois la même mesure sous
+  deux noms ; ne résout pas la lisibilité pour un scénario non-ZENER
+  tant que l'ancien export coexiste.
+- Dette technique : réelle et croissante sans échéance de retrait
+  planifiée.
+
+**Recommandation technique conditionnelle** :
+
+- Si aucun consommateur externe réel n'existe (hypothèse la plus
+  probable au vu de l'absence de tout script, requête ou test
+  versionné dans le dépôt) : **stratégie A** est préférable, coût
+  ponctuel et dette nulle.
+- Si une compatibilité externe est requise (tableau de bord de
+  supervision ou outil externe déjà branché sur les noms actuels, non
+  versionné donc invisible depuis cet audit) : **stratégie B** est
+  préférable, avec une échéance de retrait de l'ancien nom fixée dès
+  l'introduction du nouveau, pour éviter que la dette ne devienne
+  permanente.
+
+**Cette recommandation n'est pas appliquée dans cette passe (C2-A est
+un audit).**
+
+### 19.8 Noms génériques candidats (proposition, non implémentée)
+
+Le vocabulaire déjà établi dans le noyau utilise `ActeurSC.ENTREPRISE_FOCALE`
+(français, complet) pour désigner le même concept, et `kpiGlobal`
+(anglais court) pour le KPI-frère déjà générique. Deux familles
+cohérentes sont possibles ; il n'est pas nécessaire d'en inventer une
+troisième.
+
+| Ancien | Option alignée sur `ENTREPRISE_FOCALE` | Option alignée sur `kpiGlobal` |
+|---|---|---|
+| `kpiZener` | `kpiEntrepriseFocale` | `kpiFocal` |
+| `zener_process_time` | `entreprise_focale_process_time` | `focal_process_time` |
+| `zener_waiting_time` | `entreprise_focale_waiting_time` | `focal_waiting_time` |
+| `zener_estimated_pce` | `entreprise_focale_estimated_pce` | `focal_estimated_pce` |
+| `ZENER_ACT_4_ONLY` | `ENTREPRISE_FOCALE_ACT_4_ONLY` | `FOCAL_ENTERPRISE_ONLY` |
+| `ctxZener` | `ctxEntrepriseFocale` | `ctxFocal` |
+| `"ZENER Process Time"` | `"Entreprise Focale - Process Time"` | `"Focal Process Time"` |
+| `"ZENER Waiting Time"` | `"Entreprise Focale - Waiting Time"` | `"Focal Waiting Time"` |
+| `"ZENER Estimated PCE"` | `"Entreprise Focale - Estimated PCE"` | `"Focal Estimated PCE"` |
+
+L'option `kpiGlobal`-style est la plus courte et mirror directement le
+KPI-frère déjà générique (`kpiGlobal` / `kpiFocal`) ; l'option
+`ENTREPRISE_FOCALE`-style est la plus fidèle à la constante déjà
+utilisée dans la computation. Un choix unique et cohérent (pas de
+mélange des deux familles) devra être tranché avant toute implémentation
+en C2-B ; **aucun choix n'est arrêté ici**.
+
+### 19.9 Clôture C2-A
+
+Audit terminé. Aucune correction appliquée. Le §12 (préparation AN-05)
+et cette section se corroborent ; la question de stratégie qui y était
+laissée ouverte (« à confirmer auprès de l'utilisateur ») est
+désormais documentée avec une recherche de consommateurs effective, et
+la recommandation conditionnelle ci-dessus (19.7) sert de base à une
+décision future, avant implémentation en C2-B.

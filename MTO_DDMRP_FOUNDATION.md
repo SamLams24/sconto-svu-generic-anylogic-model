@@ -770,3 +770,367 @@ Conformément à la consigne : `carnetCommandesMTO` n'a pas été
 réparé, ETO n'a pas été modifié, DDMRP n'a pas été implémenté, C3/E4
 n'a pas été touché, aucun `.alp` et aucun `.json` n'a été modifié pour
 produire ce document.
+
+---
+
+## 17. Audit complémentaire — cycle de vie Source → Make
+
+**Nature : audit uniquement, complète MTO-0 avant toute
+implémentation.** Branche `feature/mto-ddmrp-foundation`, HEAD
+`67105942e00c4d20cd0a13053512aa6d0ae1558b`. Aucun `.alp`/`.json`
+modifié. Aucune campagne runtime exécutée dans cette passe.
+
+### 17.1 Les cinq fonctions, lues intégralement
+
+**`declencherApprovisionnementCommande(cmd, sc, qteCommande)`**
+(ligne 5404-5471). Pour chaque `LigneNomenclature` de `sc` : calcule
+`manque = besoin - f.stockDisponible` ; si `manque <= 0.0001`,
+`continue` (rien à faire pour cette ligne). Sinon : **uniquement des
+effets de traçabilité** — `ajouterSuiviDetailleHorodate()` (deux
+appels, un immédiat, un décalé de 1 s pour « matière en transit »),
+`enregistrerTraceSourceApprovisionnementCommande()`,
+`lancerFluxVisuelSourceApprovisionnement()`,
+`enregistrerFluxSupplyChainMetier()`, `emettreFluxLog()`. **Aucune
+écriture sur `FicheMatiere` et aucune création de `ReceptionAttendue`
+dans cette fonction.** C'est un déclencheur **narratif/visuel**, pas un
+déclencheur d'approvisionnement physique.
+
+**`finaliserApprovisionnementCommande(cmd)`** (ligne 3423-3506).
+Appelée en différé après `delaiApprovisionnementReelMax(sc, cmd.qte)`
+(ligne 5380, calculé **avant** l'appel à
+`declencherApprovisionnementCommande()`, ligne 3371-3373 — c'est donc
+une estimation figée au moment de la décision, pas une lecture du
+délai réellement écoulé). Pour chaque ligne de nomenclature :
+`manque = besoin - f.stockDisponible` recalculé, et **si
+`manque > 0.0001` : `f.stockDisponible += manque` directement**
+(ligne 3446). **Aucune lecture ni écriture de
+`f.receptionsAttendues` dans cette fonction.** Après la boucle, re-vérifie
+`configurationOK && matieresSuffisantesPourScenario(sc, cmd.qte)` ; si
+faux → `cmd.statut = "BLOQUE_MATIERE"`, terminal, sortie. Si vrai :
+trace AER (`MaterialReceived` → `OperationalReport` →
+`ProcurementCompleted` → `MaterialAvailable`), `cmd.statut =
+"MATIERES_DISPONIBLES"`, puis **appel direct à
+`tracerEtPlanifierProductionCommande(cmd)`** (ligne 3506) — referme la
+boucle vers la production décrite au §1.6 du présent document.
+
+**`matieresSuffisantesPourScenario(sc, qte)`** (ligne 4836-4859,
+relue intégralement, confirme la lecture du §1.4/§5) : lecture pure
+de `FicheMatiere.stockDisponible`, aucune écriture, mode *fail-closed*
+(scénario/nomenclature/ligne invalide → `false`).
+
+**`consommerMatieresPour(idProduit)`** (ligne 1288-1318, relue
+intégralement) : pour chaque ligne de nomenclature du premier
+`ScenarioFlux` correspondant à `idProduit`, si
+`f.stockDisponible < quantiteParUnite` → log d'alerte *« Stock matiere
+insuffisant pendant la production »* (`ajouterSuiviDetaille`, ligne
+~1297), **puis quoi qu'il arrive** :
+`f.stockDisponible = Math.max(0, f.stockDisponible -
+l.quantiteParUnite)` (ligne 1314). La consommation n'est donc jamais
+bloquante : elle tronque à zéro plutôt que d'empêcher l'unité de
+continuer son parcours.
+
+**`traiterEcheances(maintenant)`** (méthode de `FicheMatiere`, ligne
+55284-55295, relue intégralement) : itère `receptionsAttendues`,
+crédite `stockDisponible += r.quantite` et retire l'élément
+(`it.remove()`) pour chaque réception dont `dateArriveePrevue` est
+atteinte. Traitement correct et idempotent par construction (une
+réception traitée est immédiatement retirée de la liste, elle ne peut
+pas être retraitée). Appelée depuis **une seule fonction**,
+`calculerBesoinsNets()` (ligne 1121, appel à `f.traiterEcheances()`
+ligne 1140), elle-même appelée depuis **un seul site**,
+ligne 53079 (`main.calculerBesoinsNets();`), dans ce qui est, d'après
+les commentaires adjacents (« cycle tactique sM », « 15s habituellement »,
+lignes 1124 et 2368), un événement périodique du `TacticalAgent`.
+
+### 17.2 Constat central : deux mécanismes d'approvisionnement matière indépendants
+
+La lecture complète des cinq fonctions révèle que **`FicheMatiere`
+est alimentée par deux chemins totalement disjoints, qui ne se
+connaissent pas l'un l'autre** :
+
+- **Mécanisme A — approvisionnement « ad hoc » déclenché par une
+  commande** (`analyserMatiereCommandeOrchestree()` →
+  `declencherApprovisionnementCommande()` [traçabilité seule] → délai
+  `delaiApprovisionnementReelMax()` → `finaliserApprovisionnementCommande()`
+  [crédite directement `f.stockDisponible` du montant manquant pour
+  CETTE commande]). **N'utilise jamais `ReceptionAttendue` ni
+  `receptionsAttendues`.** Emprunté à la fois par les commandes
+  clientes MTO/ETO (§1.4-1.5) et par la production autonome REAPPRO_*
+  (`declencherProductionAutonome()` appelle directement
+  `analyserMatiereCommandeOrchestree()`, confirmé ligne ~3029).
+- **Mécanisme B — politique (s,Q) périodique et autonome**
+  (`calculerBesoinsNets()`, appelée toutes les ~15 s). Calcule un
+  point de commande et une quantité économique par matière, **crée de
+  vrais objets `ReceptionAttendue`** (ligne 1263) lorsque
+  `stockProjete <= pointCommande`, et ne crédite le stock que plus
+  tard, à l'échéance, via `traiterEcheances()`. Garde explicite : `if
+  (productionAutonomeEnCours) return;` (ligne 1122) — **mais cette
+  garde ne protège que contre une REAPPRO_* mono-produit en cours**
+  (champ mis à `true`/`false` uniquement par
+  `declencherProductionAutonome()`/sa clôture, lignes 3010/4064/13578).
+  **Elle n'est jamais vérifiée ni modifiée par le chemin commande
+  cliente MTO/ETO (Mécanisme A).**
+
+**Conséquence directement vérifiable par lecture statique** : pour une
+commande cliente MTO/ETO en pénurie d'une matière donnée, rien
+n'empêche que, pendant la fenêtre où `cmd.statut ==
+"EN_APPROVISIONNEMENT"` (entre `declencherApprovisionnementCommande()`
+et `finaliserApprovisionnementCommande()`), le cycle périodique
+`calculerBesoinsNets()` s'exécute au moins une fois sur la même
+`FicheMatiere`, constate `stockProjete <= pointCommande` (ce qui est
+probable puisque le stock est justement insuffisant) et **crée sa
+propre `ReceptionAttendue` indépendante**, en plus du crédit direct que
+`finaliserApprovisionnementCommande()` appliquera à l'échéance de son
+propre délai. Les deux crédits s'additionnent sur le même
+`stockDisponible`, sans qu'aucun des deux mécanismes ne consulte
+l'état de l'autre. C'est un **double réapprovisionnement structurel,
+démontré par lecture du code**, distinct du double engagement déjà
+documenté au §5 (qui portait sur le risque entre deux commandes
+concurrentes utilisant le même Mécanisme A ; celui-ci porte sur deux
+mécanismes différents actifs simultanément).
+
+### 17.3 Réponses aux cinq questions posées
+
+1. **Une réception attendue peut-elle être comptabilisée plusieurs
+   fois ?** Non, pas au sein du Mécanisme B seul :
+   `traiterEcheances()` retire chaque `ReceptionAttendue` de la liste
+   au moment où elle est créditée (`it.remove()`, ligne 55293),
+   traitement idempotent. **Démontré statiquement.**
+2. **Une même matière peut-elle être réapprovisionnée deux fois pour
+   un besoin déjà couvert ?** Oui, structurellement, par
+   l'interaction non coordonnée entre le Mécanisme A (crédit direct
+   par commande) et le Mécanisme B (politique (s,Q) périodique), comme
+   démontré au §17.2. **Démontré statiquement** pour le mécanisme ;
+   l'ampleur réelle (fréquence, quantité en excès) **nécessite un test
+   runtime** (fixture MTO-C étendue, voir §17.5).
+3. **Une commande peut-elle reprendre avant que la réception soit
+   effectivement créditée ?** Non pour le Mécanisme A : le crédit
+   (`f.stockDisponible += manque`) et la reprise
+   (`tracerEtPlanifierProductionCommande(cmd)`) ont lieu **dans la
+   même exécution synchrone** de `finaliserApprovisionnementCommande()`
+   (lignes 3446 puis 3506) — aucune fenêtre entre les deux.
+   **Démontré statiquement.** La question ne se pose pas pour le
+   Mécanisme B de la même façon, puisqu'aucune commande n'attend
+   directement sur lui (voir §17.2).
+4. **Une consommation peut-elle conduire à un stock insuffisant ?**
+   Oui : `consommerMatieresPour()` tronque à zéro
+   (`Math.max(0, ...)`, ligne 1314) plutôt que de bloquer, après avoir
+   journalisé une alerte si le stock était déjà insuffisant au moment
+   de la consommation. **Démontré statiquement.** Le comportement
+   aval (un poste qui continue de « produire » avec un stock matière à
+   zéro, sans jamais être bloqué) n'a pas été observé en exécution
+   dans cette passe — **nécessite un test runtime**.
+5. **Une commande peut-elle rester indéfiniment en
+   approvisionnement ?** Non, structurellement, pour le chemin normal :
+   `finaliserApprovisionnementCommande()` crédite
+   **inconditionnellement** le manque calculé pour la commande dès que
+   son délai programmé (`delaiApprovisionnementReelMax`) s'écoule, sans
+   dépendre d'un événement externe. Les seules sorties non terminales
+   en boucle identifiées seraient une **erreur de configuration**
+   répétée (nomenclature/ligne invalide), mais celles-ci aboutissent à
+   `BLOQUE_NOMENCLATURE`/`BLOQUE_MATIERE`, qui sont **terminales**
+   (`commandeEstTerminale()`, §1.8), pas à une attente infinie.
+   **Démontré statiquement**, sous réserve qu'aucun autre site non
+   identifié dans cette passe ne vienne remettre `cmd.statut` à
+   `EN_APPROVISIONNEMENT` sans reprogrammer `FINALISER_APPROVISIONNEMENT`
+   (non observé, mais une revue exhaustive de tous les sites
+   d'assignation de `EN_APPROVISIONNEMENT` n'a pas été refaite dans
+   cette passe au-delà du site déjà cité, ligne 3368).
+
+### 17.4 Requalification de la matrice de complétude (§2)
+
+La matrice du §2 reste globalement valide ; les lignes suivantes sont
+précisées à la lumière de l'audit complémentaire :
+
+| Capacité | Classification précédente (§2) | Classification requalifiée | Justification |
+|---|---|---|---|
+| Approvisionnement Source (chemin commande) | PARTIEL | **IMPLÉMENTÉ STATIQUEMENT, VÉRIFIÉ PAR LECTURE COMPLÈTE** — mais fonctionnellement un raccourci (crédit direct), pas un vrai MRP de commande | Les 3 fonctions (`declencherApprovisionnementCommande`, `finaliserApprovisionnementCommande`, `delaiApprovisionnementReelMax`) sont maintenant lues intégralement (§17.1) |
+| Réception matière | À TESTER RUNTIME | **IMPLÉMENTÉ STATIQUEMENT (deux mécanismes distincts, §17.2) ; NON VÉRIFIÉ PAR RUNTIME** | Code lu intégralement, mais l'interaction réelle entre Mécanisme A et B n'a jamais été observée en exécution |
+| Reprise après approvisionnement | À TESTER RUNTIME / À AUDITER | **IMPLÉMENTÉ STATIQUEMENT, VÉRIFIÉ PAR LECTURE COMPLÈTE** | `finaliserApprovisionnementCommande()` intégralement relue (§17.1), chaîne jusqu'à `tracerEtPlanifierProductionCommande()` confirmée sans ambiguïté |
+| Réservation matière | ABSENT | **ABSENT, CONFIRMÉ PAR DEUX LECTURES INDÉPENDANTES** (§5 et §17.2) | Aucune des cinq fonctions auditées ici n'introduit de réservation ; le constat du §5 est renforcé, pas seulement répété |
+| Double réapprovisionnement MRP + ad hoc | *(non distingué en §2)* | **DÉMONTRÉ STATIQUEMENT, NON VÉRIFIÉ PAR RUNTIME** | Nouveau constat de cette passe, §17.2-17.3 |
+
+**Rappel de discipline** (demande explicite) : aucune fonction ci-dessus
+n'est présentée comme une fonctionnalité validée de bout en bout tant
+qu'un run réel n'a pas confirmé le comportement sous charge concurrente
+(fixtures §17.5).
+
+### 17.5 Fixtures MTO-A à MTO-D — version finalisée
+
+Les quatre fixtures sont complétées avec les identifiants et
+paramètres réellement présents dans le modèle. Aucune valeur n'est
+inventée : les noms de matières et de scénarios cités sont ceux déjà
+en usage dans ce run (`GPL_VRAC`, `BOUTEILLE_VIDE_12KG`,
+`ACCESSOIRES_KIT`, cf. configuration du run C2) ; le détail exact des
+lignes de nomenclature (quantité par unité pour chaque matière, par
+scénario) n'a pas été extrait ligne à ligne dans cette passe — il
+dépend du scénario JSON chargé au moment du test (`sc.nomenclature`,
+propre à chaque `scenario_*.json`) et doit être lu dans le fichier de
+scénario effectivement utilisé avant l'exécution, plutôt que supposé
+ici.
+
+**MTO-A — matière suffisante dès le départ**
+- Matières : toutes les `idMatiere` référencées par la nomenclature du
+  scénario testé (à lire dans le JSON du scénario sélectionné avant le
+  run, ex. `GPL_VRAC` pour le scénario GPL).
+- Quantités initiales : `FicheMatiere.stockDisponible` ≥
+  `quantiteParUnite × qte` pour chaque ligne, avec une marge
+  confortable (ex. ×3) pour exclure tout effet de bord du point de
+  commande (s,Q) du Mécanisme B.
+- Quantité commandée : 1 commande, `qte` modéré (cohérent avec
+  `quantiteFixeCommande = 10` déjà utilisé lors de la clôture C2).
+- Besoins calculés : `besoin = quantiteParUnite × qte` par ligne de
+  nomenclature (formule confirmée ligne 4857 et 5409, identique dans
+  les deux fonctions).
+- Paramètres de retard : aucun (`retardFournisseurTestActif = false`).
+- Statuts attendus : `EN_ATTENTE` → (pas de passage par
+  `EN_APPROVISIONNEMENT`) → `PRODUCTION_PLANIFIEE` → `SERVIE` ou
+  `EN_RETARD` selon `tPromise`.
+- Assertions de terminalité : `commandeEstTerminale(cmd) == true` ;
+  `termines == cmd.qte` ; **aucune `ReceptionAttendue` créée** pour la
+  matière concernée pendant la durée du test (vérifie que le Mécanisme
+  B ne s'est pas déclenché inutilement, puisque le stock reste
+  au-dessus du point de commande).
+- Données à examiner dans les exports : ABox `run:modelArtifact` et
+  champs de clôture habituels (déjà validés en C1/C2) ; aucun champ
+  DDMRP n'existe encore, donc rien de spécifique à vérifier côté
+  export matière au-delà des logs `[STOCK]`/`[SOURCE]`.
+
+**MTO-B — matière insuffisante → Source → réception → Make**
+- Matières : au moins une `FicheMatiere` de la nomenclature du
+  scénario testé.
+- Quantités initiales : `stockDisponible` strictement inférieur au
+  besoin d'une commande (ex. `stockDisponible = 0` pour isoler le cas
+  le plus net).
+- Quantité commandée : 1 commande, `qte` fixé pour garantir
+  `manque > 0`.
+- Besoins calculés : idem MTO-A, avec `manque = besoin -
+  stockDisponible > 0` pour au moins une ligne.
+- Paramètres de retard : aucun (le délai utilisé est
+  `delaiApprovisionnementReelMax()`, dérivé de
+  `FicheMatiere.delaiObtentionHeures`, déjà configuré dans le JSON du
+  scénario — à lire tel quel, pas à fixer arbitrairement).
+- Statuts attendus : `EN_ATTENTE` → `EN_APPROVISIONNEMENT` →
+  `MATIERES_DISPONIBLES` (transitoire) → `PRODUCTION_PLANIFIEE` →
+  `SERVIE`/`EN_RETARD`.
+- Assertions de terminalité : `commandeEstTerminale(cmd) == true` ;
+  vérifier spécifiquement que `f.stockDisponible` a été incrémenté de
+  exactement `manque` au moment de `finaliserApprovisionnementCommande()`
+  (log `[SOURCE] ... reception terminee`), **et** observer si
+  `calculerBesoinsNets()` a créé une `ReceptionAttendue` concurrente
+  pour la même matière pendant la fenêtre `EN_APPROVISIONNEMENT` (test
+  direct de la question 17.3.2).
+- Données à examiner : logs `[STOCK]` (Mécanisme B) et `[SOURCE]`
+  (Mécanisme A) côte à côte, horodatés, pour confirmer ou infirmer le
+  chevauchement.
+
+**MTO-C — 2 ou 3 commandes MTO concurrentes avec matière limitée**
+- Matières : une `FicheMatiere` partagée par au moins deux scénarios
+  (ou un seul scénario, deux commandes).
+- Quantités initiales : `stockDisponible` suffisant pour **une seule**
+  des commandes testées (ex. couvrant exactement 1 commande sur 2-3).
+- Quantité commandée : 2 à 3 commandes créées à quelques secondes
+  d'écart (`genererCommande()` appelée plusieurs fois rapprochées, ou
+  `nombreCommandesATester` ≥ 2 avec un délai court entre commandes).
+- Besoins calculés : identiques par commande si même scénario ; à
+  additionner pour vérifier le dépassement du stock total.
+- Paramètres de retard : aucun, pour isoler l'effet de concurrence pur.
+- Statuts attendus : non prédits à l'avance (c'est l'objet du test) ;
+  observer si une commande est bloquée (`BLOQUE_MATIERE`) ou si les
+  deux/trois sont servies malgré un stock initial insuffisant pour
+  toutes (signe du double engagement/réapprovisionnement, §5/§17.2).
+- Assertions de terminalité : les 2-3 commandes atteignent un statut
+  terminal ; comparer l'ordre réel de clôture à l'ordre de création
+  (test direct de la conclusion du §4) ; comparer la somme des crédits
+  matière appliqués à la pénurie initiale réelle.
+- Données à examiner : séquence complète des logs `[STOCK]`, `[SOURCE]`,
+  `[MTO]`/`[MAKE]` pour les commandes concernées, export Excel/ABox de
+  fin de run pour `stockDisponible` final de la matière testée.
+
+**MTO-D — commande MTO avec retard fournisseur forcé**
+- Matières : une `FicheMatiere` ciblée par le mécanisme de test déjà
+  présent (`retardFournisseurCible`, `retardFournisseurTestActif`,
+  confirmés existants au §1.4/§1.5 et réutilisés ici sans
+  modification).
+- Quantités initiales : `stockDisponible` insuffisant, comme MTO-B.
+- Quantité commandée : 1 commande, `qte` cohérent avec un scénario
+  compatible (`scenarioCompatibleRetardFournisseur()`, déjà existant,
+  vérifié au §1.1 — refuse silencieusement avec popup si le scénario
+  sélectionné ne consomme pas la matière cible).
+- Besoins calculés : idem MTO-B.
+- Paramètres de retard : `retardFournisseurTestActif = true`,
+  `retardFournisseurCible = <idMatiere testé>`, délai effectif forcé
+  via `delaiFournisseurConfigureEffectifHeures()`/
+  `delaiFournisseurEffectifHeures()` (déjà existants, non modifiés).
+- Statuts attendus : `EN_ATTENTE` → `EN_APPROVISIONNEMENT` (durée
+  anormalement longue) → `MATIERES_DISPONIBLES` → `PRODUCTION_PLANIFIEE`
+  → `EN_RETARD` (le dépassement de `tPromise` est l'objectif du test).
+- Assertions de terminalité : `commandeEstTerminale(cmd) == true` avec
+  `statut == "EN_RETARD"` ; vérifier `enregistrerRetardFournisseurForce()`
+  (ligne ~1243) a bien été appelée une seule fois pour ce test
+  (`retardFournisseurConsomme`, déjà un garde-fou existant d'après le
+  nom du champ, non audité ligne à ligne dans cette passe).
+- Données à examiner : log `[STOCK]` portant `delai effectif=` très
+  supérieur à `delai nominal=` ; `cmd.statut` final ; écart entre
+  `cmd.tPromise` et l'instant de clôture réel.
+
+### 17.6 Frontière MTO / DDMRP (précision du §8-§9)
+
+La découverte du §17.2 renforce, plutôt qu'elle ne contredit, la
+recommandation du §8-§9 : elle montre concrètement **pourquoi** les
+responsabilités suivantes doivent rester séparées, avec une base de
+code précise pour chacune :
+
+- **Réservation et consommation physique** : doit rester portée par
+  `FicheMatiere`/`consommerMatieresPour()` (Mécanisme physique unique,
+  déjà correct dans son rôle propre, §17.1). Ni DDMRP ni le Mécanisme A
+  ne doivent dupliquer cette responsabilité.
+- **Calcul de disponibilité** : doit rester `matieresSuffisantesPourScenario()`-like
+  (lecture de `stockDisponible`), mais **devra être étendu** pour
+  consulter l'Open Supply (ligne suivante) avant qu'une nouvelle
+  implémentation DDMRP ne soit ajoutée — sinon un futur Mécanisme C
+  (DDMRP) répéterait exactement l'erreur d'indépendance démontrée en
+  §17.2 pour les Mécanismes A et B.
+- **Open Supply** : doit devenir la **vue unique et partagée** des
+  quantités déjà engagées (aujourd'hui, seul le Mécanisme B peuple
+  `receptionsAttendues`/`totalReceptionsAttendues()` ; le Mécanisme A
+  n'y contribue jamais, §17.1). Une implémentation DDMRP qui
+  consulterait uniquement `receptionsAttendues` sans tenir compte des
+  crédits directs du Mécanisme A resterait aveugle à une partie réelle
+  de l'engagement matière en cours.
+- **Qualified Demand** : doit être calculée à partir des commandes
+  ouvertes (`commandes`, hors `REAPPRO_*` ou les incluant selon la
+  décision de conception, à trancher explicitement, pas par défaut),
+  indépendamment du mécanisme qui a généré leur besoin (A ou B).
+- **Décision de réapprovisionnement** : c'est le point précis où
+  Mécanisme A et Mécanisme B devront converger ou être explicitement
+  arbitrés l'un contre l'autre si DDMRP est introduit — **ne pas
+  ajouter un troisième mécanisme indépendant** (la recommandation du
+  §8, Option 2, reste valide, mais seulement si son introduction
+  **remplace** le Mécanisme B pour les matières bufferisées, plutôt que
+  de s'y superposer comme un Mécanisme C).
+- **Priorité des commandes clientes** : reste hors du périmètre matière
+  (§10, inchangé par cet audit complémentaire).
+
+La recommandation `DDMRPBuffer` lié à `FicheMatiere` (§8) **reste une
+hypothèse de conception, non tranchée**. Cet audit complémentaire ne la
+confirme ni ne l'infirme ; il précise seulement les mécanismes
+existants qu'elle devra remplacer ou absorber pour éviter d'ajouter un
+troisième système de réapprovisionnement indépendant.
+
+### 17.7 Lacunes restantes après cet audit complémentaire
+
+- Impact quantitatif réel du double réapprovisionnement (§17.2) : non
+  mesuré, nécessite MTO-B/MTO-C exécutées.
+- Comportement d'un poste consommateur face à un `stockDisponible`
+  tombé à zéro par `consommerMatieresPour()` (§17.3.4) : non observé en
+  exécution.
+- Revue exhaustive de tous les sites assignant
+  `cmd.statut = "EN_APPROVISIONNEMENT"` au-delà du site déjà cité
+  (ligne 3368) : non refaite dans cette passe.
+- Comportement exact de `enregistrerRetardFournisseurForce()`/
+  `retardFournisseurConsomme` sous plusieurs commandes successives
+  visant la même matière cible (pertinent pour MTO-D répétée) : non
+  audité ligne à ligne.
+- Toute mesure runtime listée au §17.5 : aucune campagne n'a été
+  exécutée dans cette passe, conformément à la consigne.

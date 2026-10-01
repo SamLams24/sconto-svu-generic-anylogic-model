@@ -988,9 +988,18 @@ ici.
   `EN_RETARD` selon `tPromise`.
 - Assertions de terminalité : `commandeEstTerminale(cmd) == true` ;
   `termines == cmd.qte` ; **aucune `ReceptionAttendue` créée** pour la
-  matière concernée pendant la durée du test (vérifie que le Mécanisme
-  B ne s'est pas déclenché inutilement, puisque le stock reste
-  au-dessus du point de commande).
+  matière concernée pendant la durée du test. **Précision (relecture
+  MTO-0.1)** : cette absence attendue n'est valide que **sous
+  condition** — elle suppose que le stock projeté
+  (`stockProjete = stockDisponible + receptionsAttendues`, calculé
+  dans `calculerBesoinsNets()`, ligne 1231) reste au-dessus du point de
+  commande `f.pointCommande` **pendant toute l'exécution, y compris
+  après la consommation physique** par `consommerMatieresPour()`. La
+  marge initiale (§ ci-dessus, ×3) doit donc être dimensionnée en
+  tenant compte de la consommation réelle de la commande testée, pas
+  seulement du besoin brut initial ; sinon le Mécanisme B peut se
+  déclencher légitimement en cours de test sans que ce soit une
+  anomalie.
 - Données à examiner dans les exports : ABox `run:modelArtifact` et
   champs de clôture habituels (déjà validés en C1/C2) ; aucun champ
   DDMRP n'existe encore, donc rien de spécifique à vérifier côté
@@ -1064,15 +1073,27 @@ ici.
   `delaiFournisseurEffectifHeures()` (déjà existants, non modifiés).
 - Statuts attendus : `EN_ATTENTE` → `EN_APPROVISIONNEMENT` (durée
   anormalement longue) → `MATIERES_DISPONIBLES` → `PRODUCTION_PLANIFIEE`
-  → `EN_RETARD` (le dépassement de `tPromise` est l'objectif du test).
-- Assertions de terminalité : `commandeEstTerminale(cmd) == true` avec
-  `statut == "EN_RETARD"` ; vérifier `enregistrerRetardFournisseurForce()`
-  (ligne ~1243) a bien été appelée une seule fois pour ce test
-  (`retardFournisseurConsomme`, déjà un garde-fou existant d'après le
-  nom du champ, non audité ligne à ligne dans cette passe).
+  → statut terminal. **Correction (relecture MTO-0.1)** : `EN_RETARD`
+  n'est **pas** un résultat garanti par construction — la règle
+  réellement codée (ligne 13606/5867, §1.8) est
+  `cmd.statut = (time() <= cmd.tPromise) ? "SERVIE" : "EN_RETARD"`. Le
+  test doit donc **comparer l'instant réel de clôture (`tClose`,
+  l'instant où `commandeEstTerminale(cmd)` devient vrai) à
+  `cmd.tPromise`**, et ne considérer `EN_RETARD` comme attendu que si
+  le retard fournisseur forcé fait effectivement dépasser `tPromise`
+  (`tClose > tPromise`). Si le retard forcé reste inférieur à la marge
+  disponible avant `tPromise`, un résultat `SERVIE` est correct et ne
+  doit pas être interprété comme un échec du test.
+- Assertions de terminalité : `commandeEstTerminale(cmd) == true` ;
+  vérifier `enregistrerRetardFournisseurForce()` (ligne ~1243) a bien
+  été appelée une seule fois pour ce test (`retardFournisseurConsomme`,
+  déjà un garde-fou existant d'après le nom du champ, non audité ligne
+  à ligne dans cette passe) ; calculer `tClose - tPromise` et confirmer
+  que le signe de cet écart correspond exactement au statut obtenu
+  (`SERVIE` si `tClose <= tPromise`, `EN_RETARD` sinon).
 - Données à examiner : log `[STOCK]` portant `delai effectif=` très
-  supérieur à `delai nominal=` ; `cmd.statut` final ; écart entre
-  `cmd.tPromise` et l'instant de clôture réel.
+  supérieur à `delai nominal=` ; `cmd.statut` final ; `cmd.tPromise` et
+  l'instant de clôture réel, pour calculer l'écart ci-dessus.
 
 ### 17.6 Frontière MTO / DDMRP (précision du §8-§9)
 
@@ -1082,9 +1103,16 @@ responsabilités suivantes doivent rester séparées, avec une base de
 code précise pour chacune :
 
 - **Réservation et consommation physique** : doit rester portée par
-  `FicheMatiere`/`consommerMatieresPour()` (Mécanisme physique unique,
-  déjà correct dans son rôle propre, §17.1). Ni DDMRP ni le Mécanisme A
-  ne doivent dupliquer cette responsabilité.
+  `FicheMatiere`/`consommerMatieresPour()`, qui reste le point unique
+  de consommation physique (§17.1). **Correction (relecture
+  MTO-0.1)** : ce n'est pas un mécanisme « déjà correct dans son rôle
+  propre » — `consommerMatieresPour()` ne bloque pas la production
+  lorsque le stock matière est insuffisant (il tronque à zéro,
+  `Math.max(0, ...)`, ligne 1314, §17.1/§17.3.4). Son comportement
+  d'insuffisance reste à valider, voire à corriger, après observation
+  runtime (MTO-1, §18). Ni DDMRP ni le Mécanisme A ne doivent dupliquer
+  son rôle de point unique de consommation, mais cela ne présume pas
+  que son comportement actuel face à l'insuffisance soit correct.
 - **Calcul de disponibilité** : doit rester `matieresSuffisantesPourScenario()`-like
   (lecture de `stockDisponible`), mais **devra être étendu** pour
   consulter l'Open Supply (ligne suivante) avant qu'une nouvelle
@@ -1134,3 +1162,222 @@ troisième système de réapprovisionnement indépendant.
   audité ligne à ligne.
 - Toute mesure runtime listée au §17.5 : aucune campagne n'a été
   exécutée dans cette passe, conformément à la consigne.
+
+---
+
+## 18. MTO-1 — Runtime Baseline (fixtures MTO-A et MTO-B)
+
+**Nature : préparation de fixtures et procédure de run manuel.**
+Branche `feature/mto-ddmrp-foundation`, base
+`b5fdbf15aa80c551351de82686fe90adfb46d855`. Aucune campagne n'a été
+exécutée automatiquement dans cette passe (environnement non outillé
+pour piloter l'IDE AnyLogic). Aucun bug n'est corrigé ici ;
+`carnetCommandesMTO`, la réservation matière et DDMRP ne sont pas
+touchés ; ETO et C3/E4 ne sont pas concernés.
+
+### 18.1 Pourquoi aucune instrumentation `.alp` n'a été ajoutée
+
+Les logs déjà présents dans le modèle couvrent, sans ambiguïté,
+l'intégralité des observations demandées pour MTO-A et MTO-B :
+
+- `[MODE SCOR] Mode sélectionné=... | isMTS=... | isMTO=... | isETO=...`
+  (ligne 8609) — confirme le mode réellement actif.
+- `[DELIVER] Commande <id> type=<typeCommande> qte=<qte> | ...`
+  (ligne 13979) — confirme `cmd.typeCommande` au moment de la
+  génération de chaque commande.
+- `[STOCK] ...` (`calculerBesoinsNets()`, lignes ~1137-1261) — chaque
+  réception créditée par le Mécanisme B, chaque nouvelle
+  `ReceptionAttendue` créée (quantité, point de commande, stock
+  projeté).
+- `[SOURCE] <id> en attente de reception matiere ; production suspendue
+  pendant ...` (déclenchement du Mécanisme A, dans
+  `analyserMatiereCommandeOrchestree()`, proche de la ligne 3376) et
+  `[SOURCE] <id> : reception terminee, lancement Make autorise.`
+  (ligne 3503) — bornes exactes de la fenêtre `EN_APPROVISIONNEMENT`.
+- `[ERREUR MATIERE] ...`/`[DEBUG CAS] ...` (dans
+  `analyserMatiereCommandeOrchestree()`/`matieresSuffisantesPourScenario()`)
+  — bilan matière à chaque analyse.
+
+Ces logs suffisent à reconstituer la chronologie demandée au §18.3 sans
+ajouter de `System.out`/log supplémentaire. **Aucune instrumentation
+`.alp` n'a donc été nécessaire** ; si une étape précise de la
+chronologie manquait de preuve une fois les logs du run réellement
+collectés, cela sera signalé explicitement plutôt que comblé par une
+instrumentation ajoutée a posteriori.
+
+### 18.2 Préparation commune aux deux fixtures
+
+- Scénario : `model/scenario_ZENER_SA_Togo_v39.json` (fichier déjà
+  présent dans le dépôt, non modifié). Nomenclature utilisée :
+  `"SCENARIO DISTRIBUTION"` — `GPL_VRAC` (12,5/unité),
+  `BOUTEILLE_VIDE_12KG` (1/unité), `ACCESSOIRES_KIT` (1/unité) ;
+  `fichesMatiere` du JSON : `GPL_VRAC` (stockDisponible=600,
+  stockSecurite=150, delaiObtentionHeures=6, fournisseur=ACT_1),
+  `BOUTEILLE_VIDE_12KG` (stockDisponible=250, stockSecurite=60,
+  delaiObtentionHeures=10, fournisseur=ACT_2), `ACCESSOIRES_KIT`
+  (stockDisponible=300, stockSecurite=80, delaiObtentionHeures=5,
+  fournisseur=ACT_3). Valeurs lues directement dans le fichier JSON,
+  aucune inventée.
+- Chargement : bouton **« Rafraîchir la liste »** puis sélectionner
+  `scenario_ZENER_SA_Togo_v39.json` dans la liste déroulante, puis
+  bouton **« Charger le scénario sélectionné »**
+  (`chargerScenarioJSONDepuisSelection()`, ligne 24271) — ne pas
+  utiliser le bouton « Charger config JSON » seul, car il recalcule le
+  nom de fichier depuis `nomEntreprise` (défaut `"ZENER_SA_Togo"`,
+  ligne 11144) et chercherait `scenario_ZENER_SA_Togo.json` (sans
+  `_v39`), qui n'existe pas dans `model/`.
+- Mode de simulation : à l'ouverture, la boîte de dialogue **« Mode de
+  simulation SCOR »** apparaît automatiquement (`StartupCode` de
+  `Main`, ligne 10598). Sélectionner impérativement
+  **« MTO — Make/Source/Deliver to Order (occurrence 2) »**. Ce choix
+  fixe `isMTO=true` et fait que `modeSCORActif()` (ligne 8521) retourne
+  `"MTO"` pour toute commande générée ensuite — c'est la condition
+  nécessaire et suffisante pour que `analyserStockCommandeOrchestree()`
+  court-circuite la branche MTS (§1.3) et entre dans le chemin MTO
+  tracé au §1.
+- Nombre de commandes : bouton **« Contrôle commandes »**
+  (`ouvrirParametresNombreCommandes()`, ligne 4404) → cocher **« Limiter
+  les commandes automatiques »**, champ nombre = **1**, cocher
+  **« Utiliser une quantité fixe »**, champ quantité = **10** (valeur
+  déjà utilisée et documentée lors de la clôture runtime C2, §21 du
+  présent document — pas une valeur nouvelle inventée pour ce test).
+  Avec `qte=10`, les besoins par matière sont : `GPL_VRAC` = 125,
+  `BOUTEILLE_VIDE_12KG` = 10, `ACCESSOIRES_KIT` = 10 (calcul :
+  `quantiteParUnite × qte`, formule confirmée §17.5).
+- Seed : utiliser le champ seed existant (déjà utilisé en C1/C2, voir
+  §18 et §21) ; **noter la valeur exacte utilisée dans le rapport de
+  run**, quelle qu'elle soit.
+
+### 18.3 Procédure exacte — MTO-A (matière suffisante)
+
+**Configuration additionnelle** : **aucune**. Ne pas ouvrir le bouton
+« Stocks initiaux » : les valeurs par défaut du JSON (§18.2) couvrent
+déjà largement le besoin (125/10/10 contre 600/250/300 disponibles) et
+constituent la fixture la plus simple et la plus fidèle au modèle tel
+qu'il est configuré, sans valeur inventée.
+
+**Déroulement attendu** (à confirmer par les logs du run, pas supposé
+à l'avance) :
+1. Démarrer la simulation (bouton Démarrer, après la boîte de dialogue
+   Mode SCOR).
+2. Laisser la commande unique se générer (`genererCommande()`).
+3. Relever le log `[DELIVER] Commande CMD_1 type=MTO qte=10 | ...`.
+4. Relever l'absence de tout log `[SOURCE] ... en attente de reception
+   matiere` pour `CMD_1` (signe que `matOK=true` dès le premier
+   passage et que la commande n'est jamais passée par
+   `EN_APPROVISIONNEMENT`).
+5. Laisser la production se terminer, relever la clôture (`SERVIE` ou
+   `EN_RETARD` selon `tPromise`, les deux sont des résultats valides
+   ici — seul un statut `BLOQUE_*`/`REFUSEE` serait anormal).
+6. Exporter Excel/ABox de fin de run (même procédure que C1/C2).
+
+**Preuves à conserver** :
+- `cmd.typeCommande` réellement `"MTO"` : log `[DELIVER] ... type=MTO ...`.
+- Absence de `EN_APPROVISIONNEMENT` : absence des logs `[SOURCE] ...
+  en attente ...` pour `CMD_1` dans toute la durée du run.
+- Absence de nouvelle `ReceptionAttendue` pour `GPL_VRAC`,
+  `BOUTEILLE_VIDE_12KG`, `ACCESSOIRES_KIT` : absence des logs `[STOCK]
+  ... -> ordre de Q*=...` pour ces trois matières pendant la durée du
+  test. **Rappel (correction §17.6)** : ceci n'est garanti que si le
+  stock projeté reste au-dessus du point de commande après
+  consommation — si un tel log apparaît malgré tout, ce n'est pas
+  nécessairement une anomalie, cela doit être interprété à la lumière
+  du point de commande réellement calculé (visible dans le même log
+  `[STOCK]`), pas rejeté par principe.
+- Passage à `PRODUCTION_PLANIFIEE` puis statut terminal : à défaut de
+  log dédié à `PRODUCTION_PLANIFIEE` (non trouvé dans le code,
+  confirmé §17.1), inférer la fenêtre entre la dernière trace Make
+  (`tracerFluxHierarchique(..., "Make", ...)`) et le début de
+  circulation des `FluxEntity` ; le statut terminal est directement lu
+  dans l'export Excel/ABox de fin de run.
+- Quantité produite/terminée cohérente : `termines == 10` (compteur
+  interne déjà utilisé au §1.8).
+- Stock matière avant/après : relevé manuel de
+  `FicheMatiere.stockDisponible` via le dernier log `[STOCK]` de
+  chaque matière avant le run (valeurs par défaut, §18.2) et après
+  clôture (export Excel final).
+- Compteurs ouverts/WIP terminaux propres : mêmes champs que la
+  clôture C1/C2 (`demandGenerationFinished`, `terminalReached`,
+  `openCustomerOrders`, `openReplenishments`,
+  `entitiesInProcessAtPosts`, `pendingBusinessActions`, calculés par
+  `diagnosticEtatTerminal()`, ligne 9614).
+
+### 18.4 Procédure exacte — MTO-B (matière insuffisante)
+
+**Configuration additionnelle** : bouton **« Stocks initiaux »**
+(`ouvrirParametresStockInitial()`, ligne 4267) → champ **« Override
+global matière (toutes fiches) »** = **0**, valider. Ceci applique
+`f.stockDisponible = 0` aux trois `FicheMatiere` simultanément
+(`appliquerStocksInitiauxConfig()`, confirmé ligne 4218) — c'est le
+seul mécanisme déjà existant dans l'interface pour forcer une pénurie
+sans éditer le fichier JSON, et il satisfait « au moins une matière à
+0 » en l'appliquant aux trois par construction de ce contrôle. Avec
+`qte=10`, le manque est alors : `GPL_VRAC`=125, `BOUTEILLE_VIDE_12KG`=10,
+`ACCESSOIRES_KIT`=10 (égal au besoin brut, puisque le stock de départ
+est nul).
+
+**Ne pas activer** `retardFournisseurTestActif` : le délai utilisé est
+celui, nominal, de `delaiApprovisionnementReelMax()` (§17.1, dérivé de
+`delaiObtentionHeures` : 6h/10h/5h selon la matière, converti par
+`dureeEchelle()`). **Ne pas désactiver ni modifier le cycle (s,Q)** :
+c'est précisément son interaction avec le Mécanisme A qui doit être
+observée.
+
+**Chronologie à capturer** (horodatage simulé `time()` pour chaque
+point, à relever directement depuis les logs, pas recalculé a
+posteriori) :
+
+| # | Événement | Source exacte |
+|---|---|---|
+| 1 | Création de `CMD_1` | log `[DELIVER] Commande CMD_1 type=MTO qte=10 ...` (ligne 13979) |
+| 2 | Besoin matière exact | calculable (`quantiteParUnite × 10`, §18.2) ou lu dans `[DEBUG CAS] ... bilan=...` (`analyserMatiereCommandeOrchestree()`) |
+| 3 | Stock initial | 0 pour les trois matières (configuration §18.4) |
+| 4 | Passage à `EN_APPROVISIONNEMENT` | log `[SOURCE] CMD_1 en attente de reception matiere ; production suspendue pendant Xs` (déclenché depuis `analyserMatiereCommandeOrchestree()`, proche ligne 3376) |
+| 5 | Délai calculé par `delaiApprovisionnementReelMax()` | même log que (4), valeur `Xs` (déroulé) et `Xh` (réel) annoncée dans le message |
+| 6 | Chaque exécution pertinente de `calculerBesoinsNets()` touchant `GPL_VRAC`/`BOUTEILLE_VIDE_12KG`/`ACCESSOIRES_KIT` | log `[STOCK] <idMatiere> : stock projete=... <= point de commande=... -> ordre de Q*=... (delai nominal=...h, delai effectif=...h)` (ligne ~1255) ; **noter chaque occurrence**, pas seulement la première |
+| 7 | Création de `ReceptionAttendue` (Mécanisme B) | même log que (6) — `quantite = Q*` annoncée, `dateArrivee` non loguée directement mais déductible (`maintenant + dureeEchelle(delaiReelTotal)`, §17.1) ; si possible, consulter directement `f.receptionsAttendues` via le débogueur AnyLogic au moment du log pour la date exacte |
+| 8 | Crédit direct par `finaliserApprovisionnementCommande()` (Mécanisme A) | log `[SOURCE] CMD_1 : reception terminee, lancement Make autorise.` (ligne 3503) et les logs de détail associés (`reception.toString()`, quantité reçue par matière) |
+| 9 | Crédit ultérieur éventuel par `traiterEcheances()` (Mécanisme B) | log `[MRP] Reception matiere <idMatiere> : +X (stock=...)` (ligne ~1138) — **si ce log apparaît pour une matière déjà créditée en (8), c'est la preuve directe du double crédit (§17.2)** |
+| 10 | Stock final | dernier `stockDisponible` de chaque matière, lu dans le dernier log `[STOCK]` et/ou l'export Excel/ABox de fin de run |
+| 11 | Passage en production | trace AER `MaterialAvailable` (§17.1) ; ou simplement la reprise de circulation des `FluxEntity` |
+| 12 | Statut terminal de `CMD_1` | export Excel/ABox de fin de run |
+
+**Calcul à produire dans le rapport de run** :
+```
+stock_final_theorique_sans_double_credit (par matière)
+    = 0 (stock initial, §18.4)
+    + manque crédité par finaliserApprovisionnementCommande()  [étape 8]
+    - quantiteParUnite × 10 (consommation Make, consommerMatieresPour())
+
+stock_final_observe (par matière)
+    = valeur réellement lue à l'étape 10
+
+écart = stock_final_observe - stock_final_theorique_sans_double_credit
+```
+Un écart strictement positif, corrélé à l'apparition d'un log `[MRP]
+Reception matiere ...` (étape 9) pour la même matière pendant la
+fenêtre `EN_APPROVISIONNEMENT` de `CMD_1`, constitue la preuve runtime
+directe du double réapprovisionnement déjà démontré statiquement en
+§17.2.
+
+### 18.5 Ce qu'il faut renvoyer après le run manuel
+
+- Le journal complet des événements (`board.logEvent`), pas seulement
+  les lignes filtrées ci-dessus — pour permettre de vérifier qu'aucun
+  événement pertinent n'a été omis par les filtres `[...]` proposés.
+- L'export Excel et l'export ABox TTL de fin de run, pour chaque
+  fixture (MTO-A et MTO-B séparément, deux runs distincts).
+- La valeur de seed utilisée pour chaque run.
+- La confirmation du mode sélectionné dans la boîte de dialogue de
+  démarrage (capture du log `[MODE SCOR] ...` suffit).
+- Pour MTO-B spécifiquement : le tableau rempli du §18.4 (les 12
+  points) et le calcul d'écart du même paragraphe.
+
+### 18.6 Limite assumée de cette préparation
+
+Le détail exact de `dureeEchelle()`/`simToRealSeconds` (lignes 2168 et
+alentours) n'a pas été recalculé ici pour convertir précisément les
+délais de 6h/10h/5h réels en secondes simulées — la valeur exacte
+apparaîtra directement dans les logs `[SOURCE]`/`[STOCK]` du run
+(`Xs (deroule) / Xh (reel)`), il n'était donc pas nécessaire de la
+précalculer pour préparer la fixture.

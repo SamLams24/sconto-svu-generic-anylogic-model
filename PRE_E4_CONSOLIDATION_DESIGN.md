@@ -1205,3 +1205,54 @@ changent). **C2 n'est donc pas marqué PASS runtime à ce stade.**
 
 Renommage appliqué, validé statiquement, commité. **C2-B : PASS
 STATIQUE / RUNTIME À VALIDER.**
+
+---
+
+## 21. Clôture C2 — validation runtime
+
+**Validation runtime — PASS.** Un run manuel dans l'IDE AnyLogic (hors
+de cet environnement d'exécution) a produit les preuves suivantes.
+
+**Configuration du run C2** : `seedExperiment = 1001`,
+`nombreCommandes = 10`, `quantiteFixeCommande = 10`,
+`GPL_VRAC = 600`, `BOUTEILLE_VIDE_12KG = 250`,
+`ACCESSOIRES_KIT = 300`.
+
+**ABox** : les nouveaux identifiants de la famille `ENTREPRISE_FOCALE`
+introduits en C2-B sont présents dans l'export, et les anciens
+identifiants AN-05 en sont absents. Présents notamment :
+`entreprise_focale_process_time`, `entreprise_focale_waiting_time`,
+`entreprise_focale_estimated_pce`, `ctx_entreprise_focale_vsm_*`,
+`ENTREPRISE_FOCALE_ACT_4_ONLY`.
+
+**CSV** : `VSM_ENTREPRISE_FOCALE` présent.
+
+**Terminalité** : `demandGenerationFinished = OUI`,
+`terminalReached = OUI`, `openCustomerOrders = 0`,
+`openReplenishments = 0`, `entitiesInProcessAtPosts = 0`,
+`pendingBusinessActions = 0`.
+
+**C2 : PASS RUNTIME / CLÔTURÉ.**
+
+**Anomalie séparée constatée : sensibilité résiduelle à la phase
+temporelle du démarrage interactif.** Entre le run de clôture C1 et le
+run de clôture C2, une différence d'instant de démarrage interactif a
+été observée : `runStartSimulationTime ≈ 41.35 s` pour C1 contre
+`≈ 161.2 s` pour C2. Les premiers tirages RNG observés sont identiques
+avec la graine 1001 dans les deux runs, mais l'entrelacement ultérieur
+de certains événements diffère. **Ceci n'invalide pas la validation du
+renommage C2** (les identifiants et la terminalité sont corrects dans
+les deux cas), mais constitue une anomalie distincte, à étudier avant
+toute campagne expérimentale automatisée (E4), puisqu'une telle
+campagne nécessite une reproductibilité stricte d'un run à l'autre. Non
+corrigée dans ce commit.
+
+**Dette mineure constatée : troncature du nom de feuille Excel.** Le
+nom de feuille introduit en C2-B, `"Multi-produit - Entreprise
+Focale"` (29 caractères), est proche de la limite Excel de 31
+caractères pour un nom de feuille ; toute variation future du libellé
+risque un dépassement silencieux (troncature automatique par Excel,
+sans erreur). Non corrigée dans ce commit ; à surveiller si le libellé
+est modifié à nouveau.
+
+**C2 (C2-A + C2-B) : CLÔTURÉ.**

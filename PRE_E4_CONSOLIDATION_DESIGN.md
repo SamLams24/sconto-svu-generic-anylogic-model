@@ -1095,3 +1095,113 @@ laissée ouverte (« à confirmer auprès de l'utilisateur ») est
 désormais documentée avec une recherche de consommateurs effective, et
 la recommandation conditionnelle ci-dessus (19.7) sert de base à une
 décision future, avant implémentation en C2-B.
+
+---
+
+## 20. C2-B — Implémentation AN-05
+
+**Décision retenue : stratégie A (remplacement direct), sans double
+export.** Conformément à la recommandation conditionnelle du §19.7 :
+aucun consommateur fonctionnel versionné dans le dépôt n'a été trouvé
+en C2-A (§19.6), donc pas de migration transitoire ancien/nouveau nom.
+
+**Famille de nommage retenue : alignée sur `ActeurSC.ENTREPRISE_FOCALE`**
+(pas la famille courte `focal`), conformément au choix explicite.
+
+### 20.1 Mappings appliqués
+
+| Ancien | Nouveau |
+|---|---|
+| `kpiZener` (champ `BlackboardAgent`) | `kpiEntrepriseFocale` |
+| `zener_process_time` (clé ABox) | `entreprise_focale_process_time` |
+| `zener_waiting_time` (clé ABox) | `entreprise_focale_waiting_time` |
+| `zener_estimated_pce` (clé ABox) | `entreprise_focale_estimated_pce` |
+| `"ZENER_ACT_4_ONLY"` (valeur `run:measurementScope`) | `"ENTREPRISE_FOCALE_ACT_4_ONLY"` |
+| `ctxZener` (variable locale ABox) | `ctxEntrepriseFocale` |
+| préfixe URI `"zener_vsm_"` | `"entreprise_focale_vsm_"` |
+| `"ZENER Process Time"` / en-tête Excel `"ZENER Process Time (secondes)"` | `"Entreprise Focale - Process Time"` / `"Entreprise Focale - Process Time (secondes)"` |
+| `"ZENER Waiting Time"` / en-tête Excel | `"Entreprise Focale - Waiting Time"` / en-tête correspondant |
+| `"ZENER Estimated PCE"` / en-tête Excel `"(%)"` | `"Entreprise Focale - Estimated PCE"` / en-tête correspondant |
+| en-tête Excel `"Source de la valeur ajoutee ZENER"` | `"Source de la valeur ajoutée - Entreprise Focale"` |
+| nom de feuille Excel `"Multi-produit ZENER"` | `"Multi-produit - Entreprise Focale"` |
+| champ CSV `VSM_ZENER` | `VSM_ENTREPRISE_FOCALE` |
+| fonction `resumeSourceVAZener()` | `resumeSourceVAEntrepriseFocale()` |
+| fonction `multiProduitZenerColumns()` | `multiProduitEntrepriseFocaleColumns()` |
+| fonction `multiProduitZenerRows()` | `multiProduitEntrepriseFocaleRows()` |
+
+Un renommage supplémentaire, non listé explicitement dans la demande
+mais directement dépendant de ces clés, a été appliqué par cohérence
+interne et sans risque (variable locale, non exportée) : la variable
+`zenerInds` (tableau pilotant l'export des trois mesures ci-dessus,
+dans `exporterABoxRuntimeTTL()`) devient `entrepriseFocaleInds`. La
+laisser inchangée aurait conservé un identifiant « Zener » au cœur même
+de la structure que AN-05 visait à corriger.
+
+Chaque remplacement a été appliqué par un script scopé
+(chaîne-exacte, pas de recherche/remplacement global), avec
+vérification programmatique du nombre d'occurrences avant/après pour
+chaque identifiant avant écriture du fichier.
+
+### 20.2 Éléments ZENER volontairement laissés intacts
+
+Conformément au §19.3 et à la consigne de ne pas généraliser tout
+« ZENER » : commentaires historiques (`C14.22`, `C14.23`, etc.),
+narratif de validation « ZENER SA Togo » dans le flux Deliver (environ
+18 chaînes), `estScenarioCasTest()` / `indexScenarioNominal()`,
+`acteurCourtF()`, le libellé de ligne de tableau `"VSM ZENER ACT_4"`,
+les chaînes d'affichage dashboard `"PCE ZENER estime : ..."`,
+`nomEntreprise = "ZENER_SA_Togo"` (dette distincte, cause séparée,
+non traitée ici conformément à la consigne), les fichiers de run
+historiques, les fichiers `.alp` frères (`SCONTO_SVU_DATACO_FINAL.alp`,
+`reference/colleague/...`, `reference/dataco-multiproduct/...`), et
+toute référence de documentation décrivant historiquement ZENER. 86
+occurrences du mot « ZENER » (insensible à la casse) subsistent dans le
+`.alp` maître après ce commit, toutes légitimement spécifiques au
+scénario.
+
+### 20.3 Artefacts historiques non migrés
+
+`model/run 01/SCONTO_SVU_ABOX_ZENER_SA_Togo_RUN_1773129600000_1790628407881.ttl`
+reste inchangé : c'est un export figé d'un run passé, pas un artefact
+régénéré par le modèle. Les nouveaux runs produiront désormais
+`vsm:entreprise_focale_process_time` etc. au lieu de
+`vsm:zener_process_time` etc. ; cette divergence entre l'archive et les
+futurs exports est attendue et documentée, pas une anomalie.
+
+### 20.4 Validation statique
+
+- XML bien formé (`xml.etree.ElementTree`) : OK.
+- 1684 balises `<Id>` AnyLogic, toutes uniques, 0 doublon.
+- Audit A (anciens identifiants AN-05) : 0 occurrence résiduelle de
+  `kpiZener`, `zener_process_time`, `zener_waiting_time`,
+  `zener_estimated_pce`, `ZENER_ACT_4_ONLY`, `ctxZener`,
+  `zener_vsm_`, `resumeSourceVAZener`, `multiProduitZenerColumns`,
+  `multiProduitZenerRows`, `VSM_ZENER`, `"Multi-produit ZENER"`,
+  `"Source de la valeur ajoutee ZENER"`, `zenerInds`.
+- Audit B (mot général ZENER) : 86 occurrences légitimes conservées
+  (narratif/commentaires/scénario), conformément au §20.2 ; aucune
+  tentative de les ramener à zéro.
+- `kpiGlobal` (51 occurrences) et `ActeurSC.ENTREPRISE_FOCALE` (29
+  occurrences) inchangés, confirmant qu'aucune formule `KPIBundle` ni
+  aucune résolution d'acteur n'a été touchée.
+- Diff limité au renommage : aucune occurrence de `x1`/`x2`/`x3`/`x4`
+  ni de termes métier (`stock`, `SCOR`, `seedExperiment`,
+  `terminalReached`, `ordonnance`, `setSeed`) dans le diff.
+- Le diff contient par ailleurs 3 lignes de blanc de fin de ligne sans
+  rapport avec ce travail (`<EmbeddedIcon>`, deux balises `<Type>`),
+  présentes dans l'arbre de travail avant cette passe (probablement une
+  resauvegarde locale par l'IDE AnyLogic lors du run manuel de clôture
+  C1) ; sans contenu fonctionnel, non retirées séparément.
+
+### 20.5 Validation runtime
+
+**Non effectuée dans cette passe.** Comme pour C1, un run manuel dans
+l'IDE AnyLogic reste nécessaire pour confirmer que le contenu numérique
+de l'export ABox/Excel/CSV est strictement identique à l'ancien nommage
+(mêmes valeurs, mêmes types RDF, seuls les identifiants/libellés
+changent). **C2 n'est donc pas marqué PASS runtime à ce stade.**
+
+### 20.6 Clôture C2-B (statique)
+
+Renommage appliqué, validé statiquement, commité. **C2-B : PASS
+STATIQUE / RUNTIME À VALIDER.**

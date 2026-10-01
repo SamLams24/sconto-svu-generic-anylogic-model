@@ -2475,7 +2475,7 @@ String sourceValeurAjoutee(PosteGenericAgent p) {
     return p != null && p.tauxVA > 0 ? "CONFIGUREE" : "FALLBACK";
 }
 
-String resumeSourceVAZener() {
+String resumeSourceVAEntrepriseFocale() {
     return "VA ESTIMEE, TAUX CONFIGURES OU FALLBACK SELON LE POSTE";
 }
 
@@ -4947,7 +4947,7 @@ void evaluerRetourClientApresLivraison(CommandeAgent cmd) {
 
     // C14.48 -- OPTION A appliquee au Return (point 9) : jusqu'ici, le retour
     // client n'etait represente que par un jeton purement visuel, exclu des
-    // KPI (kpiZener). Comme pour Deliver, on trace desormais chaque etape
+    // KPI (kpiEntrepriseFocale). Comme pour Deliver, on trace desormais chaque etape
     // reelle du retour avec un echantillon reel de sa loiTemps, pour que le
     // traitement des retours contribue enfin a Process Time / Waiting Time /
     // PCE cote ZENER, au lieu d'etre invisible dans les indicateurs.
@@ -6240,7 +6240,7 @@ void enregistrerFinCommandeGlobale(CommandeAgent cmd, double leadTime, double wa
     // clientes. Le Lead Time metier additionne le traitement propre de CMD et
     // l'attente explicite imputee depuis le ou les REAPPRO lies. La valeur
     // ajoutee globale reste neutre : le PCE VSM provient exclusivement de
-    // kpiZener et ne doit jamais reconstruire l'attente de commande.
+    // kpiEntrepriseFocale et ne doit jamais reconstruire l'attente de commande.
     actualiserRegistreTempsCommande(cmd, leadTime, waitTime);
     double lt = Math.max(0.001, cmd.leadTimeClientReelSec);
     double wt = Math.max(0.0, Math.min(lt, cmd.dureeAttenteStockReelleSec));
@@ -7664,7 +7664,7 @@ String stockFiniAffichageText() {
 // documentees :
 //  - "Waiting Time (s)" utilise ici tempsAttenteGlobalCoherent() DU MASTER
 //    (deja corrige, commentaire "VSM-FIX-05"), pas la version collegue qui
-//    reconstruit differemment a partir de kpiZener/kpiGlobal.pce() ;
+//    reconstruit differemment a partir de kpiEntrepriseFocale/kpiGlobal.pce() ;
 //  - "Delayed Orders (nb)" utilise ici commandesRetardeesCount() DU MASTER
 //    (EN_RETARD + client uniquement) ; la version collegue compte aussi
 //    cmd.retardConstate, champ du mecanisme de retard continu du Bloc C, absent
@@ -7718,7 +7718,7 @@ void capturerPointHistoriqueDashboard() {
         wipReelSansJetonsVisuels(),
         (int) stockFini,
         detailStockFiniParProduit(),
-        fmt1((board.kpiZener != null ? board.kpiZener : board.kpiGlobal).pce() * 100),
+        fmt1((board.kpiEntrepriseFocale != null ? board.kpiEntrepriseFocale : board.kpiGlobal).pce() * 100),
         fmt1(tempsAttenteGlobalCoherent()),
         board.nbMTS,
         board.nbMTO,
@@ -9693,11 +9693,11 @@ public String exporterABoxRuntimeTTL(String raison) {
         // cliente et pour la VSM de l'entreprise focale ACT_4.
         String ctx=aboxUri("ctx","global_"+runId); aboxTriple(pw,ctx,"rdf:type","core:ObservationContext");
         String ctxOrder=aboxUri("ctx","customer_order_"+runId); aboxTriple(pw,ctxOrder,"rdf:type","core:ObservationContext");
-        String ctxZener=aboxUri("ctx","zener_vsm_"+runId); aboxTriple(pw,ctxZener,"rdf:type","core:ObservationContext");
+        String ctxEntrepriseFocale=aboxUri("ctx","entreprise_focale_vsm_"+runId); aboxTriple(pw,ctxEntrepriseFocale,"rdf:type","core:ObservationContext");
         aboxTriple(pw,ctxOrder,"run:measurementScope",aboxLit("CUSTOMER_ORDER_CMD_ONLY"));
-        aboxTriple(pw,ctxZener,"run:measurementScope",aboxLit("ZENER_ACT_4_ONLY"));
-        for(ActeurSC a:acteursSC) if(a!=null && ActeurSC.ENTREPRISE_FOCALE.equals(a.categorie)) { aboxTriple(pw,ctx,"core:observedActor",aboxActor(a.idActeur)); aboxTriple(pw,ctxZener,"core:observedActor",aboxActor(a.idActeur)); break; }
-        for(String cctx:new String[]{ctx,ctxOrder,ctxZener}){
+        aboxTriple(pw,ctxEntrepriseFocale,"run:measurementScope",aboxLit("ENTREPRISE_FOCALE_ACT_4_ONLY"));
+        for(ActeurSC a:acteursSC) if(a!=null && ActeurSC.ENTREPRISE_FOCALE.equals(a.categorie)) { aboxTriple(pw,ctx,"core:observedActor",aboxActor(a.idActeur)); aboxTriple(pw,ctxEntrepriseFocale,"core:observedActor",aboxActor(a.idActeur)); break; }
+        for(String cctx:new String[]{ctx,ctxOrder,ctxEntrepriseFocale}){
             aboxTriple(pw,cctx,"core:observationStartTime",aboxLit(aboxIsoAt(tempsDebutSimulation>=0?tempsDebutSimulation:0))+"^^xsd:dateTime");
             aboxTriple(pw,cctx,"core:observationEndTime",aboxLit(aboxIsoAt(time()))+"^^xsd:dateTime");
         }
@@ -9709,12 +9709,12 @@ public String exporterABoxRuntimeTTL(String raison) {
             };
             for(Object[] x:orderInds){ String iu=aboxUri("vsm",String.valueOf(x[0])); aboxTriple(pw,iu,"rdf:type",String.valueOf(x[1])); aboxTriple(pw,iu,"rdfs:label",aboxLit(String.valueOf(x[2]))); aboxTriple(pw,iu,"core:hasValue",aboxDec(((Number)x[3]).doubleValue())); aboxTriple(pw,iu,"core:hasUnit",aboxLit(String.valueOf(x[4]))); aboxTriple(pw,iu,"core:hasTimestamp",aboxLit(aboxIsoAt(time()))+"^^xsd:dateTime"); aboxTriple(pw,iu,"core:hasObservationContext",ctxOrder); aboxTriple(pw,iu,"run:sourceKind",aboxLit("DERIVED_FROM_CUSTOMER_ORDER_LEDGER")); aboxTriple(pw,aboxUri("agent","Blackboard"),"agent:computesVSMIndicator",iu); }
 
-            Object[][] zenerInds = new Object[][]{
-                {"zener_process_time","core:CycleTime","ZENER Process Time",board.kpiZener.avgCycleTime(),"s"},
-                {"zener_waiting_time","core:WaitingTime","ZENER Waiting Time",board.kpiZener.avgWaitTime(),"s"},
-                {"zener_estimated_pce","run:EstimatedProcessCycleEfficiency","ZENER Estimated PCE",board.kpiZener.pce(),"ratio"}
+            Object[][] entrepriseFocaleInds = new Object[][]{
+                {"entreprise_focale_process_time","core:CycleTime","Entreprise Focale - Process Time",board.kpiEntrepriseFocale.avgCycleTime(),"s"},
+                {"entreprise_focale_waiting_time","core:WaitingTime","Entreprise Focale - Waiting Time",board.kpiEntrepriseFocale.avgWaitTime(),"s"},
+                {"entreprise_focale_estimated_pce","run:EstimatedProcessCycleEfficiency","Entreprise Focale - Estimated PCE",board.kpiEntrepriseFocale.pce(),"ratio"}
             };
-            for(Object[] x:zenerInds){ String iu=aboxUri("vsm",String.valueOf(x[0])); aboxTriple(pw,iu,"rdf:type",String.valueOf(x[1])); aboxTriple(pw,iu,"rdfs:label",aboxLit(String.valueOf(x[2]))); aboxTriple(pw,iu,"core:hasValue",aboxDec(((Number)x[3]).doubleValue())); aboxTriple(pw,iu,"core:hasUnit",aboxLit(String.valueOf(x[4]))); aboxTriple(pw,iu,"core:hasTimestamp",aboxLit(aboxIsoAt(time()))+"^^xsd:dateTime"); aboxTriple(pw,iu,"core:hasObservationContext",ctxZener); aboxTriple(pw,iu,"run:sourceKind",aboxLit("DERIVED_FROM_ACT_4_OBSERVATIONS")); aboxTriple(pw,iu,"run:valueAddedNature",aboxLit("ESTIMATED")); aboxTriple(pw,iu,"run:valueAddedSourcePolicy",aboxLit("CONFIGUREE_OR_FALLBACK_BY_POST")); aboxTriple(pw,aboxUri("agent","Blackboard"),"agent:computesVSMIndicator",iu); }
+            for(Object[] x:entrepriseFocaleInds){ String iu=aboxUri("vsm",String.valueOf(x[0])); aboxTriple(pw,iu,"rdf:type",String.valueOf(x[1])); aboxTriple(pw,iu,"rdfs:label",aboxLit(String.valueOf(x[2]))); aboxTriple(pw,iu,"core:hasValue",aboxDec(((Number)x[3]).doubleValue())); aboxTriple(pw,iu,"core:hasUnit",aboxLit(String.valueOf(x[4]))); aboxTriple(pw,iu,"core:hasTimestamp",aboxLit(aboxIsoAt(time()))+"^^xsd:dateTime"); aboxTriple(pw,iu,"core:hasObservationContext",ctxEntrepriseFocale); aboxTriple(pw,iu,"run:sourceKind",aboxLit("DERIVED_FROM_ACT_4_OBSERVATIONS")); aboxTriple(pw,iu,"run:valueAddedNature",aboxLit("ESTIMATED")); aboxTriple(pw,iu,"run:valueAddedSourcePolicy",aboxLit("CONFIGUREE_OR_FALLBACK_BY_POST")); aboxTriple(pw,aboxUri("agent","Blackboard"),"agent:computesVSMIndicator",iu); }
 
             Object[][] inds = new Object[][]{
                 {"throughput_global","core:Throughput",(time() > 0 ? nbTermines * 3600.0 / time() : 0.0),"ent/h"},
@@ -13821,7 +13821,7 @@ addTrace(
     pce * 100,
     "%",
     "GLOBAL",
-    board.kpiZener.pce() * 100,
+    board.kpiEntrepriseFocale.pce() * 100,
     "temps utile / (temps de traitement + temps d’attente)",
     "Mise a jour de l'efficacite globale du cycle"
 );
@@ -16954,11 +16954,11 @@ return log;]]></Body>
 					<PublicFlag>false</PublicFlag>
 					<PresentationFlag>true</PresentationFlag>
 					<ShowLabel>true</ShowLabel>
-					<Body><![CDATA[if (board == null || board.kpiZener == null) {
+					<Body><![CDATA[if (board == null || board.kpiEntrepriseFocale == null) {
     return "PCE ZENER estime : non disponible";
 }
 
-double pce = board.kpiZener.pce() * 100;
+double pce = board.kpiEntrepriseFocale.pce() * 100;
 
 String barre = "";
 
@@ -16990,13 +16990,13 @@ return String.format("PCE ZENER estime : %s %.1f%%", barre, pce);]]></Body>
 double mts = board.nbMTS > 0 ? (board.sumLeadTimeMTS / board.nbMTS) / 60.0 : 0;
 double mto = board.nbMTO > 0 ? (board.sumLeadTimeMTO / board.nbMTO) / 60.0 : 0;
 double glob = board.kpiGlobal.avgLeadTime() / 60.0;
-// C14.23 -- lead time scope ZENER : kpiZener.avgLeadTime() = kpiZener.avgCycleTime()
-// + kpiZener.avgWaitTime(), c'est-a-dire exactement Process Time(ZENER) + Waiting
+// C14.23 -- lead time scope ZENER : kpiEntrepriseFocale.avgLeadTime() = kpiEntrepriseFocale.avgCycleTime()
+// + kpiEntrepriseFocale.avgWaitTime(), c'est-a-dire exactement Process Time(ZENER) + Waiting
 // Time(ZENER) puisque les trois cartes lisent le meme bundle. Contrairement au
 // "Global" ci-dessus (transversal fournisseur+ZENER+client, mesure de bout en
 // bout de la commande), cette ligne referme l'identite VSM Lead Time = Process
 // Time + Waiting Time strictement a l'interieur du perimetre ZENER SA Togo.
-double zener = board.kpiZener.avgLeadTime() / 60.0;
+double zener = board.kpiEntrepriseFocale.avgLeadTime() / 60.0;
 return "MTS : " + String.format("%.1f", mts) + " min\n"
      + "MTO : " + String.format("%.1f", mto) + " min\n"
      + "Global : " + String.format("%.1f", glob) + " min\n"
@@ -17739,7 +17739,7 @@ return sb.toString();]]></Body>
 "Rebuts: %d  Rework: %d\n" +
 "RL:%.2f RS:%.2f AG:%.2f CO:%.2f AM:%.2f",
     strategic.piGlobalCourant, strategic.ciblePIGlobal,
-    board.kpiZener.pce() * 100,
+    board.kpiEntrepriseFocale.pce() * 100,
     time() > 0 ? nbTermines * 3600.0 / time() : 0,
     fluxEntites.size(), board.totalRebuts, board.totalRework,
     strategic.scoreRL, strategic.scoreRS, strategic.scoreAG,
@@ -18883,11 +18883,11 @@ return sb.toString();]]></Body>
 
     sb.append(tableRow(new String[]{
         "VSM ZENER ACT_4",
-        String.valueOf(board.kpiZener.count),
-        fmt2(board.kpiZener.avgCycleTime()),
-        fmt2(board.kpiZener.avgWaitTime()),
-        fmt2(board.kpiZener.avgLeadTime()),
-        fmt1(board.kpiZener.pce() * 100),
+        String.valueOf(board.kpiEntrepriseFocale.count),
+        fmt2(board.kpiEntrepriseFocale.avgCycleTime()),
+        fmt2(board.kpiEntrepriseFocale.avgWaitTime()),
+        fmt2(board.kpiEntrepriseFocale.avgLeadTime()),
+        fmt1(board.kpiEntrepriseFocale.pce() * 100),
         "N/A",
         "N/A"
     }, w)).append("\n");
@@ -20972,10 +20972,10 @@ return rows;]]></Body>
     "Order Processing Time (secondes)",
     "Order Waiting / Dwell Time (secondes)",
     "Order Fulfillment Lead Time (secondes)",
-    "ZENER Process Time (secondes)",
-    "ZENER Waiting Time (secondes)",
-    "ZENER Estimated PCE (%)",
-    "Source de la valeur ajoutee ZENER",
+    "Entreprise Focale - Process Time (secondes)",
+    "Entreprise Focale - Waiting Time (secondes)",
+    "Entreprise Focale - Estimated PCE (%)",
+    "Source de la valeur ajoutée - Entreprise Focale",
     "Total des rebuts (toute la simulation)",
     "Total des reprises/rework (toute la simulation)",
     "Métriques SCOR / performance intégrées",
@@ -21008,10 +21008,10 @@ rows[0][1] = String.valueOf(g.count);
 rows[0][2] = fmt2(orderProcessingTimeGlobal());
 rows[0][3] = fmt2(orderWaitingTimeGlobal());
 rows[0][4] = fmt2(orderFulfillmentLeadTimeGlobal());
-rows[0][5] = fmt2(board.kpiZener.avgCycleTime());
-rows[0][6] = fmt2(board.kpiZener.avgWaitTime());
-rows[0][7] = fmt1(board.kpiZener.pce() * 100);
-rows[0][8] = resumeSourceVAZener();
+rows[0][5] = fmt2(board.kpiEntrepriseFocale.avgCycleTime());
+rows[0][6] = fmt2(board.kpiEntrepriseFocale.avgWaitTime());
+rows[0][7] = fmt1(board.kpiEntrepriseFocale.pce() * 100);
+rows[0][8] = resumeSourceVAEntrepriseFocale();
 rows[0][9] = String.valueOf(board.totalRebuts);
 rows[0][10] = String.valueOf(board.totalRework);
 rows[0][11] = resumeMetriquesSCORGlobales(false);
@@ -22739,7 +22739,7 @@ try {
     styleNormal.setWrapText(false);
 
     ecrireFeuilleExcel(wb, styleEntete, styleNormal, "Synthèse C14", syntheseFinaleS1Columns(), syntheseFinaleS1Rows());
-    ecrireFeuilleExcel(wb, styleEntete, styleNormal, "Multi-produit ZENER", multiProduitZenerColumns(), multiProduitZenerRows());
+    ecrireFeuilleExcel(wb, styleEntete, styleNormal, "Multi-produit - Entreprise Focale", multiProduitEntrepriseFocaleColumns(), multiProduitEntrepriseFocaleRows());
     ecrireFeuilleExcel(wb, styleEntete, styleNormal, "Architecture agents", architectureAgentsColumns(), architectureAgentsRows());
     ecrireFeuilleExcel(wb, styleEntete, styleNormal, "Performance par produit", performanceProduitColumns(), performanceProduitRows());
     ecrireFeuilleExcel(wb, styleEntete, styleNormal, "Acteurs", acteursChaineColumns(), acteursChaineRows());
@@ -24988,7 +24988,7 @@ return rows.toArray(new Object[0][]);]]></Body>
 					<ReturnModificator>RETURNS_VALUE</ReturnModificator>
 					<ReturnType><![CDATA[String[]]]></ReturnType>
 					<Id>1910000000005</Id>
-					<Name><![CDATA[multiProduitZenerColumns]]></Name>
+					<Name><![CDATA[multiProduitEntrepriseFocaleColumns]]></Name>
 					<X>2350</X><Y>4930</Y>
 					<Label><X>10</X><Y>0</Y></Label>
 					<PublicFlag>false</PublicFlag>
@@ -25008,7 +25008,7 @@ return rows.toArray(new Object[0][]);]]></Body>
 					<ReturnModificator>RETURNS_VALUE</ReturnModificator>
 					<ReturnType><![CDATA[Object[][]]]></ReturnType>
 					<Id>1910000000006</Id>
-					<Name><![CDATA[multiProduitZenerRows]]></Name>
+					<Name><![CDATA[multiProduitEntrepriseFocaleRows]]></Name>
 					<X>2350</X><Y>4960</Y>
 					<Label><X>10</X><Y>0</Y></Label>
 					<PublicFlag>false</PublicFlag>
@@ -31207,7 +31207,7 @@ messageStatut="Export CSV genere.";]]></ActionCode>
 					<ShowLabel>false</ShowLabel>
 					<DrawMode>SHAPE_DRAW_2D3D</DrawMode>
 					<BasicProperties Width="200" Height="30">
-                        <EmbeddedIcon>false</EmbeddedIcon>
+                        <EmbeddedIcon>false</EmbeddedIcon>	
 						<TextColor>-65536</TextColor>
 						<Enabled>true</Enabled>
 						<ActionCode><![CDATA[arreterSimulation();]]></ActionCode>
@@ -31406,7 +31406,7 @@ board.logEvent("=== REINITIALISATION ===");]]></ActionCode>
 					<Rotation>0.0</Rotation>
 					<Color>-16777216</Color>
 					<Text><![CDATA[0.0]]></Text>
-					<TextCode><![CDATA[String.format("%.1f", board.kpiZener.pce() * 100)]]></TextCode>
+					<TextCode><![CDATA[String.format("%.1f", board.kpiEntrepriseFocale.pce() * 100)]]></TextCode>
 					<Font>
 						<Name>SansSerif</Name>
 						<Size>14</Size>
@@ -33181,7 +33181,7 @@ Index (PI)]]></Text>
 					<Rotation>0.0</Rotation>
 					<Color>-16777216</Color>
 					<Text><![CDATA[0.0]]></Text>
-					<TextCode><![CDATA[String.format("%.1f", board.kpiZener.avgCycleTime())]]></TextCode>
+					<TextCode><![CDATA[String.format("%.1f", board.kpiEntrepriseFocale.avgCycleTime())]]></TextCode>
 					<Font>
 						<Name>SansSerif</Name>
 						<Size>16</Size>
@@ -33203,7 +33203,7 @@ Index (PI)]]></Text>
 					<Rotation>0.0</Rotation>
 					<Color>-16777216</Color>
 					<Text><![CDATA[0000]]></Text>
-					<TextCode><![CDATA[String.format("%.1f", board != null && board.kpiZener != null ? board.kpiZener.avgWaitTime() : waitingTime)]]></TextCode>
+					<TextCode><![CDATA[String.format("%.1f", board != null && board.kpiEntrepriseFocale != null ? board.kpiEntrepriseFocale.avgWaitTime() : waitingTime)]]></TextCode>
 					<Font>
 						<Name>SansSerif</Name>
 						<Size>14</Size>
@@ -47949,7 +47949,7 @@ double avgWIPBuffer(String key) {
 				</Variable>
 				<Variable Class="PlainVariable">
 					<Id>1781100000923</Id>
-					<Name><![CDATA[kpiZener]]></Name>
+					<Name><![CDATA[kpiEntrepriseFocale]]></Name>
 					<X>50</X><Y>190</Y>
 					<Label><X>10</X><Y>0</Y></Label>
 					<PublicFlag>false</PublicFlag>
@@ -48194,18 +48194,18 @@ double avgWIPBuffer(String key) {
     }
     bMicro.addObservation(cycleTime, waitTime, vat, quantityWeight);
 
-    // C14.22 -- kpiZener : agregation REELLE (mesure poste par poste, pas
+    // C14.22 -- kpiEntrepriseFocale : agregation REELLE (mesure poste par poste, pas
     // estimee sur la duree totale de commande) restreinte aux micro-activites
     // dont l'acteur responsable est ZENER SA Togo (ACT_4). Sert de base aux
     // cartes Process Time / Waiting Time / PCE du tableau de bord, qui
     // lisaient auparavant kpiGlobal -- alimente uniquement a la cloture de
     // chaque commande, sur la duree totale de bout en bout (fournisseur +
     // ZENER + client confondus), avec un taux de valeur ajoutee force a 65%
-    // sur le trajet livraison directe. kpiZener mesure exclusivement le temps
+    // sur le trajet livraison directe. kpiEntrepriseFocale mesure exclusivement le temps
     // reellement passe dans les micro-activites de ZENER, conforme a la
     // pratique VSM standard (perimetre = entreprise focale).
     if (codeSCOR.startsWith("ACT_4|")) {
-        kpiZener.addObservation(cycleTime, waitTime, vat, quantityWeight);
+        kpiEntrepriseFocale.addObservation(cycleTime, waitTime, vat, quantityWeight);
     }
 
     // 2. Agrégation existante par code SCOR N3
@@ -48438,7 +48438,7 @@ traceln(entry);]]></Body>
 					<PresentationFlag>true</PresentationFlag>
 					<ShowLabel>true</ShowLabel>
 					<Body><![CDATA[kpiParPoste.clear(); kpiParMacro.clear();
-kpiGlobal = new KPIBundle(); kpiZener = new KPIBundle(); wipSnapshots.clear(); wipSnapshotsParBuffer.clear(); logEvenements.clear();
+kpiGlobal = new KPIBundle(); kpiEntrepriseFocale = new KPIBundle(); wipSnapshots.clear(); wipSnapshotsParBuffer.clear(); logEvenements.clear();
 totalTerminees = 0; totalRebuts = 0; totalRework = 0;
 nbMTS = 0; nbMTO = 0; sumLeadTimeMTS = 0; sumLeadTimeMTO = 0;
 
@@ -49102,7 +49102,7 @@ KPIBundle g = board.kpiGlobal;
 sb.append(String.format("Processing=%.1f s  Waiting=%.1f s  Lead=%.1f s  N=%d\n",
     g.avgCycleTime(), g.avgWaitTime(), g.avgLeadTime(), g.count));
 sb.append(String.format("VSM ZENER : Process=%.1f s  Waiting=%.1f s  PCE estime=%.0f%%  WIP moy=%.1f\n",
-    board.kpiZener.avgCycleTime(), board.kpiZener.avgWaitTime(), board.kpiZener.pce() * 100, board.avgWIP()));
+    board.kpiEntrepriseFocale.avgCycleTime(), board.kpiEntrepriseFocale.avgWaitTime(), board.kpiEntrepriseFocale.pce() * 100, board.avgWIP()));
 sb.append(String.format("\n=== PI GLOBAL SCOR ===\n%.3f / %.2f (cible)\n", main.strategic.piGlobalCourant, main.strategic.ciblePIGlobal));
 sb.append(String.format("RL=%.2f  RS=%.2f  AG=%.2f  CO=%.2f  AM=%.2f\n", main.strategic.scoreRL, main.strategic.scoreRS, main.strategic.scoreAG, main.strategic.scoreCO, main.strategic.scoreAM));
 sb.append(String.format("\n=== QUALITE ===\nRebuts : %d   Rework : %d\n", board.totalRebuts, board.totalRework));
@@ -49177,8 +49177,8 @@ try {
     KPIBundle g = board.kpiGlobal;
     pw.println(String.format("%s;GLOBAL_ORDER;ALL;%.3f;%.3f;%.3f;;%d",
         nomE, g.avgCycleTime(), g.avgWaitTime(), g.avgLeadTime(), g.count));
-    pw.println(String.format("%s;VSM_ZENER;ACT_4;%.3f;%.3f;%.3f;%.2f;%d",
-        nomE, board.kpiZener.avgCycleTime(), board.kpiZener.avgWaitTime(), board.kpiZener.avgLeadTime(), board.kpiZener.pce() * 100, board.kpiZener.count));
+    pw.println(String.format("%s;VSM_ENTREPRISE_FOCALE;ACT_4;%.3f;%.3f;%.3f;%.2f;%d",
+        nomE, board.kpiEntrepriseFocale.avgCycleTime(), board.kpiEntrepriseFocale.avgWaitTime(), board.kpiEntrepriseFocale.avgLeadTime(), board.kpiEntrepriseFocale.pce() * 100, board.kpiEntrepriseFocale.count));
     pw.println(String.format("%s;QUALITE;rebuts;%d;;;;", nomE, board.totalRebuts));
     pw.println(String.format("%s;QUALITE;rework;%d;;;;", nomE, board.totalRework));
     pw.println(String.format("%s;SCOR;PI_GLOBAL;%.4f;;;;", nomE, ((Main) getOwner()).strategic.piGlobalCourant));
@@ -50069,7 +50069,7 @@ board.logEvent("[ORDONNANCEMENT] " + prochaine.idCommande + " (priorité " + lib
 					<PresentationFlag>true</PresentationFlag>
 					<ShowLabel>true</ShowLabel>
 					<Properties SaveInSnapshot="true" Constant="false" AccessType="public" StaticVariable="false">
-						<Type><![CDATA[boolean]]></Type>
+						<Type><![CDATA[boolean]]></Type>        
 						<InitialValue Class="CodeValue">
 							<Code><![CDATA[false]]></Code>
 						</InitialValue>
@@ -50084,7 +50084,7 @@ board.logEvent("[ORDONNANCEMENT] " + prochaine.idCommande + " (priorité " + lib
 					<PresentationFlag>true</PresentationFlag>
 					<ShowLabel>true</ShowLabel>
 					<Properties SaveInSnapshot="true" Constant="false" AccessType="public" StaticVariable="false">
-						<Type><![CDATA[String]]></Type>
+						<Type><![CDATA[String]]></Type>        
 						<InitialValue Class="CodeValue">
 							<Code><![CDATA[""]]></Code>
 						</InitialValue>

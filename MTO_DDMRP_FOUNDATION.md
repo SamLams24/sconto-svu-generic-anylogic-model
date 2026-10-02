@@ -1207,7 +1207,7 @@ instrumentation ajoutée a posteriori.
 
 ### 18.2 Préparation commune aux deux fixtures
 
-- Scénario : `model/scenario_ZENER_SA_Togo_v39.json` (fichier déjà
+- Scénario : `scenario_ZENER_SA_Togo_v39.json` (fichier déjà
   présent dans le dépôt, non modifié). Nomenclature utilisée :
   `"SCENARIO DISTRIBUTION"` — `GPL_VRAC` (12,5/unité),
   `BOUTEILLE_VIDE_12KG` (1/unité), `ACCESSOIRES_KIT` (1/unité) ;
@@ -1244,9 +1244,14 @@ instrumentation ajoutée a posteriori.
   Avec `qte=10`, les besoins par matière sont : `GPL_VRAC` = 125,
   `BOUTEILLE_VIDE_12KG` = 10, `ACCESSOIRES_KIT` = 10 (calcul :
   `quantiteParUnite × qte`, formule confirmée §17.5).
-- Seed : utiliser le champ seed existant (déjà utilisé en C1/C2, voir
-  §18 et §21) ; **noter la valeur exacte utilisée dans le rapport de
-  run**, quelle qu'elle soit.
+- Seed : utiliser **`seedExperiment = 1001`** (champ existant, déjà
+  utilisé en C1/C2, voir §18 et §21), identique pour MTO-A et MTO-B,
+  afin d'isoler l'effet de la seule configuration matière entre les
+  deux runs. En cas d'impossibilité technique constatée au runtime
+  d'utiliser exactement 1001, documenter précisément la valeur
+  réellement utilisée dans le rapport de run, mais elle doit rester
+  **identique entre MTO-A et MTO-B** ; une valeur de seed différente
+  entre les deux runs invaliderait la comparaison recherchée au §18.4.
 
 ### 18.3 Procédure exacte — MTO-A (matière suffisante)
 

@@ -1848,3 +1848,266 @@ l'export ABox/Excel de fin de run.
   additionnel choisie.
 - Pour toute exception `IllegalStateException` : le message complet et
   l'état affiché par AnyLogic (run arrêté ou non).
+
+---
+
+## 22. DDMRP-Core — noyau de gestion matière
+
+**Branche `feature/ddmrp-core`**, depuis `2be4c8c3bde3e11793d06f2455836cfa915af0bf`
+(MTO-2). **Validation : statique uniquement.** Aucune build AnyLogic n'a été
+exécutée (environnement sans IDE). Les fixtures de la section 22.9 ne sont pas
+jouées.
+
+### 22.1 Principe retenu
+
+Une matière est soit **gérée par DDMRP**, soit **gérée par la politique (s,Q)
+historique**, jamais par les deux. Le choix est porté par la fiche JSON
+(`ddmrpActif`, défaut `false`). Sans clé, le comportement est strictement celui
+d'avant : les scénarios existants ne changent pas.
+
+`FicheMatiere` reste la source du stock physique (`stockDisponible`). Les
+engagements MTO-2 (`reservations`) restent un mécanisme d'intégrité distinct.
+Le nouveau `DDMRPBuffer` ne contient que des données et des paramètres ; les
+calculs sont dans `Main`.
+
+### 22.2 Classes et champs ajoutés
+
+- **`DDMRPBuffer`** (nouvelle `JavaClass`, `Id 1799700000090`), référencé par
+  `FicheMatiere.ddmrp`. Champs : `actif`, `aduDefaut`, `fenetreAduHeuresSim`
+  (1,0), `facteurLeadTime` (1,0 par défaut), `facteurVariabilite` (0,5 par
+  défaut), `moq` (0 par défaut), `seuilSpike` (0 = désactivé), `adu`,
+  `leadTimeHeuresSim`, `dlt`, `zoneRouge`, `zoneJaune`, `zoneVerte`,
+  `topOfRed`, `topOfYellow`, `topOfGreen`, `onHandPhysique`,
+  `engagementsMto`, `disponible`, `openSupply`, `qualifiedDemand`, `qdEchue`,
+  `qdSpike`, `netFlowPosition`, `quantiteRecommandee`, `statut`, `priorite`,
+  `dernierOrdreId`.
+- **`ReceptionAttendue`** (Open Supply unique) : ajouts `idReception`,
+  `origine` (`S_Q`, `DDMRP`, `MTO`), `idCommande`, `statut` (`OUVERTE`/`RECUE`),
+  `quantiteRecue`, `allocations` (commande → quantité allouée), méthode
+  `quantiteNonAllouee()`.
+- **`FicheMatiere`** : ajouts `ddmrp`, `consommeCumulee`. Suppression de
+  `traiterEcheances()` : le crédit passe désormais par `Main`.
+- **`Main`** : `seqReceptionOpenSupply`, `matiereCrediteeParCommande`.
+
+Les defaults de démonstration (ADU, MOQ, facteurs) ne viennent d'aucune
+donnée industrielle. Ils sont lus dans la fiche JSON ; à défaut, les valeurs
+neutres ci-dessus. Les fixtures les fixent explicitement (22.9).
+
+### 22.3 Open Supply unifié
+
+Toute quantité commandée à un fournisseur est une `ReceptionAttendue` dans
+`FicheMatiere.receptionsAttendues`. Open Supply d'une matière = somme de ces
+receptions non encore reçues (`totalReceptionsAttendues()`).
+
+- **Création** : `creerReceptionOpenSupply()` est la seule voie. Elle attribue un
+  `idReception` unique et journalise `[OPEN SUPPLY] +`.
+- **Crédit** : `traiterReceptionsEchues(f, t)` est la seule voie de crédit
+  (`stockDisponible += quantité`). Une réception créditée est retirée de la liste
+  dans la même opération, donc elle ne peut pas être créditée deux fois.
+  Journal : `[OPEN SUPPLY] RECUE`.
+- **Allocation** : une réception peut être allouée à une commande
+  (`allocations`). L'allocation réduit la demande de cette commande dans
+  Qualified Demand : la même réception ne couvre pas deux commandes au-delà de
+  sa quantité.
+- **Chemin MTO Source** : `declencherApprovisionnementCommande()` n'ajoute plus
+  de crédit ad hoc. Pour chaque ligne, `couvrirManqueMatierePourCommande()`
+  couvre d'abord le manque par l'Open Supply déjà ouvert (allocation, sans
+  nouvelle réception), puis crée une seule réception `MTO` pour le reste.
+  `finaliserApprovisionnementCommande()` ne crédite plus rien : il appelle
+  `traiterReceptionsEchues()` et ne reprend que lorsque la quantité est
+  réellement disponible. Si ce n'est pas le cas, il reprogramme à l'échéance de la
+  réception allouée. Il ne passe `BLOQUE_MATIERE` que si aucune réception allouée
+  n'existe.
+- **Dette §20.6 traitée** : la trace `MaterialReceived` rapporte la quantité
+  réellement créditée à la commande (table `matiereCrediteeParCommande`, clé
+  `commande|matière`). Le suivi détaillé « Approvisionnement » de
+  `declencherApprovisionnementCommande()` rapporte, dans son champ de quantités,
+  `manque`, `couvert par Open Supply` et `commande` : la quantité réellement
+  commandée est séparée de la part couverte par l'Open Supply existant. Ce sont les deux quantités que l'on peut comparer, et
+  elles coïncident par construction.
+
+### 22.4 Qualified Demand
+
+`qualifiedDemand(f, t)` somme, pour chaque commande **ouverte** dont le
+scénario contient la matière :
+
+- inclus : commandes MTO/ETO non terminales, non encore réservées (MTO-2) ;
+- exclus : commandes `REAPPRO_*` (décision explicite : leur besoin matière est
+  généré par la production autonome, qui passe elle-même par la réservation
+  MTO-2 ; les inclure doublerait ce besoin) ; commandes `MTS` (servies depuis le
+  stock produit fini, sans consommation matière) ; commandes terminales ;
+  commandes déjà réservées (leur demande est déjà soustraite par le disponible,
+  voir 22.6) ;
+- pour chaque commande incluse, la demande nette est `besoin − allocations`.
+  Avant de calculer la demande nette, `qualifiedDemand` alloue d'abord
+  l'Open Supply existant à la commande (sans création de réception). Cela évite
+  un ordre DDMRP redondant dans la fenêtre entre la création d'une commande et son
+  analyse matière.
+
+Sous-totaux journalisés : `qdEchue` (commandes dont `tPromise` est dépassée) et
+`qdSpike` (demande d'une commande supérieure à `seuilSpike`). **Les spikes sont
+signalés, pas plafonnés** : aucune règle de lissage n'est implémentée.
+
+### 22.5 ADU, lead time et zones
+
+**ADU** (`aduCourant`) : consommation observée par heure simulée
+(`consommeCumulee / heures simulées`), ou `aduDefaut` tant que la fenêtre
+`fenetreAduHeuresSim` (1 h simulée) n'est pas atteinte ou qu'aucune consommation
+n'a été observée. Dans les runs courts, la valeur configurée domine. C'est
+voulu : la valeur est déterministe et documentée.
+
+**Lead time** : `LT_h = dureeEchelle(délai_réel_s + dureeReceptionEtControleReelle) / 3600`,
+même conversion que le besoin net (s,Q) (correction C14.65). Le temps est simulé.
+
+**Formules** (`decisionDDMRP`). Les valeurs marquées ⚠ restent **à valider
+bibliographiquement** avant tout usage industriel :
+
+| Grandeur | Formule | Statut |
+|---|---|---|
+| DLT | `LT_h × facteurLeadTime` | conforme à la définition DDMRP |
+| Zone rouge de base | `ADU × DLT` | conforme à la définition DDMRP |
+| Sécurité rouge | `zone rouge de base × facteurVariabilite` | ⚠ forme usuelle, à valider |
+| Zone rouge (TOR) | `base + sécurité` | ⚠ à valider |
+| Zone jaune | `ADU × DLT` | ⚠ à valider |
+| Zone verte | `max(MOQ, ADU × DLT)` | ⚠ **le cycle de commande n'est pas modélisé** ; la formule usuelle en dépend. À valider |
+| Top of yellow | `TOR + jaune` | ⚠ à valider |
+| Top of green | `TOY + verte` | ⚠ à valider |
+
+**Ordre** : si `NFP ≤ TOY`, quantité = `TOG − NFP`, arrondie au multiple
+supérieur du MOQ si MOQ > 0 ⚠. Une seule réception `DDMRP` est créée par
+décision. Après création, Open Supply augmente et NFP remonte au-dessus de
+TOY, donc pas de réémission tant que la réception est ouverte.
+
+**Statut** : `NFP ≤ TOR` → ROUGE (priorité 1) ; `NFP ≤ TOY` → JAUNE (2) ; sinon
+VERTE (3).
+
+### 22.6 Net Flow Position et interaction avec MTO-2
+
+**NFP = disponible + Open Supply − Qualified Demand**, avec
+`disponible = stockDisponible − Σ réservations MTO-2`.
+
+Chaque demande est soustraite **une seule fois** :
+
+| État de la commande | Où sa demande est soustraite |
+|---|---|
+| non réservée, non allouée | Qualified Demand (intégralement) |
+| non réservée, allouée à de l'Open Supply | Qualified Demand, moins l'allocation |
+| réservée | `disponible` (la réservation diminue le disponible) ; hors Qualified Demand |
+| consommée | le stock et la réservation diminuent ensemble ; `disponible` inchangé ; hors Qualified Demand |
+
+La réservation MTO-2 reste un mécanisme d'intégrité physique : elle empêche
+l'engagement d'une matière déjà engagée. DDMRP décide quand et combien
+commander. MTO décide quelle commande demande de la matière et quand lancer
+Make. Aucune des deux décisions ne se substitue à l'autre.
+
+Réception et crédit ne changent pas NFP : la quantité passe d'Open Supply à
+stock, donc `disponible + OS` reste constant.
+
+### 22.7 Neutralisation de (s,Q) pour les matières DDMRP
+
+Dans `calculerBesoinsNets()`, pour chaque fiche :
+
+1. `traiterReceptionsEchues()` (crédit commun, toutes matières) ;
+2. si `ddmrpGere(f)` : `decisionDDMRP()` puis `continue`. La branche (s,Q)
+   n'est jamais atteinte pour cette matière, donc aucune `ReceptionAttendue`
+   `S_Q` n'est créée ;
+3. sinon, si `productionAutonomeEnCours` : `continue` (garde REAPPRO conservée
+   **uniquement** pour la politique (s,Q), voir 22.10) ;
+4. sinon, la politique (s,Q) historique s'exécute à l'identique.
+
+Vérification statique : `ReceptionAttendue` n'est créée que par
+`creerReceptionOpenSupply()`, avec les origines `DDMRP` ou `MTO` ; la branche
+`S_Q` reste dans la politique historique, réservée aux matières non gérées.
+
+### 22.8 Exports, logs et traçabilité
+
+- Logs structurés `[DDMRP] matiere=... onHand=... engagements=... disponible=...
+  openSupply=... qualifiedDemand=... NFP=... ADU=... LT_h=... DLT_h=...
+  top_rouge=... top_jaune=... top_vert=... zone=... priorite=... action=...
+  quantite=... reception=...` à chaque décision (chaque cycle, `calculerBesoinsNets`).
+- Logs `[OPEN SUPPLY] +`, `[OPEN SUPPLY] RECUE`, `[INVARIANT MATIERE]` (MTO-2).
+- **Export Excel** : nouvelle feuille `DDMRP` (`ddmrpColumns()`, `ddmrpRows()`),
+  ajoutée après la feuille « Multi-produit ». Aucune feuille existante modifiée.
+- **Export ABox** : triples `run:ddmrp*` (ADU, LT, zones, top, OS, QD, NFP,
+  quantité recommandée, statut, priorité), sur des ressources
+  `run:ddmrp_<matière>` de type `run:DDMRPBuffer`. Aucun triple existant modifié.
+
+### 22.9 Fixtures DDMRP-A, B, C
+
+Deux fichiers nouveaux, copies de `scenario_ZENER_SA_Togo_v39.json`, dans
+`model/`. Le JSON original n'est pas modifié.
+
+- `scenario_DDMRP_FIXTURE_AB.json` : buffers actifs sur les trois matières
+  (`ddmrpAduDefaut` GPL 1000, bouteilles 100, accessoires 100 ;
+  `ddmrpMoq` 125 / 10 / 10 ; `ddmrpFacteurLeadTime` 1,0 ;
+  `ddmrpFacteurVariabilite` 0,5). Valeurs de test explicites, **non industrielles**.
+- `scenario_DDMRP_FIXTURE_C.json` : identique, plus `delaiObtentionHeures` GPL
+  porté à 60 h, pour laisser une fenêtre d'Open Supply ouverte.
+
+**DDMRP-A — stock dans la zone verte → aucune commande.**
+- Fichier : `scenario_DDMRP_FIXTURE_AB.json`. Stocks JSON par défaut (600 / 250 / 300).
+- Commandes : aucune dans la fenêtre d'observation. Régler « Contrôle commandes »
+  avec un délai de première commande supérieur à la durée du run, et conserver
+  la seed 1001. Ceci évite toute consommation et tout `REAPPRO_*`.
+- Attendu : chaque `[DDMRP]` affiche `zone=VERTE action=AUCUNE`, avec NFP très
+  supérieur à TOY (600 contre quelques dizaines). Aucune ligne `[OPEN SUPPLY] +`.
+
+**DDMRP-B — NFP sous seuil → approvisionnement, puis retour du buffer.**
+- Même fichier. Bouton « Stocks initiaux » : Override matière = 0.
+- Attendu au premier cycle : `zone=ROUGE action=COMMANDE_APPRO` pour chaque
+  matière, avec une seule réception DDMRP par matière. Quantités : valeurs
+  **effectivement journalisées** (dépendent de la durée de contrôle réception,
+  donc non prédites ici). Les quantités sont arrondies au multiple du MOQ.
+- Puis `[OPEN SUPPLY] RECUE` à l'échéance (délai de quelques dizaines de secondes
+  simulées), puis `zone=VERTE`. **Aucune seconde commande** tant que la réception
+  est ouverte.
+
+**DDMRP-C — MTO consomme/réserve pendant un approvisionnement DDMRP ouvert.**
+- Fichier : `scenario_DDMRP_FIXTURE_C.json`. Mode SCOR **MTO**. Override = 0.
+  « Contrôle commandes » : limiter activé, nombre = 1, quantité fixe = 10.
+  Délai de première commande : à choisir pour que `CMD_1` soit créée après le
+  premier cycle DDMRP et avant l'échéance de la réception GPL. Valeur à consigner.
+- Attendu :
+  1. premier cycle : `COMMANDE_APPRO` GPL, bouteilles, accessoires (réception DDMRP
+     ouverte) ;
+  2. `CMD_1` analysée : suivi « Approvisionnement » avec `couvert par Open Supply=125/10/10`
+     et `commande=0` pour les trois matières. **Aucune** réception `MTO` créée ;
+  3. `[DDMRP]` suivants : `action=AUCUNE` tant que la réception DDMRP reste ouverte
+     (qualified demand allouée, NFP ≥ TOY) ;
+  4. à l'échéance : `[OPEN SUPPLY] RECUE`, `CMD_1` réservée (`[MATIERE] Reservation
+     engagee`), consommation 125/10/10, clôture, `[INVARIANT MATIERE] cloture CMD_1 : OK`.
+- Point attendu à observer : après réservation, NFP peut repasser proche de TOY
+  (la demande de `CMD_1` quitte Qualified Demand et est soustraite du disponible).
+  Une commande de reconstitution du buffer est alors **attendue** (retour du
+  buffer). Elle ne doit pas être interprétée comme une redondance, puisque
+  aucune réception n'est ouverte à ce moment-là pour cette matière. Le constat
+  doit être consigné tel quel.
+
+### 22.10 Discipline et limites
+
+- **Garde REAPPRO** : auparavant `calculerBesoinsNets()` retournait sans rien
+  créditer pendant un `REAPPRO_*`. Maintenant, les réceptions sont créditées
+  dans tous les cas ; seule la politique (s,Q) est suspendue. C'est un
+  changement de comportement, à reconsidérer si un test de non-régression MTS
+  le contredit.
+- **(s,Q)** : pour les matières non gérées, la projection `stockProjete` inclut
+  désormais toutes les receptions ouvertes (y compris MTO et DDMRP), ce qui
+  réduit le sur-approvisionnement (s,Q). C'est un changement, limité aux
+  matières (s,Q).
+- **Allocation** : FIFO par ordre de création. Pas d'optimisation.
+- **Dates de réception MTO** : toutes les réceptions MTO d'une même commande
+  partagent l'échéance de `delaiApprovisionnementReelMax`.
+- **Spikes** : signalés, non plafonnés.
+- **Zones** : formules ⚠ non validées bibliographiquement (22.5). Le cycle de
+  commande n'est pas modélisé.
+- **ETO** : même code partagé (MTO-2, DDMRP). Aucune branche spécifique.
+- **Exception MTO-2** : `consommerMatieresPourUnite` lève toujours
+  `IllegalStateException` en cas d'incohérence. Son effet réel sur AnyLogic
+  (arrêt du run ou simple journal) n'est pas encore vérifié.
+- **Build** : non effectuée. Vérifications statiques : XML bien formé, 1685
+  balises `<Id>` uniques (une seule ajoutée : `DDMRPBuffer`), chaque nouvelle
+  fonction définie une seule fois, ancien `traiterEcheances()` supprimé, `javac`
+  réussi sur les classes modifiées et les helpers, compilés contre des stubs des
+  types AnyLogic absents.
+- **Non vérifié** : tout comportement dynamique. Les fixtures 22.9 sont à jouer
+  manuellement avant toute clôture.

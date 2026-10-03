@@ -1125,8 +1125,6 @@ void calculerBesoinsNets() {
     // sa propre analyse matiere orchestre Source et la reception exacte du
     // manque. Lancer simultanement la politique matiere autonome creerait un
     // deuxieme approvisionnement concurrent et fausserait le Run A/B.
-    if (productionAutonomeEnCours) return;
-
     // Horizon couvert par ce cycle de calcul : la duree ecoulee depuis le
     // dernier appel (15s habituellement, cf. TacticalAgent.cycleArbitrage),
     // convertie en heures pour etre homogene avec les previsions en entites/heure.
@@ -1137,11 +1135,12 @@ void calculerBesoinsNets() {
 
     for (FicheMatiere f : fichesMatiere) {
         // 1. Faire arriver a echeance les receptions deja en cours
-        double arrivee = f.traiterEcheances(maintenant);
-        if (arrivee > 0) {
-            board.logEvent("[MRP] Reception matiere " + f.idMatiere + " : +" + String.format("%.1f", arrivee)
-                + " (stock=" + String.format("%.1f", f.stockDisponible) + ")");
+        traiterReceptionsEchues(f, maintenant);
+        if (ddmrpGere(f)) {
+            decisionDDMRP(f, maintenant);
+            continue;
         }
+        if (productionAutonomeEnCours) continue;
 
         // C14.55 -- REMPLACE le declenchement par prevision (besoin net) par une
         // veritable politique de stock (s, Q) : point de commande + quantite
@@ -3155,9 +3154,13 @@ public int nbViolationsInvariantMatiere = 0;
 
 void reinitialiserReservationsMatiere() {
     for (FicheMatiere f : fichesMatiere) {
-        if (f != null) f.reservations.clear();
+        if (f == null) continue;
+        f.reservations.clear();
+        f.receptionsAttendues.clear();
+        f.consommeCumulee = 0;
     }
     commandesAyantReserve.clear();
+    matiereCrediteeParCommande.clear();
 }
 
 boolean reserverMatierePourCommande(CommandeAgent cmd, ScenarioFlux sc) {
@@ -3181,6 +3184,7 @@ boolean reserverMatierePourCommande(CommandeAgent cmd, ScenarioFlux sc) {
         e.getKey().reservations.merge(cmd.idCommande, e.getValue(), Double::sum);
     }
     commandesAyantReserve.add(cmd.idCommande);
+    libererAllocationsCommande(cmd.idCommande);
     board.logEvent("[MATIERE] Reservation engagee pour " + cmd.idCommande + " (" + besoins.size() + " matiere(s))");
     return true;
 }
@@ -3232,6 +3236,7 @@ void consommerMatieresPourUnite(String idProduit, String idFlux) {
             throw new IllegalStateException(msg);
         }
         f.stockDisponible -= q;
+        f.consommeCumulee += q;
     }
 }
 
@@ -3264,6 +3269,234 @@ void verifierInvariantsMatiere(String contexte) {
     }
     nbViolationsInvariantMatiere += violations;
     board.logEvent("[INVARIANT MATIERE] " + contexte + " : " + (violations == 0 ? "OK" : violations + " violation(s)"));
+}
+
+// DDMRP-CORE -- Open Supply unique : toute quantite commandee a un fournisseur
+// (MRP DDMRP, politique (s,Q) hors matieres DDMRP, approvisionnement MTO) est une
+// ReceptionAttendue unique dans FicheMatiere.receptionsAttendues. Elle est creditee
+// une seule fois, par traiterReceptionsEchues(), et disparait d'Open Supply a la reception.
+long seqReceptionOpenSupply = 0;
+java.util.HashMap<String, Double> matiereCrediteeParCommande = new java.util.HashMap<String, Double>();
+
+boolean ddmrpGere(FicheMatiere f) {
+    return f != null && f.ddmrp != null && f.ddmrp.actif;
+}
+
+ReceptionAttendue creerReceptionOpenSupply(FicheMatiere f, double qte, double dateArrivee, String origine, String idCommande) {
+    if (f == null || qte <= 1e-9) return null;
+    ReceptionAttendue r = new ReceptionAttendue(qte, dateArrivee);
+    r.idReception = ++seqReceptionOpenSupply;
+    r.origine = origine;
+    r.idCommande = idCommande == null ? "" : idCommande;
+    r.dateCommande = time();
+    r.idMatiere = f.idMatiere;
+    r.idFournisseur = f.idFournisseur;
+    r.delaiNominalHeures = Math.max(0, f.delaiObtentionHeures);
+    f.receptionsAttendues.add(r);
+    board.logEvent(String.format("[OPEN SUPPLY] + REC_%d %s origine=%s commande=%s qte=%.2f echeance=%.1f (OS=%.2f)",
+        r.idReception, f.idMatiere, origine, r.idCommande.isEmpty() ? "-" : r.idCommande, qte, dateArrivee, f.totalReceptionsAttendues()));
+    return r;
+}
+
+double traiterReceptionsEchues(FicheMatiere f, double maintenant) {
+    if (f == null) return 0;
+    double recu = 0;
+    java.util.Iterator<ReceptionAttendue> it = f.receptionsAttendues.iterator();
+    while (it.hasNext()) {
+        ReceptionAttendue r = it.next();
+        if (maintenant < r.dateArriveePrevue) continue;
+        f.stockDisponible += r.quantite;
+        r.quantiteRecue = r.quantite;
+        r.statut = "RECUE";
+        recu += r.quantite;
+        for (java.util.Map.Entry<String, Double> a : r.allocations.entrySet()) {
+            matiereCrediteeParCommande.merge(a.getKey() + "|" + f.idMatiere, a.getValue(), Double::sum);
+        }
+        it.remove();
+        board.logEvent(String.format("[OPEN SUPPLY] RECUE REC_%d %s origine=%s credite=%.2f (stock=%.2f, OS=%.2f)",
+            r.idReception, f.idMatiere, r.origine, r.quantite, f.stockDisponible, f.totalReceptionsAttendues()));
+    }
+    return recu;
+}
+
+double openSupplyAllouePourCommande(FicheMatiere f, String idCommande) {
+    double total = 0;
+    for (ReceptionAttendue r : f.receptionsAttendues) {
+        Double a = r.allocations.get(idCommande);
+        if (a != null) total += a;
+    }
+    return total;
+}
+
+double allouerOpenSupplyPourCommande(FicheMatiere f, String idCommande, double montant) {
+    double restant = montant;
+    for (ReceptionAttendue r : f.receptionsAttendues) {
+        if (restant <= 1e-9) break;
+        double libre = r.quantiteNonAllouee();
+        if (libre <= 1e-9) continue;
+        double prise = Math.min(libre, restant);
+        r.allocations.merge(idCommande, prise, Double::sum);
+        restant -= prise;
+    }
+    return montant - restant;
+}
+
+void libererAllocationsCommande(String idCommande) {
+    for (FicheMatiere f : fichesMatiere) {
+        if (f == null) continue;
+        for (ReceptionAttendue r : f.receptionsAttendues) r.allocations.remove(idCommande);
+    }
+}
+
+// Couvre le manque d'une matiere pour une commande : d'abord par l'Open Supply deja
+// ouvert (sans nouvelle reception), puis par une seule reception MTO pour le reste.
+// Retourne {quantite couverte au total pour la commande, quantite nouvelle commandee}.
+double[] couvrirManqueMatierePourCommande(FicheMatiere f, CommandeAgent cmd, double manque, double dateArrivee) {
+    double dejaAlloue = openSupplyAllouePourCommande(f, cmd.idCommande);
+    double reste = Math.max(0, manque - dejaAlloue);
+    double prise = allouerOpenSupplyPourCommande(f, cmd.idCommande, reste);
+    reste -= prise;
+    double nouvelle = 0;
+    if (reste > 1e-9) {
+        ReceptionAttendue r = creerReceptionOpenSupply(f, reste, dateArrivee, "MTO", cmd.idCommande);
+        if (r != null) {
+            r.allocations.put(cmd.idCommande, reste);
+            nouvelle = reste;
+        }
+    }
+    return new double[] { dejaAlloue + prise + nouvelle, nouvelle };
+}
+
+double dateCouvertureCommande(CommandeAgent cmd, ScenarioFlux sc) {
+    double date = -1;
+    boolean couvert = false;
+    for (LigneNomenclature l : sc.nomenclature) {
+        if (l == null) continue;
+        FicheMatiere f = trouverFicheMatiere(l.idMatiere);
+        if (f == null) continue;
+        for (ReceptionAttendue r : f.receptionsAttendues) {
+            if (r.allocations.containsKey(cmd.idCommande)) {
+                couvert = true;
+                date = Math.max(date, r.dateArriveePrevue);
+            }
+        }
+    }
+    return couvert ? date : Double.POSITIVE_INFINITY;
+}
+
+// Qualified Demand = demande client ouverte, non encore engagee (MTO-2), et non encore
+// couverte par une reception allouee. Les commandes MTS (servies depuis le stock produit
+// fini) et REAPPRO_* ne sont pas incluses (voir documentation DDMRP-core).
+double qualifiedDemand(FicheMatiere f, double maintenant) {
+    double qd = 0;
+    double echue = 0;
+    double spike = 0;
+    for (CommandeAgent c : commandes) {
+        if (c == null || c.idCommande == null || c.idCommande.startsWith("REAPPRO_")) continue;
+        if ("MTS".equals(c.typeCommande)) continue;
+        if (commandeEstTerminale(c) || commandesAyantReserve.contains(c.idCommande)) continue;
+        ScenarioFlux sc = scenarioPourCommande(c);
+        if (sc == null || sc.nomenclature == null) continue;
+        double besoin = 0;
+        for (LigneNomenclature l : sc.nomenclature) {
+            if (l != null && f.idMatiere.equals(l.idMatiere)) besoin += l.quantiteParUnite * Math.max(1, c.qte);
+        }
+        if (besoin <= 1e-9) continue;
+        double dejaAlloue = openSupplyAllouePourCommande(f, c.idCommande);
+        if (dejaAlloue < besoin) dejaAlloue += allouerOpenSupplyPourCommande(f, c.idCommande, besoin - dejaAlloue);
+        double net = Math.max(0, besoin - dejaAlloue);
+        if (net <= 1e-9) continue;
+        qd += net;
+        if (c.tPromise < maintenant) echue += net;
+        if (f.ddmrp != null && f.ddmrp.seuilSpike > 0 && besoin > f.ddmrp.seuilSpike) spike += net;
+    }
+    f.ddmrp.qdEchue = echue;
+    f.ddmrp.qdSpike = spike;
+    return qd;
+}
+
+// ADU : consommation observee par heure simulee. Tant que la fenetre minimale n'est
+// pas atteinte, ou sans consommation observee, la valeur configuree est utilisee.
+double aduCourant(FicheMatiere f, double maintenant) {
+    double heures = maintenant / 3600.0;
+    if (heures < f.ddmrp.fenetreAduHeuresSim || f.consommeCumulee <= 0) return f.ddmrp.aduDefaut;
+    return f.consommeCumulee / heures;
+}
+
+// Decision DDMRP d'une matiere : zones, Net Flow Position, ordre a passer.
+// NFP = disponible (stock physique - engagements MTO-2) + Open Supply - Qualified Demand.
+// Chaque demande est soustraite une seule fois : par les engagements (disponible) si
+// reservee, par Qualified Demand sinon ; une reception allouee a une commande ne compte
+// pas dans sa demande (voir qualifiedDemand).
+void decisionDDMRP(FicheMatiere f, double maintenant) {
+    DDMRPBuffer b = f.ddmrp;
+    double adu = aduCourant(f, maintenant);
+    double delaiReelSec = f.delaiObtentionHeures * 3600.0 + dureeReceptionEtControleReelle(f.idMatiere);
+    double ltSimH = dureeEchelle(delaiReelSec) / 3600.0;
+    double dlt = ltSimH * b.facteurLeadTime;
+    double redBase = adu * dlt;
+    double redSafety = redBase * b.facteurVariabilite;
+    b.adu = adu;
+    b.leadTimeHeuresSim = ltSimH;
+    b.dlt = dlt;
+    b.zoneRouge = redBase + redSafety;
+    b.zoneJaune = adu * dlt;
+    b.zoneVerte = Math.max(b.moq, adu * dlt);
+    b.topOfRed = b.zoneRouge;
+    b.topOfYellow = b.topOfRed + b.zoneJaune;
+    b.topOfGreen = b.topOfYellow + b.zoneVerte;
+    b.onHandPhysique = f.stockDisponible;
+    b.engagementsMto = f.totalReserve();
+    b.disponible = f.disponible();
+    b.openSupply = f.totalReceptionsAttendues();
+    b.qualifiedDemand = qualifiedDemand(f, maintenant);
+    b.netFlowPosition = b.disponible + b.openSupply - b.qualifiedDemand;
+
+    String zone;
+    int prio;
+    if (b.netFlowPosition <= b.topOfRed) { zone = "ROUGE"; prio = 1; }
+    else if (b.netFlowPosition <= b.topOfYellow) { zone = "JAUNE"; prio = 2; }
+    else { zone = "VERTE"; prio = 3; }
+    b.statut = zone;
+    b.priorite = prio;
+
+    String action = "AUCUNE";
+    double qte = 0;
+    String idRecep = "-";
+    if (b.netFlowPosition <= b.topOfYellow + 1e-9) {
+        qte = b.topOfGreen - b.netFlowPosition;
+        if (b.moq > 0) qte = Math.ceil(qte / b.moq - 1e-9) * b.moq;
+        if (qte > 1e-9) {
+            ReceptionAttendue r = creerReceptionOpenSupply(f, qte, maintenant + dureeEchelle(delaiReelSec), "DDMRP", "");
+            action = "COMMANDE_APPRO";
+            idRecep = "REC_" + r.idReception;
+            b.dernierOrdreId = idRecep;
+        }
+    }
+    b.quantiteRecommandee = action.equals("COMMANDE_APPRO") ? qte : 0;
+    board.logEvent(String.format("[DDMRP] matiere=%s onHand=%.2f engagements=%.2f disponible=%.2f openSupply=%.2f qualifiedDemand=%.2f NFP=%.2f ADU=%.2f LT_h=%.4f DLT_h=%.4f top_rouge=%.2f top_jaune=%.2f top_vert=%.2f zone=%s priorite=%d action=%s quantite=%.2f reception=%s",
+        f.idMatiere, b.onHandPhysique, b.engagementsMto, b.disponible, b.openSupply, b.qualifiedDemand, b.netFlowPosition,
+        adu, ltSimH, dlt, b.topOfRed, b.topOfYellow, b.topOfGreen, zone, prio, action, qte, idRecep));
+}
+
+String[] ddmrpColumns() {
+    return new String[] { "Matiere", "Buffer actif", "ADU (u/h simulee)", "Lead time (h simulees)", "DLT (h simulees)",
+        "Zone rouge", "Zone jaune", "Zone verte", "Top of red", "Top of yellow", "Top of green",
+        "On-hand physique", "Engagements MTO", "Open Supply", "Qualified Demand", "Net Flow Position",
+        "Quantite recommandee", "Statut buffer", "Priorite" };
+}
+
+Object[][] ddmrpRows() {
+    java.util.ArrayList<Object[]> rows = new java.util.ArrayList<Object[]>();
+    for (FicheMatiere f : fichesMatiere) {
+        if (f == null || f.ddmrp == null) continue;
+        DDMRPBuffer b = f.ddmrp;
+        rows.add(new Object[] { f.idMatiere, b.actif ? "OUI" : "NON", b.adu, b.leadTimeHeuresSim, b.dlt,
+            b.zoneRouge, b.zoneJaune, b.zoneVerte, b.topOfRed, b.topOfYellow, b.topOfGreen,
+            b.onHandPhysique, b.engagementsMto, b.openSupply, b.qualifiedDemand, b.netFlowPosition,
+            b.quantiteRecommandee, b.statut, b.priorite });
+    }
+    return rows.toArray(new Object[0][]);
 }
 
 void analyserMatiereCommandeOrchestree(CommandeAgent cmd) {
@@ -3522,7 +3755,6 @@ void finaliserApprovisionnementCommande(CommandeAgent cmd) {
     }
 
     boolean configurationOK = true;
-    StringBuilder reception = new StringBuilder();
     for (LigneNomenclature l : sc.nomenclature) {
         if (l == null || l.idMatiere == null || l.idMatiere.trim().isEmpty() || l.quantiteParUnite <= 0) {
             configurationOK = false;
@@ -3535,46 +3767,50 @@ void finaliserApprovisionnementCommande(CommandeAgent cmd) {
             board.logEvent("[SOURCE] Fiche matiere absente : " + l.idMatiere + " / " + cmd.idCommande);
             continue;
         }
-        double besoin = l.quantiteParUnite * Math.max(1, cmd.qte);
-        double manque = Math.max(0.0, besoin - f.disponible());
-        if (manque > 0.0001) f.stockDisponible += manque;
-        if (reception.length() > 0) reception.append(" ; ");
-        reception.append(l.idMatiere)
-            .append(" recu=").append(String.format("%.1f", manque))
-            .append(" stock=").append(String.format("%.1f", f.stockDisponible));
-
-        ajouterSuiviDetaille(
-            "Reception matiere",
-            "Matiere recue et disponible pour production",
-            "La matiere commandee est ajoutee au stock uniquement apres la fin differee du flux Source.",
-            "Agent operationnel de pilotage Source",
-            "Agent d'execution S1.2 / S1.3",
-            "Matiere " + l.idMatiere + " pour " + cmd.idCommande,
-            "Besoin=" + String.format("%.1f", besoin) + " ; recu=" + String.format("%.1f", manque)
-                + " ; stock apres=" + String.format("%.1f", f.stockDisponible),
-            fournisseurPourMatiere(l.idMatiere),
-            "ZENER SA Togo",
-            "Supplier D1.12 -> Manufacturer S1.2 -> S1.3",
-            "S1.2 / S1.3",
-            "Controler puis liberer la matiere pour Make.",
-            "Approvisionnement en cours",
-            "Matiere disponible",
-            "Stock matiere ; quantite recue ; temps d'attente approvisionnement"
-        );
+        traiterReceptionsEchues(f, time());
+    }
+    if (!configurationOK) {
+        cmd.statut = "BLOQUE_MATIERE";
+        board.logEvent("[SOURCE] " + cmd.idCommande + " reste bloquee : configuration matiere invalide.");
+        afficherPopupMetier("Approvisionnement", "Configuration matiere invalide",
+            "Les matieres de " + cmd.idCommande + " sont mal configurees.", "ESSENTIEL");
+        return;
     }
 
-    if (!configurationOK || !matieresSuffisantesPourScenario(sc, cmd.qte)) {
+    if (!matieresSuffisantesPourScenario(sc, cmd.qte)) {
+        double dateAttendue = Double.POSITIVE_INFINITY;
+        for (LigneNomenclature l : sc.nomenclature) {
+            FicheMatiere f = trouverFicheMatiere(l.idMatiere);
+            if (f == null) continue;
+            double besoin = l.quantiteParUnite * Math.max(1, cmd.qte);
+            double manque = Math.max(0, besoin - f.disponible());
+            if (manque > 1e-9) couvrirManqueMatierePourCommande(f, cmd, manque, time() + dureeEchelle(delaiApprovisionnementReelMax(sc, cmd.qte)));
+        }
+        dateAttendue = dateCouvertureCommande(cmd, sc);
+        if (dateAttendue > time() + 1e-9 && dateAttendue < Double.POSITIVE_INFINITY) {
+            planifierActionCommande("FINALISER_APPROVISIONNEMENT", cmd, dateAttendue - time());
+            board.logEvent("[SOURCE] " + cmd.idCommande + " : reception en attente, nouvelle verification a t=" + String.format("%.1f", dateAttendue) + ".");
+            return;
+        }
         cmd.statut = "BLOQUE_MATIERE";
-        board.logEvent("[SOURCE] " + cmd.idCommande
-            + " reste bloquee apres reception : " + bilanMatierePourScenario(sc, cmd.qte));
+        board.logEvent("[SOURCE] " + cmd.idCommande + " reste bloquee apres reception : " + bilanMatierePourScenario(sc, cmd.qte));
         afficherPopupMetier("Approvisionnement", "Reception incomplete",
-            "Les matieres de " + cmd.idCommande + " restent insuffisantes ou mal configurees.", "ESSENTIEL");
+            "Les matieres de " + cmd.idCommande + " restent insuffisantes.", "ESSENTIEL");
         return;
     }
 
     String caS = idCoordinateurCommande("S", cmd);
     String supS = idSuperviseurCommande("S", 1, cmd);
     String aoReceiving = idExecutionCommande("S", 3, cmd);
+    StringBuilder reception = new StringBuilder();
+    for (LigneNomenclature l : sc.nomenclature) {
+        if (l == null) continue;
+        Double recu = matiereCrediteeParCommande.remove(cmd.idCommande + "|" + l.idMatiere);
+        FicheMatiere f = trouverFicheMatiere(l.idMatiere);
+        if (reception.length() > 0) reception.append(" ; ");
+        reception.append(l.idMatiere).append(" recu=").append(String.format("%.1f", recu == null ? 0.0 : recu))
+            .append(" stock=").append(String.format("%.1f", f == null ? 0.0 : f.stockDisponible));
+    }
     tracerFluxHierarchique("EXECUTION", aoReceiving, supS, "MaterialReceived",
         "produit=" + codeProduitCommande(cmd) + ";quantite=" + cmd.qte
         + ";resultat=conforme;" + reception.toString(),
@@ -3592,7 +3828,7 @@ void finaliserApprovisionnementCommande(CommandeAgent cmd) {
         cmd, "Plan Source -> Plan Make", "Matiere liberee pour production");
 
     cmd.statut = "MATIERES_DISPONIBLES";
-    board.logEvent("[SOURCE] " + cmd.idCommande + " : reception terminee, lancement Make autorise.");
+    board.logEvent("[SOURCE] " + cmd.idCommande + " : reception terminee, lancement Make autorise. " + reception.toString());
     afficherPopupMetier("Approvisionnement", "Matieres recues pour " + cmd.idCommande,
         reception.toString(), "ESSENTIEL");
     tracerEtPlanifierProductionCommande(cmd);
@@ -5498,61 +5734,60 @@ void declencherApprovisionnementCommande(CommandeAgent cmd, ScenarioFlux sc, int
     if (cmd == null || sc == null || sc.nomenclature == null || sc.nomenclature.isEmpty()) return;
 
     double decalageSourceSuiviSec = 0.0;
+    double dateArriveeMto = time() + dureeEchelle(delaiApprovisionnementReelMax(sc, qteCommande));
     for (LigneNomenclature l : sc.nomenclature) {
         if (l == null) continue;
         FicheMatiere f = trouverFicheMatiere(l.idMatiere);
+        if (f == null) continue;
         double besoin = l.quantiteParUnite * Math.max(1, qteCommande);
-        double disponible = f != null ? f.disponible() : 0.0;
-        double manque = Math.max(0, besoin - disponible);
+        double manque = Math.max(0, besoin - f.disponible());
         if (manque <= 0.0001) continue;
 
+        double[] couv = couvrirManqueMatierePourCommande(f, cmd, manque, dateArriveeMto);
+        double couvertParOS = couv[0];
+        double commandee = couv[1];
         String fournisseur = fournisseurPourMatiere(l.idMatiere);
 
         ajouterSuiviDetailleHorodate(
             time() + decalageSourceSuiviSec,
             "Approvisionnement",
-            "Commande fournisseur declenchee par manque matiere",
-            "La commande client ne peut pas etre produite avec le stock matiere disponible. ZENER commande la matiere manquante avant de lancer la production.",
+            "Approvisionnement matiere pour commande",
+            "La commande client ne peut pas etre produite avec la matiere disponible (engagements deduits). Source couvre le manque en tenant compte des receptions deja ouvertes.",
             "Agent operationnel de pilotage Source",
             "Agent d'execution S1.1 / fournisseur",
             "Matiere " + l.idMatiere + " pour commande " + cmd.idCommande,
-            "Besoin=" + String.format("%.1f", besoin) + " ; disponible=" + String.format("%.1f", disponible) + " ; manque=" + String.format("%.1f", manque),
+            "Besoin=" + String.format("%.1f", besoin) + " ; manque=" + String.format("%.1f", manque)
+                + " ; couvert par Open Supply=" + String.format("%.1f", couvertParOS) + " ; commande=" + String.format("%.1f", commandee),
             "ZENER SA Togo",
             fournisseur,
             "MRP -> commande fournisseur",
             "P2.3 / S1.1 / Supplier D1.2-D1.12 / Manufacturer S1.2-S1.4",
             "Commander la matiere manquante avant production.",
             "Matiere insuffisante",
-            "Approvisionnement declenche",
+            commandee > 0 ? "Approvisionnement declenche" : "Couverte par approvisionnement existant",
             "Besoin brut ; stock disponible ; besoin net ; delai d'approvisionnement"
         );
 
-        // Correction cohérence SCOR : l'approvisionnement ne doit plus être une
-        // simple ligne synthétique. On alimente les vrais postes Source/Fournisseur
-        // et les postes de réception ZENER, puis on lance un flux visuel rapide
-        // pour que la vue globale ne reste pas à zéro.
-        enregistrerTraceSourceApprovisionnementCommande(cmd, l.idMatiere, fournisseur, manque);
-        lancerFluxVisuelSourceApprovisionnement(l.idMatiere);
-        enregistrerFluxSupplyChainMetier(
-            "APPROVISIONNEMENT_PHYSIQUE",
-            fournisseur,
-            "ZENER SA Togo",
-            (int) Math.ceil(manque),
-            "Approvisionnement physique réel SCOR pour " + l.idMatiere + " / " + cmd.idCommande
-        );
-
-        emettreFluxLog(FluxLog.APPRO, fournisseur, "ZENER SA Togo", (int) Math.ceil(manque));
-
-        if (f != null) {
+        if (commandee > 1e-9) {
+            enregistrerTraceSourceApprovisionnementCommande(cmd, l.idMatiere, fournisseur, commandee);
+            lancerFluxVisuelSourceApprovisionnement(l.idMatiere);
+            enregistrerFluxSupplyChainMetier(
+                "APPROVISIONNEMENT_PHYSIQUE",
+                fournisseur,
+                "ZENER SA Togo",
+                (int) Math.ceil(commandee),
+                "Approvisionnement physique SCOR pour " + l.idMatiere + " / " + cmd.idCommande
+            );
+            emettreFluxLog(FluxLog.APPRO, fournisseur, "ZENER SA Togo", (int) Math.ceil(commandee));
             ajouterSuiviDetailleHorodate(
                 time() + decalageSourceSuiviSec + 1.0,
                 "Approvisionnement en transit",
                 "Reception matiere planifiee",
-                "La matiere commandee reste en transit. Le stock ne sera credite qu'au message MaterialReceived.",
+                "La matiere commandee reste en transit. Le stock ne sera credite qu'a l'echeance de la reception.",
                 "Agent operationnel de pilotage Source",
                 "Agent d'execution fournisseur / transport",
                 "Matiere " + l.idMatiere,
-                "A recevoir=" + String.format("%.1f", manque) + " ; stock courant=" + String.format("%.1f", f.stockDisponible),
+                "A recevoir=" + String.format("%.1f", commandee) + " ; stock courant=" + String.format("%.1f", f.stockDisponible),
                 fournisseur,
                 "ZENER SA Togo",
                 "Supplier D1.2-D1.12 -> Manufacturer S1.2 -> S1.3 -> S1.4",
@@ -9815,7 +10050,8 @@ public String exporterABoxRuntimeTTL(String raison) {
             };
             for(Object[] x:entrepriseFocaleInds){ String iu=aboxUri("vsm",String.valueOf(x[0])); aboxTriple(pw,iu,"rdf:type",String.valueOf(x[1])); aboxTriple(pw,iu,"rdfs:label",aboxLit(String.valueOf(x[2]))); aboxTriple(pw,iu,"core:hasValue",aboxDec(((Number)x[3]).doubleValue())); aboxTriple(pw,iu,"core:hasUnit",aboxLit(String.valueOf(x[4]))); aboxTriple(pw,iu,"core:hasTimestamp",aboxLit(aboxIsoAt(time()))+"^^xsd:dateTime"); aboxTriple(pw,iu,"core:hasObservationContext",ctxEntrepriseFocale); aboxTriple(pw,iu,"run:sourceKind",aboxLit("DERIVED_FROM_ACT_4_OBSERVATIONS")); aboxTriple(pw,iu,"run:valueAddedNature",aboxLit("ESTIMATED")); aboxTriple(pw,iu,"run:valueAddedSourcePolicy",aboxLit("CONFIGUREE_OR_FALLBACK_BY_POST")); aboxTriple(pw,aboxUri("agent","Blackboard"),"agent:computesVSMIndicator",iu); }
 
-            Object[][] inds = new Object[][]{
+            for(FicheMatiere f:fichesMatiere){ if(f==null||f.ddmrp==null) continue; String du=aboxUri("ddmrp",f.idMatiere); aboxTriple(pw,du,"rdf:type","run:DDMRPBuffer"); aboxTriple(pw,du,"run:ddmrpActif",aboxLit(String.valueOf(f.ddmrp.actif))); aboxTriple(pw,du,"run:ddmrpAdu",aboxDec(f.ddmrp.adu)); aboxTriple(pw,du,"run:ddmrpLeadTimeHeuresSim",aboxDec(f.ddmrp.leadTimeHeuresSim)); aboxTriple(pw,du,"run:ddmrpZoneRouge",aboxDec(f.ddmrp.zoneRouge)); aboxTriple(pw,du,"run:ddmrpZoneJaune",aboxDec(f.ddmrp.zoneJaune)); aboxTriple(pw,du,"run:ddmrpZoneVerte",aboxDec(f.ddmrp.zoneVerte)); aboxTriple(pw,du,"run:ddmrpTopOfRed",aboxDec(f.ddmrp.topOfRed)); aboxTriple(pw,du,"run:ddmrpTopOfYellow",aboxDec(f.ddmrp.topOfYellow)); aboxTriple(pw,du,"run:ddmrpTopOfGreen",aboxDec(f.ddmrp.topOfGreen)); aboxTriple(pw,du,"run:ddmrpOpenSupply",aboxDec(f.ddmrp.openSupply)); aboxTriple(pw,du,"run:ddmrpQualifiedDemand",aboxDec(f.ddmrp.qualifiedDemand)); aboxTriple(pw,du,"run:ddmrpNetFlowPosition",aboxDec(f.ddmrp.netFlowPosition)); aboxTriple(pw,du,"run:ddmrpQuantiteRecommandee",aboxDec(f.ddmrp.quantiteRecommandee)); aboxTriple(pw,du,"run:ddmrpStatut",aboxLit(f.ddmrp.statut)); aboxTriple(pw,du,"run:ddmrpPriorite",aboxDec(f.ddmrp.priorite)); }
+Object[][] inds = new Object[][]{
                 {"throughput_global","core:Throughput",(time() > 0 ? nbTermines * 3600.0 / time() : 0.0),"ent/h"},
                 {"takt_global","core:TaktTime",calculerTaktTimeSec(),"s/unit"}, {"availability_global","core:Availability",calculerDisponibiliteMachinesOEE(),"ratio"},
                 {"oee_global","core:OverallEquipmentEffectiveness",oeeGlobal(),"ratio"}, {"scrap_global","core:ScrapRate",board.kpiGlobal.scrapRate(),"ratio"},
@@ -16750,6 +16986,15 @@ if (fichesObj instanceof java.util.List) {
                 f.stockSecurite = jsonDouble(fm, "stockSecurite", 0.0);
                 f.delaiObtentionHeures = jsonDouble(fm, "delaiObtentionHeures", 0.0);
                 f.idFournisseur = jsonString(fm, "idFournisseur", "");
+                DDMRPBuffer bufferDDMRP = new DDMRPBuffer();
+                bufferDDMRP.idMatiere = f.idMatiere;
+                bufferDDMRP.actif = jsonBool(fm, "ddmrpActif", false);
+                bufferDDMRP.aduDefaut = jsonDouble(fm, "ddmrpAduDefaut", 0.0);
+                bufferDDMRP.facteurLeadTime = jsonDouble(fm, "ddmrpFacteurLeadTime", 1.0);
+                bufferDDMRP.facteurVariabilite = jsonDouble(fm, "ddmrpFacteurVariabilite", 0.5);
+                bufferDDMRP.moq = jsonDouble(fm, "ddmrpMoq", 0.0);
+                bufferDDMRP.seuilSpike = jsonDouble(fm, "ddmrpSeuilSpike", 0.0);
+                f.ddmrp = bufferDDMRP;
                 fichesMatiere.add(f);
             } catch (Exception ex) { board.logEvent("[JSON WARN] fiche matière ignorée : " + ex.getMessage()); }
         }
@@ -22842,6 +23087,7 @@ try {
 
     ecrireFeuilleExcel(wb, styleEntete, styleNormal, "Synthèse C14", syntheseFinaleS1Columns(), syntheseFinaleS1Rows());
     ecrireFeuilleExcel(wb, styleEntete, styleNormal, "Multi-produit - Entreprise Focale", multiProduitEntrepriseFocaleColumns(), multiProduitEntrepriseFocaleRows());
+    ecrireFeuilleExcel(wb, styleEntete, styleNormal, "DDMRP", ddmrpColumns(), ddmrpRows());
     ecrireFeuilleExcel(wb, styleEntete, styleNormal, "Architecture agents", architectureAgentsColumns(), architectureAgentsRows());
     ecrireFeuilleExcel(wb, styleEntete, styleNormal, "Performance par produit", performanceProduitColumns(), performanceProduitRows());
     ecrireFeuilleExcel(wb, styleEntete, styleNormal, "Acteurs", acteursChaineColumns(), acteursChaineRows());
@@ -55323,11 +55569,65 @@ public class ReceptionAttendue implements java.io.Serializable {
     public double delaiEffectifHeures = 0;
     public double retardForceHeures = 0;
 
+    public long idReception = 0;
+    public String origine = "S_Q";
+    public String idCommande = "";
+    public String statut = "OUVERTE";
+    public double quantiteRecue = 0;
+    public java.util.LinkedHashMap<String, Double> allocations = new java.util.LinkedHashMap<String, Double>();
+
+    public double quantiteNonAllouee() {
+        double a = 0;
+        for (double v : allocations.values()) a += v;
+        return quantite - a;
+    }
+
     public ReceptionAttendue() {}
     public ReceptionAttendue(double quantite, double dateArriveePrevue) {
         this.quantite = quantite;
         this.dateArriveePrevue = dateArriveePrevue;
     }
+}]]></Text>
+		</JavaClass>
+		<!--   =========   Java Class   ========  -->
+		<JavaClass>
+			<Id>1799700000090</Id>
+			<Name><![CDATA[DDMRPBuffer]]></Name>
+			<Text><![CDATA[// Etat et parametres DDMRP d'une matiere. Donnees seulement : les calculs
+// sont portes par Main (decisionDDMRP, qualifiedDemand, aduCourant).
+// Les valeurs de ADU, facteurs et MOQ viennent de la fiche JSON ; a defaut,
+// valeurs neutres. Aucune valeur industrielle n'est supposee ici.
+public class DDMRPBuffer implements java.io.Serializable {
+    public String idMatiere = "";
+    public boolean actif = false;
+    public double aduDefaut = 0;
+    public double fenetreAduHeuresSim = 1.0;
+    public double facteurLeadTime = 1.0;
+    public double facteurVariabilite = 0.5;
+    public double moq = 0;
+    public double seuilSpike = 0;
+    public double adu = 0;
+    public double leadTimeHeuresSim = 0;
+    public double dlt = 0;
+    public double zoneRouge = 0;
+    public double zoneJaune = 0;
+    public double zoneVerte = 0;
+    public double topOfRed = 0;
+    public double topOfYellow = 0;
+    public double topOfGreen = 0;
+    public double onHandPhysique = 0;
+    public double engagementsMto = 0;
+    public double disponible = 0;
+    public double openSupply = 0;
+    public double qualifiedDemand = 0;
+    public double qdEchue = 0;
+    public double qdSpike = 0;
+    public double netFlowPosition = 0;
+    public double quantiteRecommandee = 0;
+    public String statut = "NON_EVALUE";
+    public int priorite = 0;
+    public String dernierOrdreId = "-";
+    public DDMRPBuffer() {}
 }]]></Text>
 		</JavaClass>
 		<!--   =========   Java Class   ========  -->
@@ -55372,6 +55672,9 @@ public class FicheMatiere implements java.io.Serializable {
     public double dernierOrdrePasse = 0;
     public double dernierCalcul = -1;
 
+    public DDMRPBuffer ddmrp = null;
+    public double consommeCumulee = 0;
+
     public java.util.LinkedHashMap<String, Double> reservations = new java.util.LinkedHashMap<String, Double>();
 
     public double totalReserve() {
@@ -55392,22 +55695,6 @@ public class FicheMatiere implements java.io.Serializable {
         return total;
     }
 
-    // Fait "arriver" les receptions dont l'echeance est atteinte : bascule
-    // leur quantite dans le stock disponible et les retire de la liste
-    // d'attente. Retourne la quantite totale arrivee (pour le journal).
-    public double traiterEcheances(double maintenant) {
-        double arrivee = 0;
-        Iterator<ReceptionAttendue> it = receptionsAttendues.iterator();
-        while (it.hasNext()) {
-            ReceptionAttendue r = it.next();
-            if (maintenant >= r.dateArriveePrevue) {
-                stockDisponible += r.quantite;
-                arrivee += r.quantite;
-                it.remove();
-            }
-        }
-        return arrivee;
-    }
 }]]></Text>
 		</JavaClass>
 		<!--   =========   Java Class   ========  -->

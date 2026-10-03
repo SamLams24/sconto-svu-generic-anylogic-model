@@ -883,11 +883,15 @@ propre `ReceptionAttendue` indépendante**, en plus du crédit direct que
 `finaliserApprovisionnementCommande()` appliquera à l'échéance de son
 propre délai. Les deux crédits s'additionnent sur le même
 `stockDisponible`, sans qu'aucun des deux mécanismes ne consulte
-l'état de l'autre. C'est un **double réapprovisionnement structurel,
-démontré par lecture du code**, distinct du double engagement déjà
-documenté au §5 (qui portait sur le risque entre deux commandes
-concurrentes utilisant le même Mécanisme A ; celui-ci porte sur deux
-mécanismes différents actifs simultanément).
+l'état de l'autre. **Requalification (run final MTO-1, §20)** : la
+lecture du code établit seulement que deux mécanismes de
+réapprovisionnement indépendants peuvent agir sur la même situation
+de pénurie, sans vue commune d'Open Supply. Le run final **n'a pas
+observé de double crédit strict de la même quantité** : le
+Mécanisme A a recalculé le manque à la réception et n'a crédité que
+0/10/0. Le risque de décision non coordonnée est en revanche confirmé
+en runtime. Distinct du double engagement déjà documenté au §5 (qui
+portait sur deux commandes concurrentes utilisant le même Mécanisme A).
 
 ### 17.3 Réponses aux cinq questions posées
 
@@ -1492,7 +1496,7 @@ reste **à tester dans une fixture propre** (§19.8).
 | Interaction A+B (double crédit ad hoc + (s,Q) pendant `EN_APPROVISIONNEMENT`) | **INCONCLUSIVE** |
 | Concurrence MTO client / REAPPRO autonome | **Runtime confirmé** |
 | Violation de conservation de la matière | **Runtime confirmé** |
-| Défaut `consommerMatieresPour()` (fabrication sans matière disponible) | **Runtime confirmé — bloqueur de validité matière avant DDMRP** |
+| Défaut `consommerMatieresPour()` (fabrication sans matière disponible) | **Observé dans le run exploratoire, contaminé par `REAPPRO_1` ; non reproduit dans le run final contrôlé (§20). Voir §20.4 avant de le classer comme bloqueur.** |
 
 ### 19.8 Répétition contrôlée à préparer
 
@@ -1524,3 +1528,116 @@ isolé. Le relevé du run devra donc distinguer explicitement
   créditée vs matière consommée vs unités terminées).
 - Ne pas démarrer DDMRP tant que le défaut de §19.4 n'est pas traité ou
   explicitement accepté comme exception.
+
+---
+
+## 20. MTO-1 — Clôture du runtime baseline
+
+**Run final corrélé : `RUN_1773129600000_1791048428560`.** Branche
+`feature/mto-ddmrp-foundation`, HEAD de départ vérifié
+`eda90ef17667214caa935972ae8835729e73b8aa`. Aucun `.alp`, aucun `.json`,
+aucune correction métier.
+
+### 20.1 Statuts de clôture
+
+| Point | Statut |
+|---|---|
+| MTO-A runtime baseline | **PASS** |
+| MTO-B customer Source → Make | **PASS** |
+| A vs (s,Q) interaction | **RUNTIME CONFIRMED** |
+| Double crédit strict de la même quantité | **NOT OBSERVED** |
+| Replenishment non coordonné / Open Supply fragmenté | **RUNTIME CONFIRMED** |
+| MTO-1 | **CLOSED** |
+
+### 20.2 Configuration
+
+- Stock produit fini initial : **100**.
+- Matières initiales : **GPL_VRAC 0 / BOUTEILLE_VIDE_12KG 0 /
+  ACCESSOIRES_KIT 0**.
+- Stratégie : **MTO**. Nombre de commandes : **1**. Quantité : **10**.
+- Seed : **1001**. Retard fournisseur : **désactivé**.
+- `REAPPRO_1` : **absent** de ce run.
+
+### 20.3 Chronologie observée
+
+| t (simulé) | Événement |
+|---|---|
+| 84 | Création de `CMD_1`, stratégie MTO, quantité 10 |
+| 85 | Validation de la commande |
+| 88 | Déclenchement du chemin Source, besoin : GPL 125, bouteilles 10, accessoires 10 |
+| avant finalisation A | La politique (s,Q) a déjà commencé à créditer les matières |
+| 150 | Snapshot : GPL = 125, bouteilles = 0, accessoires = 10 |
+| ≈151 | `MaterialReceived` de `CMD_1` : `GPL_VRAC recu=0.0 stock=125.0`, `BOUTEILLE_VIDE_12KG recu=10.0 stock=10.0`, `ACCESSOIRES_KIT recu=0.0 stock=10.0` |
+| 153 | Planification Make |
+| 270 | Stocks alimentés par (s,Q) jusqu'à environ 250 / 70 / 90, avant consommation significative |
+| — | Consommation Make : GPL 125, bouteilles 10, accessoires 10 |
+| — | `CMD_1` terminée, **SERVIE** |
+
+**Lecture du crédit final** : `finaliserApprovisionnementCommande()`
+recalcule le manque à la réception (ligne 3446). Le mécanisme (s,Q)
+ayant déjà couvert GPL et accessoires, le mécanisme ad hoc ne crédite
+que les 10 bouteilles restantes. C'est un comportement correct, prouvé
+ici par le log.
+
+### 20.4 Bilan matière
+
+- Départ : **0 / 0 / 0**.
+- Consommation Make : **125 / 10 / 10**.
+- Stock final : **250 / 70 / 90**.
+- Crédits totaux observables pendant le run : **375 / 80 / 100**.
+  - dont mécanisme A (`finaliserApprovisionnementCommande()`) :
+    **0 / 10 / 0** (preuve directe dans le `MaterialReceived`) ;
+  - dont mécanisme (s,Q) : **375 / 70 / 100**.
+
+**Conservation** : la consommation (125/10/10) est couverte par les
+crédits ; le stock final excède le besoin de la commande. Le run final
+ne reproduit donc **pas** la violation de conservation observée dans le
+run exploratoire §19 (20 unités pour 10 unités de matière). Cette
+violation est attribuée au run exploratoire, contaminé par
+`REAPPRO_1` ; sa reproduction isolée reste à établir. Le défaut
+`consommerMatieresPour()` (troncature à zéro sans blocage) reste
+**statiquement réel** (§17.1), mais son classement comme bloqueur
+(§19.4) n'est **pas confirmé** par le run final et doit être réévalué.
+
+### 20.5 Requalification de l'interaction A + (s,Q)
+
+Ce que le runtime démontre :
+
+- deux mécanismes de réapprovisionnement indépendants agissent
+  simultanément sur la même situation de pénurie ;
+- ils ne partagent pas de vue commune d'Open Supply ;
+- le mécanisme (s,Q) peut couvrir une partie du besoin pendant que
+  l'approvisionnement ad hoc MTO est encore en cours ;
+- `finaliserApprovisionnementCommande()` recalcule le manque et évite
+  ici un double crédit strict pour GPL et accessoires ;
+- malgré cela, le mécanisme (s,Q) poursuit ses propres réceptions et
+  conduit à un stock final largement supérieur au besoin de la
+  commande ;
+- la décision de réapprovisionnement reste donc non coordonnée.
+
+Ce que le runtime **ne démontre pas** : un double crédit strict de la
+même quantité (**NOT OBSERVED**).
+
+### 20.6 Dette de cohérence Source / Open Supply
+
+Le chemin Source de `CMD_1` trace à t=88 un approvisionnement physique
+de **125 / 10 / 10**, alors que le `MaterialReceived` final de cette
+commande ne crédite réellement que **0 / 10 / 0**. Cette divergence
+entre flux narré et crédit physique est conservée comme **dette de
+cohérence Source / Open Supply**, à traiter avant toute implémentation
+DDMRP qui s'appuierait sur les traces Source comme source de vérité.
+
+### 20.7 Limites de cette clôture
+
+- Un seul run final ; pas de répétition avec seed différent.
+- La violation de conservation du run §19 n'a pas été reproduite
+  isolément.
+- Le lien causal exact entre la politique (s,Q) et la réception
+  anticipée de GPL/accessoires avant t=150 n'a été établi que par la
+  chronologie des logs, pas par un test contrôlé.
+
+### 20.8 Suite
+
+MTO-1 est clos. La suite (correction des défauts, décision DDMRP) n'est
+pas engagée dans cette passe. Aucune correction de code n'a été
+lancée.

@@ -11,7 +11,7 @@
     "nbScenarios": 5,
     "nbResponsabilites": 65,
     "nbMachines": 1,
-    "fixture": "DDMRP-core A/B -- valeurs de test, non industrielles"
+    "fixture": "DDMRP-core fixtures A/B -- valeurs de test, unites metier (ADU par heure reelle), non industrielles"
   },
   "parametresGlobaux": {
     "nomEntreprise": "ZENER SA Togo",
@@ -3440,11 +3440,14 @@
       "delaiObtentionHeures": 6,
       "idFournisseur": "ACT_1",
       "ddmrpActif": true,
-      "ddmrpAduDefaut": 1000.0,
+      "ddmrpAduDefaut": 20.0,
       "ddmrpFacteurLeadTime": 1.0,
       "ddmrpFacteurVariabilite": 0.5,
       "ddmrpMoq": 125.0,
-      "ddmrpSeuilSpike": 0.0
+      "ddmrpOrderCycleHeures": 0.0,
+      "ddmrpSeuilSpike": 0.0,
+      "ddmrpSpikeHorizonHeures": 0.0,
+      "ddmrpFenetreAduHeures": 24.0
     },
     {
       "idMatiere": "BOUTEILLE_VIDE_12KG",
@@ -3453,11 +3456,14 @@
       "delaiObtentionHeures": 10,
       "idFournisseur": "ACT_2",
       "ddmrpActif": true,
-      "ddmrpAduDefaut": 100.0,
+      "ddmrpAduDefaut": 2.0,
       "ddmrpFacteurLeadTime": 1.0,
       "ddmrpFacteurVariabilite": 0.5,
       "ddmrpMoq": 10.0,
-      "ddmrpSeuilSpike": 0.0
+      "ddmrpOrderCycleHeures": 0.0,
+      "ddmrpSeuilSpike": 0.0,
+      "ddmrpSpikeHorizonHeures": 0.0,
+      "ddmrpFenetreAduHeures": 24.0
     },
     {
       "idMatiere": "ACCESSOIRES_KIT",
@@ -3466,11 +3472,14 @@
       "delaiObtentionHeures": 5,
       "idFournisseur": "ACT_3",
       "ddmrpActif": true,
-      "ddmrpAduDefaut": 100.0,
+      "ddmrpAduDefaut": 2.0,
       "ddmrpFacteurLeadTime": 1.0,
       "ddmrpFacteurVariabilite": 0.5,
       "ddmrpMoq": 10.0,
-      "ddmrpSeuilSpike": 0.0
+      "ddmrpOrderCycleHeures": 0.0,
+      "ddmrpSeuilSpike": 0.0,
+      "ddmrpSpikeHorizonHeures": 0.0,
+      "ddmrpFenetreAduHeures": 24.0
     }
   ]
 }

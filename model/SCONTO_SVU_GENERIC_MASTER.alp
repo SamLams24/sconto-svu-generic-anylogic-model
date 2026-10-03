@@ -3158,6 +3158,7 @@ void reinitialiserReservationsMatiere() {
         f.reservations.clear();
         f.receptionsAttendues.clear();
         f.consommeCumulee = 0;
+        f.consommeParCommande.clear();
     }
     commandesAyantReserve.clear();
     matiereCrediteeParCommande.clear();
@@ -3237,6 +3238,7 @@ void consommerMatieresPourUnite(String idProduit, String idFlux) {
         }
         f.stockDisponible -= q;
         f.consommeCumulee += q;
+        if (ownerId != null) f.consommeParCommande.merge(ownerId, q, Double::sum);
     }
 }
 
@@ -3384,17 +3386,59 @@ double dateCouvertureCommande(CommandeAgent cmd, ScenarioFlux sc) {
     return couvert ? date : Double.POSITIVE_INFINITY;
 }
 
-// Qualified Demand = demande client ouverte, non encore engagee (MTO-2), et non encore
-// couverte par une reception allouee. Les commandes MTS (servies depuis le stock produit
-// fini) et REAPPRO_* ne sont pas incluses (voir documentation DDMRP-core).
+// DDMRP-Core -- temps metier. Les quantites DDMRP sont dimensionnees en heures
+// reelles (lead time) et en unites par heure reelle (ADU). Le temps simule ne
+// sert qu'a dater les evenements (receptions, actions) ; sa conversion en heures
+// metier passe par simToRealSeconds et n'intervient ni dans les zones ni dans NFP.
+double heuresMetier(double tempsSimulation) {
+    return tempsSimulation * Math.max(1.0, simToRealSeconds) / 3600.0;
+}
+
+// Zones DDMRP en unites, heures metier. Retourne {rouge, jaune, verte, TOR, TOY, TOG}.
+// Jaune = ADU x DLT ; base rouge = ADU x DLT x facteur lead time ; securite = base x
+// variabilite ; verte = max(MOQ, ADU x cycle de commande, ADU x DLT x facteur lead time).
+double[] zonesDDMRP(double adu, double leadTimeHeures, double facteurLeadTime, double facteurVariabilite, double moq, double cycleHeures) {
+    double jaune = adu * leadTimeHeures;
+    double base = adu * leadTimeHeures * facteurLeadTime;
+    double securite = base * facteurVariabilite;
+    double rouge = base + securite;
+    double verte = Math.max(moq, Math.max(adu * cycleHeures, base));
+    double toy = rouge + jaune;
+    double tog = toy + verte;
+    return new double[] { rouge, jaune, verte, rouge, toy, tog };
+}
+
+// Net Flow Equation standard. On Hand = stock physique ; les reservations MTO-2 ne
+// sont pas soustraites ici (elles restent dans la demande tant qu'elle n'est pas consommee).
+double netFlowPosition(double onHandPhysique, double openSupply, double qualifiedDemand) {
+    return onHandPhysique + openSupply - qualifiedDemand;
+}
+
+// Categorie d'une demande non satisfaite. Dates en heures metier.
+String qualifierDemande(boolean ordreFerme, double echeanceHeures, double maintenantHeures, double bucketHeures, double horizonSpikeHeures, double besoinTotal, double seuilSpike) {
+    if (ordreFerme) return "PRODUCTION_FERME";
+    if (echeanceHeures < maintenantHeures) return "EN_RETARD";
+    if (echeanceHeures <= maintenantHeures + bucketHeures) return "BUCKET";
+    if (seuilSpike > 0 && besoinTotal > seuilSpike && echeanceHeures <= maintenantHeures + bucketHeures + horizonSpikeHeures) return "SPIKE";
+    return "NON_QUALIFIEE";
+}
+
+// Qualified Demand = demande brute non satisfaite physiquement (besoin - consommation),
+// qualifiee. Ni les allocations d'Open Supply ni les reservations MTO-2 ne reduisent
+// cette demande. Les commandes MTS (servies depuis le stock produit fini) ne consomment
+// pas de matiere et sont exclues. Les REAPPRO_* sont des ordres fermes dont le besoin
+// matiere n'est represente nulle part ailleurs dans QD : ils sont qualifies tant qu'ils
+// restent non satisfaits.
 double qualifiedDemand(FicheMatiere f, double maintenant) {
-    double qd = 0;
-    double echue = 0;
-    double spike = 0;
+    DDMRPBuffer b = f.ddmrp;
+    double maintenantH = heuresMetier(maintenant);
+    double bucketH = b.bucketHeures > 0 ? b.bucketHeures : b.dlt;
+    double qd = 0, retard = 0, bucket = 0, spike = 0, prodFerme = 0;
     for (CommandeAgent c : commandes) {
-        if (c == null || c.idCommande == null || c.idCommande.startsWith("REAPPRO_")) continue;
-        if ("MTS".equals(c.typeCommande)) continue;
-        if (commandeEstTerminale(c) || commandesAyantReserve.contains(c.idCommande)) continue;
+        if (c == null || c.idCommande == null) continue;
+        boolean reappro = c.idCommande.startsWith("REAPPRO_");
+        if (!reappro && "MTS".equals(c.typeCommande)) continue;
+        if (commandeEstTerminale(c)) continue;
         ScenarioFlux sc = scenarioPourCommande(c);
         if (sc == null || sc.nomenclature == null) continue;
         double besoin = 0;
@@ -3402,55 +3446,53 @@ double qualifiedDemand(FicheMatiere f, double maintenant) {
             if (l != null && f.idMatiere.equals(l.idMatiere)) besoin += l.quantiteParUnite * Math.max(1, c.qte);
         }
         if (besoin <= 1e-9) continue;
-        double dejaAlloue = openSupplyAllouePourCommande(f, c.idCommande);
-        if (dejaAlloue < besoin) dejaAlloue += allouerOpenSupplyPourCommande(f, c.idCommande, besoin - dejaAlloue);
-        double net = Math.max(0, besoin - dejaAlloue);
-        if (net <= 1e-9) continue;
-        qd += net;
-        if (c.tPromise < maintenant) echue += net;
-        if (f.ddmrp != null && f.ddmrp.seuilSpike > 0 && besoin > f.ddmrp.seuilSpike) spike += net;
+        Double consomme = f.consommeParCommande.get(c.idCommande);
+        double nonSatisfait = Math.max(0, besoin - (consomme == null ? 0.0 : consomme));
+        if (nonSatisfait <= 1e-9) continue;
+        String cat = qualifierDemande(reappro, heuresMetier(c.tPromise), maintenantH, bucketH, b.spikeHorizonHeures, besoin, b.seuilSpike);
+        if ("NON_QUALIFIEE".equals(cat)) continue;
+        qd += nonSatisfait;
+        if ("EN_RETARD".equals(cat)) retard += nonSatisfait;
+        else if ("BUCKET".equals(cat)) bucket += nonSatisfait;
+        else if ("SPIKE".equals(cat)) spike += nonSatisfait;
+        else prodFerme += nonSatisfait;
     }
-    f.ddmrp.qdEchue = echue;
-    f.ddmrp.qdSpike = spike;
+    b.qdEnRetard = retard;
+    b.qdBucket = bucket;
+    b.qdSpike = spike;
+    b.qdProductionFerme = prodFerme;
     return qd;
 }
 
-// ADU : consommation observee par heure simulee. Tant que la fenetre minimale n'est
-// pas atteinte, ou sans consommation observee, la valeur configuree est utilisee.
+// ADU en unites par heure metier : consommation observee / heures metier, apres une
+// fenetre minimale ; avant, ou sans consommation, la valeur configuree est utilisee.
 double aduCourant(FicheMatiere f, double maintenant) {
-    double heures = maintenant / 3600.0;
-    if (heures < f.ddmrp.fenetreAduHeuresSim || f.consommeCumulee <= 0) return f.ddmrp.aduDefaut;
+    double heures = heuresMetier(maintenant);
+    if (f.consommeCumulee <= 0 || heures < f.ddmrp.fenetreAduHeures) return f.ddmrp.aduDefaut;
     return f.consommeCumulee / heures;
 }
 
-// Decision DDMRP d'une matiere : zones, Net Flow Position, ordre a passer.
-// NFP = disponible (stock physique - engagements MTO-2) + Open Supply - Qualified Demand.
-// Chaque demande est soustraite une seule fois : par les engagements (disponible) si
-// reservee, par Qualified Demand sinon ; une reception allouee a une commande ne compte
-// pas dans sa demande (voir qualifiedDemand).
 void decisionDDMRP(FicheMatiere f, double maintenant) {
     DDMRPBuffer b = f.ddmrp;
+    double leadTimeH = (f.delaiObtentionHeures * 3600.0 + dureeReceptionEtControleReelle(f.idMatiere)) / 3600.0;
     double adu = aduCourant(f, maintenant);
-    double delaiReelSec = f.delaiObtentionHeures * 3600.0 + dureeReceptionEtControleReelle(f.idMatiere);
-    double ltSimH = dureeEchelle(delaiReelSec) / 3600.0;
-    double dlt = ltSimH * b.facteurLeadTime;
-    double redBase = adu * dlt;
-    double redSafety = redBase * b.facteurVariabilite;
     b.adu = adu;
-    b.leadTimeHeuresSim = ltSimH;
-    b.dlt = dlt;
-    b.zoneRouge = redBase + redSafety;
-    b.zoneJaune = adu * dlt;
-    b.zoneVerte = Math.max(b.moq, adu * dlt);
-    b.topOfRed = b.zoneRouge;
-    b.topOfYellow = b.topOfRed + b.zoneJaune;
-    b.topOfGreen = b.topOfYellow + b.zoneVerte;
+    b.leadTimeHeures = leadTimeH;
+    b.dlt = leadTimeH;
+    double[] z = zonesDDMRP(adu, leadTimeH, b.facteurLeadTime, b.facteurVariabilite, b.moq, b.orderCycleHeures);
+    b.zoneRouge = z[0];
+    b.zoneJaune = z[1];
+    b.zoneVerte = z[2];
+    b.topOfRed = z[3];
+    b.topOfYellow = z[4];
+    b.topOfGreen = z[5];
+
     b.onHandPhysique = f.stockDisponible;
     b.engagementsMto = f.totalReserve();
-    b.disponible = f.disponible();
+    b.disponibiliteOperationnelle = f.disponible();
     b.openSupply = f.totalReceptionsAttendues();
     b.qualifiedDemand = qualifiedDemand(f, maintenant);
-    b.netFlowPosition = b.disponible + b.openSupply - b.qualifiedDemand;
+    b.netFlowPosition = netFlowPosition(b.onHandPhysique, b.openSupply, b.qualifiedDemand);
 
     String zone;
     int prio;
@@ -3467,22 +3509,23 @@ void decisionDDMRP(FicheMatiere f, double maintenant) {
         qte = b.topOfGreen - b.netFlowPosition;
         if (b.moq > 0) qte = Math.ceil(qte / b.moq - 1e-9) * b.moq;
         if (qte > 1e-9) {
-            ReceptionAttendue r = creerReceptionOpenSupply(f, qte, maintenant + dureeEchelle(delaiReelSec), "DDMRP", "");
+            ReceptionAttendue r = creerReceptionOpenSupply(f, qte, maintenant + dureeEchelle(leadTimeH * 3600.0), "DDMRP", "");
             action = "COMMANDE_APPRO";
             idRecep = "REC_" + r.idReception;
             b.dernierOrdreId = idRecep;
         }
     }
     b.quantiteRecommandee = action.equals("COMMANDE_APPRO") ? qte : 0;
-    board.logEvent(String.format("[DDMRP] matiere=%s onHand=%.2f engagements=%.2f disponible=%.2f openSupply=%.2f qualifiedDemand=%.2f NFP=%.2f ADU=%.2f LT_h=%.4f DLT_h=%.4f top_rouge=%.2f top_jaune=%.2f top_vert=%.2f zone=%s priorite=%d action=%s quantite=%.2f reception=%s",
-        f.idMatiere, b.onHandPhysique, b.engagementsMto, b.disponible, b.openSupply, b.qualifiedDemand, b.netFlowPosition,
-        adu, ltSimH, dlt, b.topOfRed, b.topOfYellow, b.topOfGreen, zone, prio, action, qte, idRecep));
+    board.logEvent(String.format("[DDMRP] matiere=%s onHandPhysique=%.2f reservationsMTO=%.2f disponibiliteOperationnelle=%.2f openSupply=%.2f qualifiedDemand=%.2f [retard=%.2f bucket=%.2f spike=%.2f prodFerme=%.2f] NFP=%.2f ADU_h=%.4f LT_h=%.4f rouge=%.2f jaune=%.2f verte=%.2f TOR=%.2f TOY=%.2f TOG=%.2f zone=%s priorite=%d action=%s quantite=%.2f reception=%s",
+        f.idMatiere, b.onHandPhysique, b.engagementsMto, b.disponibiliteOperationnelle, b.openSupply, b.qualifiedDemand,
+        b.qdEnRetard, b.qdBucket, b.qdSpike, b.qdProductionFerme, b.netFlowPosition, adu, leadTimeH,
+        b.zoneRouge, b.zoneJaune, b.zoneVerte, b.topOfRed, b.topOfYellow, b.topOfGreen, zone, prio, action, qte, idRecep));
 }
 
 String[] ddmrpColumns() {
-    return new String[] { "Matiere", "Buffer actif", "ADU (u/h simulee)", "Lead time (h simulees)", "DLT (h simulees)",
-        "Zone rouge", "Zone jaune", "Zone verte", "Top of red", "Top of yellow", "Top of green",
-        "On-hand physique", "Engagements MTO", "Open Supply", "Qualified Demand", "Net Flow Position",
+    return new String[] { "Matiere", "Buffer actif", "On Hand physique", "Reservations MTO", "Disponibilite operationnelle",
+        "Open Supply", "Qualified Demand", "dont en retard", "dont bucket", "dont spike", "dont production ferme", "NFP",
+        "ADU (u/h metier)", "Lead time (h metier)", "Zone rouge", "Zone jaune", "Zone verte", "Top of red", "Top of yellow", "Top of green",
         "Quantite recommandee", "Statut buffer", "Priorite" };
 }
 
@@ -3491,9 +3534,9 @@ Object[][] ddmrpRows() {
     for (FicheMatiere f : fichesMatiere) {
         if (f == null || f.ddmrp == null) continue;
         DDMRPBuffer b = f.ddmrp;
-        rows.add(new Object[] { f.idMatiere, b.actif ? "OUI" : "NON", b.adu, b.leadTimeHeuresSim, b.dlt,
-            b.zoneRouge, b.zoneJaune, b.zoneVerte, b.topOfRed, b.topOfYellow, b.topOfGreen,
-            b.onHandPhysique, b.engagementsMto, b.openSupply, b.qualifiedDemand, b.netFlowPosition,
+        rows.add(new Object[] { f.idMatiere, b.actif ? "OUI" : "NON", b.onHandPhysique, b.engagementsMto, b.disponibiliteOperationnelle,
+            b.openSupply, b.qualifiedDemand, b.qdEnRetard, b.qdBucket, b.qdSpike, b.qdProductionFerme, b.netFlowPosition,
+            b.adu, b.leadTimeHeures, b.zoneRouge, b.zoneJaune, b.zoneVerte, b.topOfRed, b.topOfYellow, b.topOfGreen,
             b.quantiteRecommandee, b.statut, b.priorite });
     }
     return rows.toArray(new Object[0][]);
@@ -10050,7 +10093,7 @@ public String exporterABoxRuntimeTTL(String raison) {
             };
             for(Object[] x:entrepriseFocaleInds){ String iu=aboxUri("vsm",String.valueOf(x[0])); aboxTriple(pw,iu,"rdf:type",String.valueOf(x[1])); aboxTriple(pw,iu,"rdfs:label",aboxLit(String.valueOf(x[2]))); aboxTriple(pw,iu,"core:hasValue",aboxDec(((Number)x[3]).doubleValue())); aboxTriple(pw,iu,"core:hasUnit",aboxLit(String.valueOf(x[4]))); aboxTriple(pw,iu,"core:hasTimestamp",aboxLit(aboxIsoAt(time()))+"^^xsd:dateTime"); aboxTriple(pw,iu,"core:hasObservationContext",ctxEntrepriseFocale); aboxTriple(pw,iu,"run:sourceKind",aboxLit("DERIVED_FROM_ACT_4_OBSERVATIONS")); aboxTriple(pw,iu,"run:valueAddedNature",aboxLit("ESTIMATED")); aboxTriple(pw,iu,"run:valueAddedSourcePolicy",aboxLit("CONFIGUREE_OR_FALLBACK_BY_POST")); aboxTriple(pw,aboxUri("agent","Blackboard"),"agent:computesVSMIndicator",iu); }
 
-            for(FicheMatiere f:fichesMatiere){ if(f==null||f.ddmrp==null) continue; String du=aboxUri("ddmrp",f.idMatiere); aboxTriple(pw,du,"rdf:type","run:DDMRPBuffer"); aboxTriple(pw,du,"run:ddmrpActif",aboxLit(String.valueOf(f.ddmrp.actif))); aboxTriple(pw,du,"run:ddmrpAdu",aboxDec(f.ddmrp.adu)); aboxTriple(pw,du,"run:ddmrpLeadTimeHeuresSim",aboxDec(f.ddmrp.leadTimeHeuresSim)); aboxTriple(pw,du,"run:ddmrpZoneRouge",aboxDec(f.ddmrp.zoneRouge)); aboxTriple(pw,du,"run:ddmrpZoneJaune",aboxDec(f.ddmrp.zoneJaune)); aboxTriple(pw,du,"run:ddmrpZoneVerte",aboxDec(f.ddmrp.zoneVerte)); aboxTriple(pw,du,"run:ddmrpTopOfRed",aboxDec(f.ddmrp.topOfRed)); aboxTriple(pw,du,"run:ddmrpTopOfYellow",aboxDec(f.ddmrp.topOfYellow)); aboxTriple(pw,du,"run:ddmrpTopOfGreen",aboxDec(f.ddmrp.topOfGreen)); aboxTriple(pw,du,"run:ddmrpOpenSupply",aboxDec(f.ddmrp.openSupply)); aboxTriple(pw,du,"run:ddmrpQualifiedDemand",aboxDec(f.ddmrp.qualifiedDemand)); aboxTriple(pw,du,"run:ddmrpNetFlowPosition",aboxDec(f.ddmrp.netFlowPosition)); aboxTriple(pw,du,"run:ddmrpQuantiteRecommandee",aboxDec(f.ddmrp.quantiteRecommandee)); aboxTriple(pw,du,"run:ddmrpStatut",aboxLit(f.ddmrp.statut)); aboxTriple(pw,du,"run:ddmrpPriorite",aboxDec(f.ddmrp.priorite)); }
+            for(FicheMatiere f:fichesMatiere){ if(f==null||f.ddmrp==null) continue; String du=aboxUri("ddmrp",f.idMatiere); aboxTriple(pw,du,"rdf:type","run:DDMRPBuffer"); aboxTriple(pw,du,"run:ddmrpActif",aboxLit(String.valueOf(f.ddmrp.actif))); aboxTriple(pw,du,"run:ddmrpOnHandPhysique",aboxDec(f.ddmrp.onHandPhysique)); aboxTriple(pw,du,"run:ddmrpReservationsMto",aboxDec(f.ddmrp.engagementsMto)); aboxTriple(pw,du,"run:ddmrpDisponibiliteOperationnelle",aboxDec(f.ddmrp.disponibiliteOperationnelle)); aboxTriple(pw,du,"run:ddmrpOpenSupply",aboxDec(f.ddmrp.openSupply)); aboxTriple(pw,du,"run:ddmrpQualifiedDemand",aboxDec(f.ddmrp.qualifiedDemand)); aboxTriple(pw,du,"run:ddmrpQdEnRetard",aboxDec(f.ddmrp.qdEnRetard)); aboxTriple(pw,du,"run:ddmrpQdBucket",aboxDec(f.ddmrp.qdBucket)); aboxTriple(pw,du,"run:ddmrpQdSpike",aboxDec(f.ddmrp.qdSpike)); aboxTriple(pw,du,"run:ddmrpQdProductionFerme",aboxDec(f.ddmrp.qdProductionFerme)); aboxTriple(pw,du,"run:ddmrpNetFlowPosition",aboxDec(f.ddmrp.netFlowPosition)); aboxTriple(pw,du,"run:ddmrpAdu",aboxDec(f.ddmrp.adu)); aboxTriple(pw,du,"run:ddmrpLeadTimeHeures",aboxDec(f.ddmrp.leadTimeHeures)); aboxTriple(pw,du,"run:ddmrpZoneRouge",aboxDec(f.ddmrp.zoneRouge)); aboxTriple(pw,du,"run:ddmrpZoneJaune",aboxDec(f.ddmrp.zoneJaune)); aboxTriple(pw,du,"run:ddmrpZoneVerte",aboxDec(f.ddmrp.zoneVerte)); aboxTriple(pw,du,"run:ddmrpTopOfRed",aboxDec(f.ddmrp.topOfRed)); aboxTriple(pw,du,"run:ddmrpTopOfYellow",aboxDec(f.ddmrp.topOfYellow)); aboxTriple(pw,du,"run:ddmrpTopOfGreen",aboxDec(f.ddmrp.topOfGreen)); aboxTriple(pw,du,"run:ddmrpQuantiteRecommandee",aboxDec(f.ddmrp.quantiteRecommandee)); aboxTriple(pw,du,"run:ddmrpStatut",aboxLit(f.ddmrp.statut)); aboxTriple(pw,du,"run:ddmrpPriorite",aboxDec(f.ddmrp.priorite)); }
 Object[][] inds = new Object[][]{
                 {"throughput_global","core:Throughput",(time() > 0 ? nbTermines * 3600.0 / time() : 0.0),"ent/h"},
                 {"takt_global","core:TaktTime",calculerTaktTimeSec(),"s/unit"}, {"availability_global","core:Availability",calculerDisponibiliteMachinesOEE(),"ratio"},
@@ -16994,6 +17037,10 @@ if (fichesObj instanceof java.util.List) {
                 bufferDDMRP.facteurVariabilite = jsonDouble(fm, "ddmrpFacteurVariabilite", 0.5);
                 bufferDDMRP.moq = jsonDouble(fm, "ddmrpMoq", 0.0);
                 bufferDDMRP.seuilSpike = jsonDouble(fm, "ddmrpSeuilSpike", 0.0);
+                bufferDDMRP.orderCycleHeures = jsonDouble(fm, "ddmrpOrderCycleHeures", 0.0);
+                bufferDDMRP.bucketHeures = jsonDouble(fm, "ddmrpBucketHeures", 0.0);
+                bufferDDMRP.spikeHorizonHeures = jsonDouble(fm, "ddmrpSpikeHorizonHeures", 0.0);
+                bufferDDMRP.fenetreAduHeures = jsonDouble(fm, "ddmrpFenetreAduHeures", 24.0);
                 f.ddmrp = bufferDDMRP;
                 fichesMatiere.add(f);
             } catch (Exception ex) { board.logEvent("[JSON WARN] fiche matière ignorée : " + ex.getMessage()); }
@@ -55601,13 +55648,16 @@ public class DDMRPBuffer implements java.io.Serializable {
     public String idMatiere = "";
     public boolean actif = false;
     public double aduDefaut = 0;
-    public double fenetreAduHeuresSim = 1.0;
+    public double fenetreAduHeures = 24.0;
     public double facteurLeadTime = 1.0;
     public double facteurVariabilite = 0.5;
     public double moq = 0;
+    public double orderCycleHeures = 0;
+    public double bucketHeures = 0;
+    public double spikeHorizonHeures = 0;
     public double seuilSpike = 0;
     public double adu = 0;
-    public double leadTimeHeuresSim = 0;
+    public double leadTimeHeures = 0;
     public double dlt = 0;
     public double zoneRouge = 0;
     public double zoneJaune = 0;
@@ -55617,11 +55667,13 @@ public class DDMRPBuffer implements java.io.Serializable {
     public double topOfGreen = 0;
     public double onHandPhysique = 0;
     public double engagementsMto = 0;
-    public double disponible = 0;
+    public double disponibiliteOperationnelle = 0;
     public double openSupply = 0;
     public double qualifiedDemand = 0;
-    public double qdEchue = 0;
+    public double qdEnRetard = 0;
+    public double qdBucket = 0;
     public double qdSpike = 0;
+    public double qdProductionFerme = 0;
     public double netFlowPosition = 0;
     public double quantiteRecommandee = 0;
     public String statut = "NON_EVALUE";
@@ -55674,6 +55726,7 @@ public class FicheMatiere implements java.io.Serializable {
 
     public DDMRPBuffer ddmrp = null;
     public double consommeCumulee = 0;
+    public java.util.LinkedHashMap<String, Double> consommeParCommande = new java.util.LinkedHashMap<String, Double>();
 
     public java.util.LinkedHashMap<String, Double> reservations = new java.util.LinkedHashMap<String, Double>();
 

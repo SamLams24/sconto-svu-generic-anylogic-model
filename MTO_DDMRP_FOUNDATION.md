@@ -1918,15 +1918,22 @@ Pour chaque commande ouverte contenant la matière, la demande non satisfaite
 
 ### 22.4 Temps métier et temps simulé
 
-- `heuresMetier(t) = t × simToRealSeconds / 3600`. La conversion ne sert qu'à exprimer
-  les échéances des commandes en heures métier.
+- **Horloge métier** `heuresMetier(t) = (t − tempsDebutSimulation) × simToRealSeconds / 3600`,
+  relative au **début effectif du run** (`tempsDebutSimulation`, exporté sous
+  `run:runStartSimulationTime`). Le temps AnyLogic absolu antérieur au run n'entre pas
+  dans l'ADU. `elapsedBusinessHours = max(0, heuresMetier(t))` pour l'ADU.
+- **Promesses client** : les délais de promesse sont des **secondes métier**.
+  `tPromise = echeancePromesse(t, délai) = t + dureeEchelle(délai)`, appelé aux deux
+  seuls points d'écriture (promesse MTS des ordres REAPPRO, promesse client résolue).
+  Le changement de `simToRealSeconds` ne change donc pas la durée métier promise.
 - **Dimensionnement DDMRP** : uniquement en heures métier. Lead time =
   `(délai nominal h × 3600 + durée contrôle réception réelle) / 3600`. ADU en unités par
   heure métier (`consommé / heures métier`, après `fenetreAduHeures`, 24 h par défaut).
 - `dureeEchelle()` **ne sert qu'à dater les réceptions** dans le moteur AnyLogic. Il
   n'intervient ni dans les zones, ni dans NFP, ni dans QD.
 - **Vérifié** : à état métier identique, changer `simToRealSeconds` (600 → 60) ne change
-  ni l'ADU, ni les zones, ni QD (tests 4 et 5 de 22.8).
+  ni l'ADU, ni les zones, ni QD, et une même promesse de 1800 s métier garde la même durée
+  métier (tests 22.8, groupes 3, 4 et 5).
 
 ### 22.5 Zones et décision (formules finales)
 
@@ -1972,7 +1979,7 @@ elles n'ont pas été vérifiées dans la source.
 
 ### 22.8 Tests statiques
 
-`DDMRPTest`, extrait du code réel de la master et compilé contre stubs, **31 PASS / 0 FAIL** :
+`DDMRPTest`, extrait du code réel de la master et compilé contre stubs, **40 PASS / 0 FAIL** :
 
 1. NFP : les trois cas du tableau 22.2 ;
 2. zones numériques : ADU 20, LT 6 h, LTF 1, VF 0,5, MOQ 125, cycle 0 → rouge 180,
@@ -2011,9 +2018,9 @@ réception ajoute une fraction d'heure, à relever dans le log.
   couverte par l'Open Supply DDMRP (aucune réception MTO) ; à l'échéance, réservation,
   consommation, `[INVARIANT MATIERE] cloture CMD_1 : OK`. Marge à vérifier : bouteilles
   NFP 60 contre TOY 50 ; accessoires 30 contre 25.
-- **Point à observer** : la commande MTO de C a une échéance de **300 h métier**
-  (délai promis de 1800 s simulées × 600) ; la fenêtre de 400 h la qualifie. Une échéance
-  hors fenêtre serait `NON_QUALIFIEE` et ne compterait pas dans QD.
+- **Point à observer** : la promesse MTO par défaut vaut **1 080 000 s métier (300 h)**,
+  soit l'équivalent exact de l'ancien `1800 s simulées × 600`. La fenêtre de 400 h la
+  qualifie. Une échéance hors fenêtre serait `NON_QUALIFIEE` et ne compterait pas dans QD.
 
 ### 22.10 Exports
 
@@ -2025,10 +2032,12 @@ réception ajoute une fraction d'heure, à relever dans le log.
 
 ### 22.11 Limites connues
 
-- **Promesse de commande en temps simulé** : `tPromise = t + 1800` (valeur de code) est
-  une durée simulée ; son équivalent métier dépend de `simToRealSeconds`. Changer ce
-  facteur change donc la classification de QD des commandes existantes (les zones, elles, ne
-  changent pas). À corriger en exprimant la promesse en temps métier.
+- **Valeurs de promesse à valider métier** : `delaiPromessePourMode` est désormais en
+  secondes métier. Les valeurs par défaut (MTO 1 080 000 s, ETO 2 160 000 s, MTS 180 000 s)
+  reprennent l'effet précédent à l'échelle 600 (anciennes 1800 / 3600 / 300 s simulées).
+  Ce sont des valeurs conservées, pas des valeurs industrielles : leur choix relève d'une
+  décision métier. Les runs MTO-1 (SERVIE / EN_RETARD) restent comparables à l'échelle 600
+  seulement avec ces valeurs.
 - **Garde REAPPRO** : (s,Q) est suspendu pendant un REAPPRO (comme avant), mais les
   réceptions sont désormais créditées dans tous les cas.
 - **(s,Q)** : pour les matières non gérées, la projection inclut toutes les receptions

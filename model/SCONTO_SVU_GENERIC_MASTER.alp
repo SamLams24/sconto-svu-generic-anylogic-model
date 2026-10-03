@@ -2980,7 +2980,7 @@ void declencherProductionAutonome(ScenarioFlux sc, int quantite) {
     cmd.typeCommande = "MTS";
     cmd.qte          = quantite;
     cmd.tCreation    = time();
-    cmd.tPromise     = time() + delaiPromessePourMode("MTS");
+    cmd.tPromise     = echeancePromesse(time(), delaiPromessePourMode("MTS"));
     cmd.statut       = "EN_COURS";
     cmd.idScenario   = sc.typeProduit;
 
@@ -3386,12 +3386,20 @@ double dateCouvertureCommande(CommandeAgent cmd, ScenarioFlux sc) {
     return couvert ? date : Double.POSITIVE_INFINITY;
 }
 
+// Echeance client : delai en secondes metier converti en instant de simulation.
+double echeancePromesse(double maintenant, double delaiMetierSec) {
+    return maintenant + dureeEchelle(delaiMetierSec);
+}
+
 // DDMRP-Core -- temps metier. Les quantites DDMRP sont dimensionnees en heures
 // reelles (lead time) et en unites par heure reelle (ADU). Le temps simule ne
 // sert qu'a dater les evenements (receptions, actions) ; sa conversion en heures
 // metier passe par simToRealSeconds et n'intervient ni dans les zones ni dans NFP.
+// Horloge metier relative au debut effectif du run (tempsDebutSimulation,
+// run:runStartSimulationTime) : le temps AnyLogic absolu anterieur au run n'entre pas.
 double heuresMetier(double tempsSimulation) {
-    return tempsSimulation * Math.max(1.0, simToRealSeconds) / 3600.0;
+    double debut = tempsDebutSimulation >= 0 ? tempsDebutSimulation : 0.0;
+    return (tempsSimulation - debut) * Math.max(1.0, simToRealSeconds) / 3600.0;
 }
 
 // Zones DDMRP en unites, heures metier. Retourne {rouge, jaune, verte, TOR, TOY, TOG}.
@@ -3467,7 +3475,7 @@ double qualifiedDemand(FicheMatiere f, double maintenant) {
 // ADU en unites par heure metier : consommation observee / heures metier, apres une
 // fenetre minimale ; avant, ou sans consommation, la valeur configuree est utilisee.
 double aduCourant(FicheMatiere f, double maintenant) {
-    double heures = heuresMetier(maintenant);
+    double heures = Math.max(0.0, heuresMetier(maintenant));
     if (f.consommeCumulee <= 0 || heures < f.ddmrp.fenetreAduHeures) return f.ddmrp.aduDefaut;
     return f.consommeCumulee / heures;
 }
@@ -8899,10 +8907,12 @@ String modeSCORActif() {
     return isETO ? "ETO" : (isMTO ? "MTO" : "MTS");
 }
 
+// Delais de promesse en SECONDES METIER (reelles). Valeurs historiques en secondes
+// simulees, converties a l'echelle par defaut (simToRealSeconds = 600).
 double delaiPromessePourMode(String mode) {
-    if ("ETO".equalsIgnoreCase(mode)) return 3600.0;
-    if ("MTO".equalsIgnoreCase(mode)) return 1800.0;
-    return 300.0;
+    if ("ETO".equalsIgnoreCase(mode)) return 2160000.0;
+    if ("MTO".equalsIgnoreCase(mode)) return 1080000.0;
+    return 180000.0;
 }
 
 // Bloc C.8 -- conteneur minimal retourne par resoudreEngagementClient() :
@@ -8911,7 +8921,7 @@ double delaiPromessePourMode(String mode) {
 // specifique->defaut->legacy, cf. audit C.7 §17). Aucune autre donnee
 // (date absolue, historique, client, statut) : strictement le minimum.
 public class EngagementClientResolution implements java.io.Serializable {
-    public double delaiSec = 0.0;
+    public double delaiSec = 0.0; // secondes metier
     public String source = "";
 }
 
@@ -14309,7 +14319,7 @@ cmd.typeCommande = modeSCORActif();
 // qu'aux 2 points de cloture existants -- jamais ici, jamais en cours de
 // vie de la commande.
 EngagementClientResolution engagement = resoudreEngagementClient(cmd, scenarioCommande);
-cmd.tPromise = time() + engagement.delaiSec;
+cmd.tPromise = echeancePromesse(time(), engagement.delaiSec);
 cmd.modeEngagementClient = engagement.source;
 cmd.retardConstate = false;
 

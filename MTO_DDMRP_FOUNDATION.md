@@ -920,6 +920,7 @@ mécanismes différents actifs simultanément).
    aval (un poste qui continue de « produire » avec un stock matière à
    zéro, sans jamais être bloqué) n'a pas été observé en exécution
    dans cette passe — **nécessite un test runtime**.
+   *Mise à jour : ce point est désormais confirmé en runtime, voir §19.4.*
 5. **Une commande peut-elle rester indéfiniment en
    approvisionnement ?** Non, structurellement, pour le chemin normal :
    `finaliserApprovisionnementCommande()` crédite
@@ -1386,3 +1387,140 @@ délais de 6h/10h/5h réels en secondes simulées — la valeur exacte
 apparaîtra directement dans les logs `[SOURCE]`/`[STOCK]` du run
 (`Xs (deroule) / Xh (reel)`), il n'était donc pas nécessaire de la
 précalculer pour préparer la fixture.
+
+---
+
+## 19. Premier run MTO-B — enregistrement runtime (exploratoire)
+
+**Statut de ce run : exploratoire, contaminé, mais probant sur plusieurs
+invariants.** Il ne constitue **pas** le MTO-B contrôlé final : la
+fixture a modifié plus d'une variable à la fois (stock produit fini et
+stock matière), ce qui le rend inutilisable pour isoler l'interaction
+A+B. Aucun code n'a été modifié ; aucune logique métier n'est corrigée
+dans cette section.
+
+### 19.1 Configuration effective du run
+
+- `CMD_1` : type **MTO**, quantité **10**, seed **1001**, aucun retard
+  fournisseur forcé.
+- Stock produit fini initial : **0**. Dans MTO-A, il était de **100**.
+  La fixture a donc modifié la variable « produit fini » en plus de la
+  variable « matière » : ce n'est pas un MTO-B contrôlé.
+- Stocks matière initiaux : **GPL_VRAC = 0 / BOUTEILLE_VIDE_12KG = 0 /
+  ACCESSOIRES_KIT = 0**.
+- Besoin matière de `CMD_1` (10 unités) : **125 / 10 / 10**.
+
+### 19.2 Chronologie observée (temps simulé `time()`)
+
+| t (simulé) | Événement |
+|---|---|
+| 49 | `CMD_1` créée (MTO, qte 10) |
+| 53 | Pénurie détectée : manque **125 GPL / 10 bouteilles / 10 accessoires** |
+| 53 | Chaîne Source lancée pour `CMD_1` (`EN_APPROVISIONNEMENT`) |
+| 60.2 | **`REAPPRO_1` créé en stratégie MTS** pendant que `CMD_1` est encore en approvisionnement |
+| 60.2 → | `REAPPRO_1` constate lui aussi le besoin **125 / 10 / 10** |
+| 116 | `MaterialReceived` de `CMD_1` : **+125 / +10 / +10** (crédit direct, Mécanisme A) |
+| 118 | Make de `CMD_1` démarré |
+| 123 | `MaterialReceived` de `REAPPRO_1` : **reçu = 0 / 0 / 0**, car le stock est déjà à 125 / 10 / 10 grâce au crédit de `CMD_1` |
+| 125 | **`REAPPRO_1` démarre Make malgré l'absence de matière nouvellement reçue** |
+| 1060.6 | `CMD_1` = 10/10, **SERVIE** |
+| 1857.9 | `REAPPRO_1` atteint 10/10 |
+
+### 19.3 Constat de conservation de la matière
+
+- Matière effectivement créditée au total : **125 / 10 / 10**, soit
+  exactement la matière correspondant à **10 unités** (`CMD_1`
+  seul ; `REAPPRO_1` n'a rien reçu).
+- Unités produites au total : **20** (10 pour `CMD_1` + 10 pour
+  `REAPPRO_1`).
+- Matière théoriquement requise pour 20 unités : **250 / 20 / 20**.
+- Déficit de matière non couvert : **125 / 10 / 10**, soit la matière
+  de 10 unités.
+- Historique observé : le stock matière passe de **125 / 10 / 10** à
+  **0 / 0 / 0** après environ 10 consommations ; les deux productions
+  continuent ensuite jusqu'à **20 unités terminées**.
+
+**Conclusion : violation de conservation de la matière, confirmée en
+runtime.** Les unités produites au-delà de la 10ᵉ ont été fabriquées
+sans matière disponible, sans que le système ne bloque la production.
+
+### 19.4 Requalification du risque `consommerMatieresPour()`
+
+Le risque statique identifié en §17.3.4 et §17.1 devient un **défaut
+runtime confirmé** :
+
+1. stock matière insuffisant au moment de la consommation ;
+2. alerte éventuelle journalisée (`Stock matiere insuffisant pendant
+   la production`), mais **production non bloquée** ;
+3. troncature à zéro (`Math.max(0, ...)`, ligne 1314) ;
+4. **possibilité de fabriquer sans matière disponible**, comme observé
+   ci-dessus (unités 11 à 20).
+
+Ce défaut est classé **bloqueur de validité matière avant toute
+implémentation DDMRP** : tant qu'une unité peut être terminée sans
+matière réellement disponible, aucun indicateur de stock matière (y
+compris les futurs buffers DDMRP) ne reflète la réalité physique du
+modèle.
+
+### 19.5 Interférence autonome (MTO client vs REAPPRO_*)
+
+- `REAPPRO_1` (MTS autonome) a été déclenché pendant que `CMD_1`
+  attendait sa matière, et a constaté le même besoin 125 / 10 / 10.
+- Le crédit de `CMD_1` a satisfait ce besoin ; le `MaterialReceived`
+  de `REAPPRO_1` (t=123) n'a donc rien ajouté (0 / 0 / 0), mais
+  `REAPPRO_1` a néanmoins lancé Make à t=125.
+- **Statut : concurrence MTO client / REAPPRO autonome, confirmée en
+  runtime.** Elle aboutit à la production de 20 unités pour 10 unités
+  de matière créditée (cf. §19.3).
+
+### 19.6 Stocks remontés après REAPPRO_1 — non interprétés comme preuve A+B
+
+Après la fin de `REAPPRO_1`, les stocks remontent progressivement
+jusqu'à environ **250 / 70 / 90** via le mécanisme (s,Q) (Mécanisme B).
+**Cette remontée ne doit pas être présentée comme preuve d'un double
+crédit MTO ad hoc + (s,Q) pendant `EN_APPROVISIONNEMENT`** : la
+chronologie montre que ces réceptions sont postérieures à la
+production autonome (t=123 et après), donc hors de la fenêtre
+`EN_APPROVISIONNEMENT` de `CMD_1` (t=53 → t=116). L'interaction A+B
+reste **à tester dans une fixture propre** (§19.8).
+
+### 19.7 Statuts à enregistrer
+
+| Point | Statut |
+|---|---|
+| MTO-B cœur Source → Make pour `CMD_1` (chaîne customer nominale) | **PASS** |
+| Interaction A+B (double crédit ad hoc + (s,Q) pendant `EN_APPROVISIONNEMENT`) | **INCONCLUSIVE** |
+| Concurrence MTO client / REAPPRO autonome | **Runtime confirmé** |
+| Violation de conservation de la matière | **Runtime confirmé** |
+| Défaut `consommerMatieresPour()` (fabrication sans matière disponible) | **Runtime confirmé — bloqueur de validité matière avant DDMRP** |
+
+### 19.8 Répétition contrôlée à préparer
+
+Fixture propre, à exécuter manuellement, pour isoler la seule variable
+« matière » entre les deux conditions :
+
+- stock produit fini initial : **100** (identique à MTO-A) ;
+- stocks matière initiaux : **GPL_VRAC = 0 / BOUTEILLE_VIDE_12KG = 0 /
+  ACCESSOIRES_KIT = 0** ;
+- mode : **MTO** (occurrence 2 de la boîte « Mode de simulation SCOR ») ;
+- une seule commande, quantité **10** ;
+- seed **1001** ;
+- **aucun retard fournisseur forcé** ;
+- procédure de chargement et de contrôle identique à §18.2-§18.4.
+
+**Limite à garder en tête** : même avec cette fixture, le `REAPPRO_1`
+autonome peut encore apparaître (il dépend de la politique MTS, pas de
+la seule commande). Si c'est le cas, le run reste un test de la
+concurrence MTO/REAPPRO, et doit être relu comme tel, pas comme un MTO-B
+isolé. Le relevé du run devra donc distinguer explicitement
+« `REAPPRO_*` présent ou absent ».
+
+### 19.9 Ce qui reste à faire après ce run
+
+- Ne corriger **aucun** code dans cette phase : la correction de
+  `consommerMatieresPour()` et de la politique de blocage est une étape
+  ultérieure, à décider après validation de la répétition contrôlée.
+- Documenter la conservation de matière sur la répétition (matière
+  créditée vs matière consommée vs unités terminées).
+- Ne pas démarrer DDMRP tant que le défaut de §19.4 n'est pas traité ou
+  explicitement accepté comme exception.

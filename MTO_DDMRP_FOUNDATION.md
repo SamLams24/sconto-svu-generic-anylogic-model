@@ -2008,12 +2008,18 @@ réception ajoute une fraction d'heure, à relever dans le log.
   `zone=VERTE action=AUCUNE`. GPL : TOY ≈ 300, NFP = 600.
 - **B — NFP sous seuil.** Fichier `_AB`, « Stocks initiaux » override = 0, sans commande.
   Attendu au premier cycle : GPL `COMMANDE_APPRO` de 500 (TOG 425 arrondi au MOQ 125),
-  bouteilles 70, accessoires 40 ; une réception DDMRP par matière ; puis retour en VERTE
-  sans seconde commande tant qu'elle est ouverte.
+  bouteilles **80 observé** (TOG ≈ 71,73 arrondi au MOQ 10), accessoires 40 ; une
+  réception DDMRP par matière ; puis retour en VERTE sans seconde commande tant qu'elle
+  est ouverte. **Résultat runtime : PASS.**
 - **C — MTO pendant un approvisionnement DDMRP ouvert.** Fichier `_C` (GPL délai 60 h,
-  `ddmrpBucketHeures` 400), MTO, override = 0, une commande de 10, délai de première
-  commande à choisir entre le premier cycle DDMRP et l'échéance GPL (≈ 360 s simulées),
-  valeur à consigner. Attendu : GPL `COMMANDE_APPRO` de 4250 (TOG 4200 arrondi au MOQ) ;
+  `ddmrpBucketHeures` 400), MTO, override = 0, une commande de 10, seed 1001.
+  **Délai de première commande : 60 s simulées**, saisi dans « Contrôle commandes »
+  (le JSON ne porte pas ce paramètre). La case « Activer les écarts de temps métier »
+  doit être cochée, sinon le délai est ramené à 0. Ordre attendu :
+  premier cycle DDMRP (≈ 15 s, `cycleArbitrage`) < création `CMD_1` (60 s) < réception
+  DDMRP GPL (≈ 360 s simulées). Contrôle préalable : le log `[DDMRP]` doit afficher
+  `LT_h ≈ 60` pour GPL ; une valeur ≈ 6,1 h signifie qu'un autre fichier a été chargé
+  (le sélecteur doit pointer `scenario_DDMRP_FIXTURE_C.json`). Attendu : GPL `COMMANDE_APPRO` de 4250 (TOG 4200 arrondi au MOQ) ;
   NFP après cela = 4250 − 125 = 4125 > TOY 3000 → **aucune seconde commande** ; `CMD_1`
   couverte par l'Open Supply DDMRP (aucune réception MTO) ; à l'échéance, réservation,
   consommation, `[INVARIANT MATIERE] cloture CMD_1 : OK`. Marge à vérifier : bouteilles

@@ -1641,3 +1641,210 @@ DDMRP qui s'appuierait sur les traces Source comme source de vérité.
 MTO-1 est clos. La suite (correction des défauts, décision DDMRP) n'est
 pas engagée dans cette passe. Aucune correction de code n'a été
 lancée.
+
+---
+
+## 21. MTO-2 — Material integrity & concurrency
+
+**Statut : implémentation statique réalisée, runtime non exécuté.**
+Seul `model/SCONTO_SVU_GENERIC_MASTER.alp` est modifié, et uniquement
+dans le périmètre décrit ci-dessous. Aucun JSON modifié. DDMRP, ETO
+(hors code partagé) et C3/E4 ne sont pas touchés.
+
+### 21.1 Mini-audit des fonctions nécessaires
+
+Les fonctions réellement lues avant modification, avec leur rôle dans
+le défaut :
+
+| Fonction | Rôle avant MTO-2 | Défaut exploité |
+|---|---|---|
+| `consommerMatieresPour(idProduit)` (ancienne ligne 1288) | Décrémente `stockDisponible`, tronque à zéro, ne bloque jamais | Fabrication sans matière (confirmé run exploratoire §19) |
+| `matieresSuffisantesPourScenario()` (ligne ~4836) | Lecture de `stockDisponible` seul | Ignore les engagements : deux commandes peuvent lire la même matière libre |
+| `tracerEtPlanifierProductionCommande()` (~3378) | Contrôle lecture seule, puis planifie `LANCER_PRODUCTION` | Aucun engagement matière au moment de la planification |
+| `lancerProductionCommandeOrchestree()` (~5667) | Crée les `FluxEntity` des unités | Aucun contrôle au lancement |
+| `finaliserApprovisionnementCommande()` (~3423) | Crédite le manque calculé sur `stockDisponible` | Manque calculé sans tenir compte des engagements |
+| `declencherApprovisionnementCommande()`, `delaiApprovisionnementReelMax()` | Calculent le manque sur `stockDisponible` | Même lacune, cohérence de lecture |
+| Poste `consommeMatiere` (ligne ~46492) | Appelle la consommation avec `agent.typeProduit` seul | L'unité n'est pas rattachée à sa commande |
+| `fluxAppartientACommande()` (ligne ~8720) | Rattachement par préfixe `"<idCommande>_"` | Réutilisé pour l'attribution exacte |
+
+**Constats structurants vérifiés avant implémentation :**
+- Le seul consommateur de matière est le poste `sM1.3.2` (`consommeMatiere=true`
+  dans le scénario `scenario_ZENER_SA_Togo_v39.json`, seul poste de ce type).
+- Les trois fournisseurs du scénario ont `modeApproMRP: true`, donc
+  `evaluerApprosFournisseurs()` n'injecte aucun lot `APPRO_*` dans ce
+  scénario. Le chemin `PROD_*` (lot fournisseur éclaté au poste
+  `sM1.2.1`, puis consommation en `sM1.3.2` sans commande) est **latent**
+  ici mais **actif** dans un scénario sans MRP. Il est traité
+  explicitement (voir 21.2).
+- `libelleTypeProduitTrace()` retourne le nom du scénario : le
+  `typeProduit` de l'unité et celui de sa commande concordent, donc
+  utiliser la nomenclature de la commande propriétaire ne change pas la
+  quantité consommée pour les unités rattachées.
+
+### 21.2 Architecture retenue
+
+- **Stock physique** : `FicheMatiere.stockDisponible`, inchangé en rôle.
+- **Engagements** : nouveau champ `FicheMatiere.reservations`
+  (`LinkedHashMap<idCommande, quantité>`).
+- **Disponible** : `FicheMatiere.disponible() = stockDisponible − Σ réservations`.
+  Toute décision de disponibilité (`matieresSuffisantesPourScenario`,
+  `declencherApprovisionnementCommande`, `delaiApprovisionnementReelMax`,
+  `finaliserApprovisionnementCommande`) lit désormais `disponible()`.
+- **Engagement atomique** : `reserverMatierePourCommande(cmd, sc)`
+  vérifie toutes les lignes de nomenclature puis réserve **toutes ou
+  aucune**. Idempotent (`commandesAyantReserve`). Appelé :
+  1. dans `tracerEtPlanifierProductionCommande()`, après le contrôle
+     existant, avant `PRODUCTION_PLANIFIEE` (échec → `BLOQUE_MATIERE`) ;
+  2. en garde de tête de `lancerProductionCommandeOrchestree()` (couvre
+     tout chemin de lancement, y compris le carnet).
+- **Consommation rattachée** : `consommerMatieresPourUnite(produit, idFlux)`
+  identifie la commande propriétaire par `fluxAppartientACommande()` et
+  décrémente à la fois le stock et l'engagement de cette commande.
+  - Unité rattachée sans engagement suffisant → `IllegalStateException`
+    (`[INVARIANT MATIERE] consommation sans engagement`).
+  - Unité rattachée sans stock physique suffisant → `IllegalStateException`.
+  - Unité **non** rattachée (lot fournisseur) : ne consomme que la
+    disponibilité réelle (`disponible() ≥ besoin`), jamais les
+    engagements d'autrui ; sinon `IllegalStateException`.
+  - Plus aucune troncature à zéro : `Math.max(0, …)` supprimé du chemin
+    de consommation.
+- **Libération** : `libererReservationsCommande(cmd)` est appelée à la
+  clôture (`SERVIE`/`EN_RETARD`, chemin client, chemin REAPPRO, chemin
+  de livraison directe). Toute réservation résiduelle est libérée et
+  comptée comme violation.
+- **Réinitialisation** : `reinitialiserReservationsMatiere()` au démarrage
+  de run et à chaque réécriture des stocks initiaux
+  (`appliquerStocksInitiauxConfig()`).
+
+### 21.3 Décision sur `carnetCommandesMTO`
+
+**Non réactivé. Hors chemin opérationnel, documenté.** L'arbitrage
+concurrent est désormais assuré par l'engagement matière lui-même : une
+commande qui ne trouve pas de disponibilité déclenche son propre chemin
+d'approvisionnement, et ne peut pas réserver de matière déjà engagée.
+Le carnet (tri EDD + priorité) n'est donc pas nécessaire pour l'intégrité
+matière. Il reste inerte (aucun `add`), et `ordonnancerProduction()` ne
+s'exécute pas de façon utile. Un arbitrage par priorité ou EDD relève
+d'une décision de politique distincte, à prendre hors de MTO-2.
+
+`deciderTypeCommande()` reste non appelée et non modifiée.
+
+### 21.4 Invariants runtime ajoutés
+
+`verifierInvariantsMatiere(contexte)` est appelée à chaque clôture. Elle
+journalise `[INVARIANT MATIERE] <contexte> : OK` ou le nombre de
+violations, et incrémente `nbViolationsInvariantMatiere`. Elle vérifie :
+
+| Invariant | Mécanisme |
+|---|---|
+| stock physique ≥ 0 | contrôle à la consommation, aucune soustraction sans vérification |
+| Σ réservées ≤ stock physique | réservation refusée si `disponible() < besoin` ; consommation vérifiée |
+| aucune production sans matière engagée | réservation obligatoire à la planification et à la garde de lancement |
+| aucune double consommation | l'engagement d'une commande est décrémenté à chaque unité, consommation refusée si absent |
+| aucune réservation orpheline à l'état terminal | libération à la clôture + contrôle `commandeEstTerminale` |
+
+### 21.5 Vérifications statiques réalisées
+
+- XML du `.alp` bien formé (`xml.etree.ElementTree`).
+- 1684 balises `<Id>` AnyLogic, toutes uniques : aucun élément XML ajouté.
+- Code inséré (`FicheMatiere` + helpers) **compilé avec `javac`** contre des
+  stubs minimaux des types AnyLogic : succès. Ce n'est **pas** une build
+  AnyLogic complète ; les sites d'intégration (gardes, libérations,
+  appelant du poste) ne sont couverts que par la relecture du diff.
+- Ancien consommateur `consommerMatieresPour(` : supprimé ; un commentaire
+  qui le citait a été mis à jour.
+- Troncature restante : `Math.max(0, f.stockDisponible)` dans une somme de
+  reporting (ligne ~21443). Elle n'agit sur aucune décision ni sur aucune
+  consommation.
+
+**Non couvert par ces tests statiques** : build AnyLogic, comportement
+réel de l'exception `IllegalStateException` levée dans un poste (arrêt du
+run ou journalisation seule selon AnyLogic), comportement de run.
+
+### 21.6 Limites connues, à ne pas masquer
+
+- Le mécanisme A (crédit ad hoc de `finaliserApprovisionnementCommande()`)
+  continue de créer de la matière sans réception réelle. MTO-2 garantit
+  l'**intégrité de l'engagement**, pas la réalité physique de
+  l'approvisionnement : c'est la dette de cohérence Source / Open Supply
+  du §20.6, toujours ouverte.
+- La politique (s,Q) `calculerBesoinsNets()` lit encore `stockDisponible`
+  et non `disponible()`. Elle n'a pas été modifiée (hors lot, DDMRP
+  adjacent). Un engagement peut donc déclencher un réapprovisionnement
+  que la disponibilité réelle ne justifierait pas entièrement.
+- La réservation est synchrone dans un même appel de fonction : aucune
+  fenêtre de concurrence intra-événement. La concurrence réelle est
+  traitée par la séquence d'événements AnyLogic, à valider en MTO-C.
+
+### 21.7 Fixtures runtime — procédure manuelle
+
+Données réelles du scénario `scenario_ZENER_SA_Togo_v39.json`
+(nomenclature « SCENARIO DISTRIBUTION », §18.2) : besoin pour 10 unités =
+`GPL_VRAC 125`, `BOUTEILLE_VIDE_12KG 10`, `ACCESSOIRES_KIT 10`.
+Chargement, mode SCOR MTO et seed 1001 : identiques à §18.2 et §20.2.
+Stock produit fini : 100 pour toutes les fixtures.
+
+Pour chaque fixture, les logs à capturer sont les tags `[MATIERE]`,
+`[INVARIANT MATIERE]`, `[SOURCE]`, `[STOCK]`, `[MAKE]`, `[DELIVER]`, et
+l'export ABox/Excel de fin de run.
+
+**MTO-A — matière suffisante.**
+- Configuration : bouton « Stocks initiaux » non ouvert ; valeurs JSON par
+  défaut (`GPL_VRAC 600`, `BOUTEILLE_VIDE_12KG 250`, `ACCESSOIRES_KIT 300`).
+  Une commande, quantité 10.
+- Attendu : `[MATIERE] Reservation engagee pour CMD_1 (3 matiere(s))`
+  avant tout `[MAKE]` ; aucun `[SOURCE] ... en attente` ; aucun
+  `[STOCK] ... ordre de Q*` ; stock final attendu par arithmétique :
+  `GPL 475`, `BOUTEILLE 240`, `ACCESSOIRES 290` (si le (s,Q) ne réapprovisionne
+  pas, ce qui doit être vérifié dans les logs).
+- Assertions : `[INVARIANT MATIERE] cloture CMD_1 : OK` ; `terminalReached=OUI` ;
+  aucune exception ; stock ≥ 0 partout.
+
+**MTO-B — matière insuffisante.**
+- Configuration : bouton « Stocks initiaux », champ « Override global
+  matière » = 0. Une commande, quantité 10.
+- Attendu : `EN_APPROVISIONNEMENT`, crédit ad hoc (`[SOURCE] ... reception
+  terminee`), puis réservation `CMD_1` (`[MATIERE] Reservation engagee`)
+  **avant** `[MAKE]`. Consommation 125/10/10 rattachée à `CMD_1`.
+- Assertions : `[INVARIANT MATIERE] cloture CMD_1 : OK` ; aucun log
+  `consommation sans engagement` ; stock final = crédits totaux − 125/10/10.
+
+**MTO-C — concurrence sur matière limitée.**
+- Configuration : bouton « Stocks initiaux », « Override global matière » = 130 ;
+  bouton « Contrôle commandes » : limiter activé, nombre = 2, quantité fixe = 10.
+- Attendu : `CMD_1` réserve 125/10/10 (disponible 130 ≥ 125 GPL, 10 ≥ 10 bouteilles).
+  `CMD_2` ne peut pas réserver (`[MATIERE] Reservation refusee pour CMD_2`
+  sur GPL, disponible 5 < 125) : elle prend le chemin `EN_APPROVISIONNEMENT`,
+  reçoit son propre crédit ad hoc sur le manque, puis réserve.
+- Assertions : aucune réservation dépassant le stock (`[INVARIANT MATIERE] ... OK`
+  à chaque clôture) ; aucune consommation sans engagement ; ordre de clôture
+  observé versus ordre de création (conclusion du §4) ; pas de `BLOQUE_MATIERE`
+  artificiel sur `CMD_2`.
+
+**MTO-D — retard fournisseur forcé.**
+- Configuration : bouton « Perturbations » : cocher « Activer un retard
+  fournisseur forcé », cible `GPL_VRAC`, facteur `2.0` (valeur par défaut du
+  modèle, `facteurRetardFournisseur`), « Retard additionnel (heures) » =
+  **valeur à choisir par l'opérateur et à consigner** (aucune valeur n'existe
+  dans le modèle pour ce test), « N'appliquer le retard qu'à la première
+  réception ciblée » coché. Stock initial : `Override global matière` = 0 comme
+  MTO-B. Une commande, quantité 10.
+- Référence de promesse : aucune `promisedDelaySec` n'est définie dans le
+  scénario, donc `tPromise = tCreation + delaiPromessePourMode("MTO")` = création + **1800 s simulées**
+  (valeur de code, ligne ~8528).
+- Règle d'interprétation (correction §17.5) : relever `tClose` (instant de
+  `commandeEstTerminale` vrai) et calculer `tClose − tPromise`. `SERVIE` si
+  `tClose ≤ tPromise`, `EN_RETARD` si `tClose > tPromise`. **Aucun des deux
+  résultats n'est présumé à l'avance.**
+- Assertions : `[INVARIANT MATIERE] cloture CMD_1 : OK` ; réservation
+  présente avant `[MAKE]` ; le statut final est cohérent avec le signe de
+  `tClose − tPromise` ; aucune réservation orpheline.
+
+### 21.8 Ce qu'il faut renvoyer après le run manuel
+
+- Journal complet des `board.logEvent` pour chaque fixture.
+- Export ABox/Excel de fin de run, un par fixture.
+- Valeur de seed (attendue 1001), et pour MTO-D la valeur de retard
+  additionnel choisie.
+- Pour toute exception `IllegalStateException` : le message complet et
+  l'état affiché par AnyLogic (run arrêté ou non).

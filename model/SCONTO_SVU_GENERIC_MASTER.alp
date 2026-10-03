@@ -1285,39 +1285,6 @@ double dernierCalculBesoinNet = -1;
 // Decremente le stock des matieres consommees par une unite de "idProduit"
 // traitee sur un poste marque consommeMatiere=true (voir PosteGenericAgent).
 // Appele depuis l'action de sortie du poste (Exit.onExit).
-void consommerMatieresPour(String idProduit) {
-    if (idProduit == null) return;
-    for (ScenarioFlux sc : scenarios) {
-        if (!sc.typeProduit.equalsIgnoreCase(idProduit.trim())) continue;
-        for (LigneNomenclature l : sc.nomenclature) {
-            FicheMatiere f = trouverFicheMatiere(l.idMatiere);
-            if (f != null) {
-                double avant = f.stockDisponible;
-                if (avant + 1e-9 < l.quantiteParUnite) {
-                    ajouterSuiviDetaille(
-                        "Alerte matiere",
-                        "Stock matiere insuffisant pendant la production",
-                        "Une micro-activite consomme une matiere dont le stock disponible est inferieur au besoin unitaire.",
-                        "Agent operationnel de pilotage Make",
-                        "Agent Machine / Agent Produit",
-                        "Matiere " + l.idMatiere,
-                        "Besoin=" + String.format("%.2f", l.quantiteParUnite) + " ; disponible=" + String.format("%.2f", avant),
-                        "Stock matiere",
-                        "Production Make",
-                        "Stock matiere -> poste de fabrication",
-                        "M1.3 / MRP",
-                        "Continuer en mode degrade et signaler un besoin net.",
-                        "Stock insuffisant",
-                        "Stock consomme a zero",
-                        "Besoin net ; rupture matiere ; risque retard"
-                    );
-                }
-                f.stockDisponible = Math.max(0, f.stockDisponible - l.quantiteParUnite);
-            }
-        }
-        return;
-    }
-}
 
 // Rapport texte (config) : liste des fiches matiere et de leurs parametres
 String getRapportFichesMatiereConfig() {
@@ -3179,6 +3146,126 @@ void analyserStockCommandeOrchestree(CommandeAgent cmd) {
     // de ce seul point d'entree.
     analyserMatiereCommandeOrchestree(cmd);
 }
+// MTO-2 -- engagement matiere explicite. Une commande engage ses matieres avant
+// tout lancement de production ; la consommation d'une unite doit retrouver cet
+// engagement (ou, pour une unite non rattachee a une commande, une disponibilite
+// reelle), sinon elle echoue explicitement. Aucune troncature a zero.
+java.util.HashSet<String> commandesAyantReserve = new java.util.HashSet<String>();
+public int nbViolationsInvariantMatiere = 0;
+
+void reinitialiserReservationsMatiere() {
+    for (FicheMatiere f : fichesMatiere) {
+        if (f != null) f.reservations.clear();
+    }
+    commandesAyantReserve.clear();
+}
+
+boolean reserverMatierePourCommande(CommandeAgent cmd, ScenarioFlux sc) {
+    if (cmd == null || cmd.idCommande == null || sc == null || sc.nomenclature == null || sc.nomenclature.isEmpty()) return false;
+    if (commandesAyantReserve.contains(cmd.idCommande)) return true;
+    java.util.LinkedHashMap<FicheMatiere, Double> besoins = new java.util.LinkedHashMap<FicheMatiere, Double>();
+    for (LigneNomenclature l : sc.nomenclature) {
+        if (l == null || l.idMatiere == null || l.idMatiere.trim().isEmpty() || l.quantiteParUnite <= 0) return false;
+        FicheMatiere f = trouverFicheMatiere(l.idMatiere);
+        if (f == null) return false;
+        besoins.merge(f, l.quantiteParUnite * Math.max(1, cmd.qte), Double::sum);
+    }
+    for (java.util.Map.Entry<FicheMatiere, Double> e : besoins.entrySet()) {
+        if (e.getKey().disponible() + 1e-9 < e.getValue()) {
+            board.logEvent(String.format("[MATIERE] Reservation refusee pour %s : %s disponible=%.2f, besoin=%.2f",
+                cmd.idCommande, e.getKey().idMatiere, e.getKey().disponible(), e.getValue()));
+            return false;
+        }
+    }
+    for (java.util.Map.Entry<FicheMatiere, Double> e : besoins.entrySet()) {
+        e.getKey().reservations.merge(cmd.idCommande, e.getValue(), Double::sum);
+    }
+    commandesAyantReserve.add(cmd.idCommande);
+    board.logEvent("[MATIERE] Reservation engagee pour " + cmd.idCommande + " (" + besoins.size() + " matiere(s))");
+    return true;
+}
+
+void consommerMatieresPourUnite(String idProduit, String idFlux) {
+    if (idProduit == null) return;
+    CommandeAgent proprietaire = null;
+    for (CommandeAgent c : commandes) {
+        if (c != null && c.idCommande != null && fluxAppartientACommande(idFlux, c.idCommande)) {
+            proprietaire = c;
+            break;
+        }
+    }
+    ScenarioFlux sc = proprietaire != null ? scenarioPourCommande(proprietaire) : null;
+    if (sc == null) {
+        for (ScenarioFlux s : scenarios) {
+            if (s.typeProduit != null && s.typeProduit.equalsIgnoreCase(idProduit.trim())) {
+                sc = s;
+                break;
+            }
+        }
+    }
+    if (sc == null || sc.nomenclature == null) return;
+    String ownerId = proprietaire != null ? proprietaire.idCommande : null;
+    for (LigneNomenclature l : sc.nomenclature) {
+        if (l == null || l.quantiteParUnite <= 0) continue;
+        double q = l.quantiteParUnite;
+        FicheMatiere f = trouverFicheMatiere(l.idMatiere);
+        if (f == null || f.stockDisponible + 1e-9 < q) {
+            String msg = String.format("[INVARIANT MATIERE] consommation sans stock physique : %s, unite=%s, besoin=%.2f",
+                l.idMatiere, idFlux, q);
+            board.logEvent(msg);
+            throw new IllegalStateException(msg);
+        }
+        if (ownerId != null) {
+            Double r = f.reservations.get(ownerId);
+            if (r == null || r + 1e-9 < q) {
+                String msg = String.format("[INVARIANT MATIERE] consommation sans engagement : %s, commande=%s, unite=%s, reserve=%s, besoin=%.2f",
+                    l.idMatiere, ownerId, idFlux, r, q);
+                board.logEvent(msg);
+                throw new IllegalStateException(msg);
+            }
+            if (r - q <= 1e-9) f.reservations.remove(ownerId);
+            else f.reservations.put(ownerId, r - q);
+        } else if (f.disponible() + 1e-9 < q) {
+            String msg = String.format("[INVARIANT MATIERE] unite non rattachee sans disponibilite : %s, unite=%s, disponible=%.2f, besoin=%.2f",
+                l.idMatiere, idFlux, f.disponible(), q);
+            board.logEvent(msg);
+            throw new IllegalStateException(msg);
+        }
+        f.stockDisponible -= q;
+    }
+}
+
+void libererReservationsCommande(CommandeAgent cmd) {
+    if (cmd == null || cmd.idCommande == null) return;
+    double libere = 0;
+    for (FicheMatiere f : fichesMatiere) {
+        if (f == null) continue;
+        Double q = f.reservations.remove(cmd.idCommande);
+        if (q != null) libere += q;
+    }
+    commandesAyantReserve.remove(cmd.idCommande);
+    if (libere > 1e-9) {
+        nbViolationsInvariantMatiere++;
+        board.logEvent(String.format("[INVARIANT MATIERE] Reservation residuelle a la cloture de %s : %.2f", cmd.idCommande, libere));
+    }
+    verifierInvariantsMatiere("cloture " + cmd.idCommande);
+}
+
+void verifierInvariantsMatiere(String contexte) {
+    int violations = 0;
+    for (FicheMatiere f : fichesMatiere) {
+        if (f == null) continue;
+        if (f.stockDisponible < -1e-9) violations++;
+        if (f.totalReserve() > f.stockDisponible + 1e-9) violations++;
+        for (String idCmd : f.reservations.keySet()) {
+            CommandeAgent c = trouverCommandeParId(idCmd);
+            if (c == null || commandeEstTerminale(c)) violations++;
+        }
+    }
+    nbViolationsInvariantMatiere += violations;
+    board.logEvent("[INVARIANT MATIERE] " + contexte + " : " + (violations == 0 ? "OK" : violations + " violation(s)"));
+}
+
 void analyserMatiereCommandeOrchestree(CommandeAgent cmd) {
     if (cmd == null || !modeExecution) return;
 
@@ -3397,6 +3484,11 @@ void tracerEtPlanifierProductionCommande(CommandeAgent cmd) {
             + " : matieres encore insuffisantes apres verification.");
         return;
     }
+    if (!reserverMatierePourCommande(cmd, sc)) {
+        cmd.statut = "BLOQUE_MATIERE";
+        board.logEvent("[MAKE] Production refusee pour " + cmd.idCommande + " : engagement matiere impossible.");
+        return;
+    }
 
     String caM = idCoordinateurCommande("M", cmd);
     String supM = idSuperviseurCommande("M", 1, cmd);
@@ -3444,7 +3536,7 @@ void finaliserApprovisionnementCommande(CommandeAgent cmd) {
             continue;
         }
         double besoin = l.quantiteParUnite * Math.max(1, cmd.qte);
-        double manque = Math.max(0.0, besoin - f.stockDisponible);
+        double manque = Math.max(0.0, besoin - f.disponible());
         if (manque > 0.0001) f.stockDisponible += manque;
         if (reception.length() > 0) reception.append(" ; ");
         reception.append(l.idMatiere)
@@ -4229,6 +4321,7 @@ void appliquerStocksInitiauxConfig() {
         nbMatieres++;
     }
 
+    reinitialiserReservationsMatiere();
     String modeStock = overrideMatiereGlobal
         ? "override global explicite (" + profilTestActif + ")"
         : "stocks matières détaillés du JSON/configuration restaurés";
@@ -4656,7 +4749,7 @@ void forcerScenarioNominalPourProfilTest() {
 
 // C14.53 -- BUG RACINE CORRIGE. Cette fonction alimente e.typeProduit sur
 // chaque entite de production reellement creee. Or e.typeProduit est aussi
-// la cle EXACTE utilisee par consommerMatieresPour() pour retrouver la
+// la cle EXACTE utilisee par consommerMatieresPourUnite() pour retrouver la
 // nomenclature du produit (comparaison avec ScenarioFlux.typeProduit, ex.
 // "SCENARIO DISTRIBUTION"). Les deux premieres branches ci-dessous
 // renvoyaient un libelle decoratif ("Profil CAS 1 - livraison directe /
@@ -4855,7 +4948,7 @@ boolean matieresSuffisantesPourScenario(ScenarioFlux sc, int qte) {
             return false;
         }
         double besoin = l.quantiteParUnite * Math.max(1, qte);
-        if (f.stockDisponible + 1e-9 < besoin) return false;
+        if (f.disponible() + 1e-9 < besoin) return false;
     }
     return true;
 }
@@ -5385,7 +5478,7 @@ double delaiApprovisionnementReelMax(ScenarioFlux sc, int qteCommande) {
         if (l == null) continue;
         FicheMatiere f = trouverFicheMatiere(l.idMatiere);
         double besoin = l.quantiteParUnite * Math.max(1, qteCommande);
-        double disponible = f != null ? f.stockDisponible : 0.0;
+        double disponible = f != null ? f.disponible() : 0.0;
         if (besoin - disponible <= 0.0001) continue;
         double heures = f != null ? Math.max(0.0, f.delaiObtentionHeures) : 0.0;
         if (f != null && retardFournisseurCibleCorrespond(f)
@@ -5409,7 +5502,7 @@ void declencherApprovisionnementCommande(CommandeAgent cmd, ScenarioFlux sc, int
         if (l == null) continue;
         FicheMatiere f = trouverFicheMatiere(l.idMatiere);
         double besoin = l.quantiteParUnite * Math.max(1, qteCommande);
-        double disponible = f != null ? f.stockDisponible : 0.0;
+        double disponible = f != null ? f.disponible() : 0.0;
         double manque = Math.max(0, besoin - disponible);
         if (manque <= 0.0001) continue;
 
@@ -5666,6 +5759,11 @@ void enregistrerTraceDeliverApresProduction(CommandeAgent cmd) {
 
 void lancerProductionCommandeOrchestree(CommandeAgent cmd) {
     if (cmd == null || !modeExecution) return;
+    if (!reserverMatierePourCommande(cmd, scenarioPourCommande(cmd))) {
+        cmd.statut = "BLOQUE_MATIERE";
+        board.logEvent("[MAKE] Lancement refuse pour " + cmd.idCommande + " : engagement matiere absent.");
+        return;
+    }
 
     // C14.36 -- Make tourne toujours en temps reel (jamais mis a l'echelle) :
     // l'instant de debut est capture ici pour pouvoir ajouter, a la cloture,
@@ -5865,6 +5963,7 @@ void finaliserReceptionClientDirecte(CommandeAgent cmd) {
     // l'engagement client independamment du workflow operationnel.
     cmd.retardConstate = time() > cmd.tPromise;
     cmd.statut = (time() <= cmd.tPromise) ? "SERVIE" : "EN_RETARD";
+            libererReservationsCommande(cmd);
 
     // C14.9 -- DOUBLE COMPTAGE CORRIGE : nbMTS/nbMTO et sumLeadTimeMTS/MTO
     // etaient incrementes ici PUIS une seconde fois via
@@ -12982,6 +13081,7 @@ derniereMatiereRetardee = "";
 dernierFournisseurRetarde = "";
 dernierNbCommandesImpacteesRetardFournisseur = 0;
 actionsMetierDifferees.clear();
+reinitialiserReservationsMatiere();
 dernierPopupMetierA = -999999.0;
 try { arrivee.reset(); } catch (Throwable ignored) {}
 try { generateurCommandes.reset(); } catch (Throwable ignored) {}
@@ -13553,6 +13653,7 @@ if (refCommandeFlux.contains("CMD_") || refCommandeFlux.contains("REAPPRO_")) {
             // lever la garde anti-doublon.
             if (cmd.idCommande != null && cmd.idCommande.startsWith("REAPPRO_")) {
                 cmd.statut = "SERVIE";
+                libererReservationsCommande(cmd);
                 // VSM-FIX-03 -- Make n'utilise pas l'echelle Source/Deliver.
                 // Sa duree metier est donc l'ecart simule observe, ajoute une
                 // seule fois avant l'imputation aux commandes clientes liees.
@@ -13604,6 +13705,7 @@ if (refCommandeFlux.contains("CMD_") || refCommandeFlux.contains("REAPPRO_")) {
             // la logique terminale historique ci-dessous, inchangee.
             cmd.retardConstate = time() > cmd.tPromise;
             cmd.statut = (time() <= cmd.tPromise) ? "SERVIE" : "EN_RETARD";
+            libererReservationsCommande(cmd);
 
             // C14.46 -- ce chemin de cloture (post-production) est synchrone : il
             // n'appelle jamais planifierAvecEchelle("LIVRAISON_DIRECTE"/
@@ -46489,7 +46591,7 @@ if (estStockPhysique && !main.estFluxVisuelSeulement(agent)) {
 // nomenclature du produit traite, la quantite necessaire a une unite. Sans
 // impact si aucune nomenclature n'a ete declaree pour ce produit.
 if (consommeMatiere) {
-    ((Main) getOwner()).consommerMatieresPour(agent.typeProduit);
+    ((Main) getOwner()).consommerMatieresPourUnite(agent.typeProduit, agent.idFlux);
 }
 
 // --- ECLATEMENT DU LOT D'APPROVISIONNEMENT EN PRODUITS INDIVIDUELS ---
@@ -55269,6 +55371,18 @@ public class FicheMatiere implements java.io.Serializable {
     public double dernierBesoinNet = 0;
     public double dernierOrdrePasse = 0;
     public double dernierCalcul = -1;
+
+    public java.util.LinkedHashMap<String, Double> reservations = new java.util.LinkedHashMap<String, Double>();
+
+    public double totalReserve() {
+        double total = 0;
+        for (double q : reservations.values()) total += q;
+        return total;
+    }
+
+    public double disponible() {
+        return stockDisponible - totalReserve();
+    }
 
     public FicheMatiere() {}
 

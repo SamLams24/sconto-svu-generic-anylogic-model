@@ -2057,3 +2057,28 @@ réception ajoute une fraction d'heure, à relever dans le log.
   l'effet réel sur AnyLogic n'est pas vérifié.
 - **Build** non effectuée. Vérifié : XML bien formé, 1685 IDs uniques, `javac` sur le code
   des classes et helpers, tests 22.8.
+
+### 22.12 Origine des réceptions et campagne runtime (clôture)
+
+**Origine** (`ReceptionAttendue.origine`, trace uniquement, aucune décision ne la lit) :
+- `S_Q` : politique (s,Q) historique ;
+- `DDMRP` : décision DDMRP ;
+- `MTS` / `MTO` / `ETO` : type réel de la commande ayant déclenché l'approvisionnement
+  (`origineReceptionPourCommande`). Les REAPPRO_* sont des commandes MTS. Un type absent
+  ou inconnu retombe sur MTO. ETO passe bien par ce chemin.
+
+**Campagne runtime** :
+
+| Essai | Résultat |
+|---|---|
+| MTO-2 | PASS |
+| DDMRP-A | PASS |
+| DDMRP-B | PASS (bouteilles 80 observé, TOG ≈ 71,73 arrondi au MOQ 10) |
+| DDMRP-C | PASS complet |
+| Non-régression MTS | PASS fonctionnel : REAPPRO_1 produit 10/10 ; `[INVARIANT MATIERE] cloture REAPPRO_1 : OK` ; CMD_1 livrée et clôturée ; `[INVARIANT MATIERE] cloture CMD_1 : OK` ; aucune exception ; aucune logique DDMRP active |
+
+**Anomalie corrigée** : les réceptions de REAPPRO_1 étaient journalisées `origine=MTO`
+alors qu'il s'agit d'une commande MTS. Cause : libellé codé en dur dans
+`couvrirManqueMatierePourCommande`. Quantités, allocations, échéances, réservations,
+DDMRP, (s,Q) et workflow inchangés. Tests statiques : `REAPPRO_1` (MTS) → MTS ; MTO → MTO ;
+ETO → ETO ; type inconnu → MTO ; quantités, allocations et échéances identiques (48 PASS / 0 FAIL).

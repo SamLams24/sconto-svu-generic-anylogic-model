@@ -3353,6 +3353,13 @@ void libererAllocationsCommande(String idCommande) {
 // Couvre le manque d'une matiere pour une commande : d'abord par l'Open Supply deja
 // ouvert (sans nouvelle reception), puis par une seule reception MTO pour le reste.
 // Retourne {quantite couverte au total pour la commande, quantite nouvelle commandee}.
+// Origine d'une reception creee pour une commande : son type reel (MTS, MTO, ETO).
+// Les REAPPRO_* sont des commandes MTS ; un type absent ou inconnu retombe sur MTO.
+String origineReceptionPourCommande(CommandeAgent cmd) {
+    if ("MTS".equals(cmd.typeCommande) || "MTO".equals(cmd.typeCommande) || "ETO".equals(cmd.typeCommande)) return cmd.typeCommande;
+    return cmd.idCommande != null && cmd.idCommande.startsWith("REAPPRO_") ? "MTS" : "MTO";
+}
+
 double[] couvrirManqueMatierePourCommande(FicheMatiere f, CommandeAgent cmd, double manque, double dateArrivee) {
     double dejaAlloue = openSupplyAllouePourCommande(f, cmd.idCommande);
     double reste = Math.max(0, manque - dejaAlloue);
@@ -3360,7 +3367,7 @@ double[] couvrirManqueMatierePourCommande(FicheMatiere f, CommandeAgent cmd, dou
     reste -= prise;
     double nouvelle = 0;
     if (reste > 1e-9) {
-        ReceptionAttendue r = creerReceptionOpenSupply(f, reste, dateArrivee, "MTO", cmd.idCommande);
+        ReceptionAttendue r = creerReceptionOpenSupply(f, reste, dateArrivee, origineReceptionPourCommande(cmd), cmd.idCommande);
         if (r != null) {
             r.allocations.put(cmd.idCommande, reste);
             nouvelle = reste;
@@ -55627,6 +55634,8 @@ public class ReceptionAttendue implements java.io.Serializable {
     public double retardForceHeures = 0;
 
     public long idReception = 0;
+    // Origine : S_Q (politique (s,Q) historique), DDMRP (decision DDMRP),
+    // MTS / MTO / ETO (type reel de la commande qui a declenche l'approvisionnement).
     public String origine = "S_Q";
     public String idCommande = "";
     public String statut = "OUVERTE";

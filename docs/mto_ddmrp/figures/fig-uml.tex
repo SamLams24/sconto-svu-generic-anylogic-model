@@ -1,17 +1,17 @@
 \begin{figure}[H]
   \centering
   \begin{tikzpicture}[font=\small,
-    cls/.style={draw=ink, rounded corners=2pt, fill=white, align=left, inner sep=4pt, text width=3.7cm},
+    cls/.style={draw=ink, rounded corners=2pt, fill=white, align=left, inner sep=3pt, text width=3.9cm, font=\scriptsize},
     rel/.style={-{Stealth[length=2.2mm]}, ink, thick},
     lbl/.style={font=\scriptsize, fill=white, inner sep=1pt}]
     \node[cls] (cmd) at (0,0) {\textbf{CommandeAgent}\\[2pt]
-      \texttt{idCommande}\\\texttt{typeCommande} (MTS / MTO / ETO)\\\texttt{qte}, \texttt{tPromise}\\\texttt{statut}};
+      \texttt{idCommande}\\\texttt{typeCommande}\\(MTS / MTO / ETO)\\\texttt{qte}\\\texttt{tPromise}\\\texttt{statut}};
     \node[cls] (fm) at (5.6,0) {\textbf{FicheMatiere}\\[2pt]
       \texttt{idMatiere}\\\texttt{stockDisponible}\\\texttt{reservations}\\\texttt{receptionsAttendues}\\\texttt{consommeParCommande}};
     \node[cls] (rec) at (11.2,0) {\textbf{ReceptionAttendue}\\[2pt]
-      \texttt{quantite}, \texttt{dateArriveePrevue}\\\texttt{origine} (S\_Q, DDMRP, MTS, MTO, ETO)\\\texttt{statut} (OUVERTE / RECUE)\\\texttt{allocations}};
-    \node[cls] (db) at (5.6,-6.0) {\textbf{DDMRPBuffer}\\[2pt]
-      \texttt{actif}, \texttt{adu}, \texttt{leadTimeHeures}\\\texttt{zoneRouge}, \texttt{zoneJaune}, \texttt{zoneVerte}\\\texttt{topOfRed}, \texttt{topOfYellow}, \texttt{topOfGreen}\\\texttt{openSupply}, \texttt{qualifiedDemand}, \texttt{netFlowPosition}\\\texttt{statut}, \texttt{priorite}};
+      \texttt{quantite}\\\texttt{dateArriveePrevue}\\\texttt{origine}\\(S\_Q, DDMRP, MTS, MTO, ETO)\\\texttt{statut}\\(OUVERTE / RECUE)\\\texttt{allocations}};
+    \node[cls] (db) at (5.6,-6.2) {\textbf{DDMRPBuffer}\\[2pt]
+      \texttt{actif}\\\texttt{adu}\\\texttt{leadTimeHeures}\\\texttt{zoneRouge}, \texttt{zoneJaune}\\\texttt{zoneVerte}\\\texttt{topOfRed}, \texttt{topOfYellow}\\\texttt{topOfGreen}\\\texttt{openSupply}\\\texttt{qualifiedDemand}\\\texttt{netFlowPosition}\\\texttt{statut}, \texttt{priorite}};
     \draw[rel] (cmd.east) -- node[lbl, above] {nomenclature} (fm.west);
     \draw[rel] (fm.east) -- node[lbl, above] {0..*} (rec.west);
     \draw[rel] (fm.south) -- node[lbl, right] {0..1} (db.north);

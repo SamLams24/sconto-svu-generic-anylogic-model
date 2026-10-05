@@ -3,7 +3,8 @@
 Le DDMRP (\textit{Demand Driven Material Requirements Planning}) est une méthode de gestion
 des matières proposée par C.~Ptak et C.~Smith~\cite{ptak}. Elle se situe dans la lignée du MRP
 (\textit{Material Requirements Planning})~\cite{orlicky}, mais elle pose une autre question.
-Le MRP calcule des besoins à partir d'un programme de production prévisionnel. Le DDMRP
+Le MRP calcule les besoins dépendants à partir notamment du programme directeur de production, des
+nomenclatures, des stocks disponibles et des délais d'approvisionnement. Le DDMRP
 protège la matière par des tampons (\textit{buffers}) placés à des points stratégiques, et
 déclenche les réapprovisionnements à partir de la consommation réelle et de la demande
 qualifiée. Il répond à la question : \emph{combien de matière faut-il protéger ou
@@ -43,7 +44,8 @@ planifié. Sous le TOR, la zone rouge exige une action immédiate (\cref{fig:buf
 \section{Paramètres et formules}
 
 Le dimensionnement utilise six paramètres : l'ADU (\textit{Average Daily Usage}, consommation
-moyenne par heure métier), le lead time LT (en heures métier, durée de réception et de contrôle
+moyenne). Le nom anglais évoque un usage journalier ; dans SCONTO-SVU, cette grandeur est calculée en
+unités par heure métier, pour rester cohérente avec l'horloge métier du simulateur. Le lead time LT (en heures métier, durée de réception et de contrôle
 incluse), le facteur de lead time LTF, le facteur de variabilité VF, le MOQ (quantité minimale
 de commande, multiple auquel on arrondit) et le cycle de commande \emph{orderCycle}.
 
@@ -95,7 +97,9 @@ L'horloge métier utilisée par le DDMRP est
 heuresMetier(t) = \frac{(t - tempsDebutSimulation)\times simToRealSeconds}{3600},
 \]
 où \jv{tempsDebutSimulation} est l'instant de début effectif du run. Le temps écoulé avant ce
-début, par exemple pendant le démarrage interactif, n'entre donc pas dans l'ADU.
+début, par exemple pendant le démarrage interactif, n'entre donc pas dans l'ADU. La même distinction
+éclaire la chronologie du cas DDMRP-C (\cref{ch:cas}) : les délais de planification sont relatifs au
+démarrage effectif du run, tandis que les instants cités sont absolus sur l'horloge AnyLogic.
 
 L'ADU, le lead time et les zones sont calculés en temps métier. La fonction \jv{dureeEchelle()}
 sert seulement à planifier les événements dans AnyLogic, par exemple l'arrivée d'une réception.

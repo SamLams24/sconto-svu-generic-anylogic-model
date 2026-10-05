@@ -39,9 +39,14 @@ correct, puisque la matière est bien réservée avant Make. Il reste toutefois 
 une reprise événementielle, lancée dès la réception d'un Open Supply alloué, éviterait cette attente.
 Cette piste est traitée au \cref{ch:apports}.
 
-Un point reste à expliquer. La planification de la commande était à $T+181{,}9$, alors que sa création est
-observée vers $T \approx 348$. Les journaux fournis ne justifient pas cet écart ; il doit être élucidé
-avant de conclure sur la latence de création des commandes.
+Les instants de cette chronologie sont de deux natures. Le run a démarré effectivement à $T \approx 166{,}1$
+sur l'horloge absolue d'AnyLogic. Le délai de première commande, $T+181{,}9$, est relatif à ce démarrage
+effectif. La création de \jv{CMD\_1} est donc observée à l'instant absolu
+\[
+166{,}1 + 181{,}9 \approx 348{,}0,
+\]
+ce qui correspond au $T \approx 348$ des observations. Cette distinction entre temps relatif et temps
+absolu est celle de la section « Temps métier et temps de simulation » du \cref{ch:ddmrp}.
 
 \section{Synthèse de la campagne}
 

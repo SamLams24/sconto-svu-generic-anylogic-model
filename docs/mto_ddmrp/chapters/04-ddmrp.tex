@@ -1,0 +1,105 @@
+\chapter{DDMRP : principe, dimensionnement et temps}\label{ch:ddmrp}
+
+Le DDMRP (\textit{Demand Driven Material Requirements Planning}) est une méthode de gestion
+des matières proposée par C.~Ptak et C.~Smith~\cite{ptak}. Elle se situe dans la lignée du MRP
+(\textit{Material Requirements Planning})~\cite{orlicky}, mais elle pose une autre question.
+Le MRP calcule des besoins à partir d'un programme de production prévisionnel. Le DDMRP
+protège la matière par des tampons (\textit{buffers}) placés à des points stratégiques, et
+déclenche les réapprovisionnements à partir de la consommation réelle et de la demande
+qualifiée. Il répond à la question : \emph{combien de matière faut-il protéger ou
+réapprovisionner maintenant ?} Il ne décide pas quelle commande client doit recevoir cette
+matière ; cette décision relève de la logique de commande (\cref{ch:mto-ddmrp}).
+
+\section{Quatre grandeurs}
+
+\begin{description}
+  \item[On Hand (stock physique)] la quantité réellement présente en stock.
+  \item[Open Supply (approvisionnements ouverts)] la quantité commandée au fournisseur et non
+    encore reçue : ce qui est déjà en route.
+  \item[Qualified Demand (demande qualifiée)] la demande non encore satisfaite que le buffer
+    doit couvrir. Elle exclut la demande future trop lointaine, sauf les pics.
+  \item[Net Flow Position (NFP, position de flux net)] la grandeur de décision :
+    \begin{equation}\label{eq:nfp}
+      NFP = OnHand + OpenSupply - QualifiedDemand.
+    \end{equation}
+\end{description}
+
+Le stock physique seul ne suffit pas à décider. Avec un stock nul, une commande fournisseur
+de 500 unités ouverte et une demande qualifiée de 125 unités, \cref{eq:nfp} donne
+$NFP = 0 + 500 - 125 = 375$. La position réelle est donc de 375 unités, dont 125 sont déjà
+promises, et une nouvelle commande ne se justifie pas (\cref{fig:nfp}).
+
+\input{figures/fig-nfp}
+
+\section{Buffers rouge, jaune et vert}
+
+Un buffer découpe la plage de NFP en trois zones séparées par deux seuils : le \emph{top of
+red} (TOR) et le \emph{top of yellow} (TOY). Au-dessus du TOY, la zone verte indique une
+position saine. Entre TOR et TOY, la zone jaune signale qu'un réapprovisionnement doit être
+planifié. Sous le TOR, la zone rouge exige une action immédiate (\cref{fig:buffer}).
+
+\input{figures/fig-buffer}
+
+\section{Paramètres et formules}
+
+Le dimensionnement utilise six paramètres : l'ADU (\textit{Average Daily Usage}, consommation
+moyenne par heure métier), le lead time LT (en heures métier, durée de réception et de contrôle
+incluse), le facteur de lead time LTF, le facteur de variabilité VF, le MOQ (quantité minimale
+de commande, multiple auquel on arrondit) et le cycle de commande \emph{orderCycle}.
+
+Les formules suivantes sont celles du noyau implémenté dans SCONTO-SVU. Elles ne doivent pas
+être confondues avec la présentation de la méthode dans la littérature.
+
+\begin{align}
+  \text{Jaune}          &= ADU \times LT \label{eq:jaune}\\
+  \text{Base rouge}     &= ADU \times LT \times LTF \label{eq:base}\\
+  \text{Sécurité rouge} &= \text{Base rouge} \times VF \label{eq:secu}\\
+  \text{Rouge (TOR)}    &= \text{Base rouge} + \text{Sécurité rouge} \label{eq:rouge}\\
+  \text{Verte}          &= \max\bigl(MOQ,\; ADU \times orderCycle,\; ADU \times LT \times LTF\bigr) \label{eq:verte}\\
+  \text{TOY}            &= \text{Rouge} + \text{Jaune} \label{eq:toy}\\
+  \text{TOG}            &= \text{TOY} + \text{Verte} \label{eq:tog}
+\end{align}
+
+La décision suit une règle à deux seuils. Si $NFP \le TOR$, la position est rouge ; si
+$TOR < NFP \le TOY$, elle est jaune ; sinon, elle est verte. Lorsque $NFP \le TOY$, une
+commande est passée pour $TOG - NFP$, arrondie au multiple supérieur du MOQ.
+
+\begin{table}[H]
+  \centering
+  \caption{Statut des formules : littérature DDMRP et implémentation SCONTO-SVU.}\label{tab:statut-formules}
+  \begin{tabularx}{\textwidth}{@{}YY@{}}
+    \toprule
+    Élément & Statut \\
+    \midrule
+    Définition des quatre grandeurs et de la NFP (\cref{eq:nfp}) & concept de la méthode DDMRP~\cite{ptak} \\
+    Principe des trois zones et de la décision par seuils & concept de la méthode DDMRP~\cite{ptak} \\
+    Formules \cref{eq:jaune} à \cref{eq:tog} & \textbf{implémentation SCONTO-SVU} : valeurs à consolider bibliographiquement \\
+    Arrondi au multiple du MOQ & \textbf{implémentation SCONTO-SVU} \\
+    Valeurs des paramètres dans les fixtures & \textbf{paramètres de test}, non industriels \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Une note de méthode s'impose. Le choix du facteur de lead time, du facteur de variabilité et
+de la composante \emph{orderCycle} doit encore être consolidé bibliographiquement, puis calibré
+avec des données industrielles. Les paramètres des fixtures ne sont pas des paramètres réels
+de ZENER.
+
+\section{Temps métier et temps de simulation}
+
+Le modèle a deux horloges : celle du moteur AnyLogic, en secondes simulées, et l'horloge
+métier, où un lead time de six heures dure six heures. Le lien est le facteur
+\jv{simToRealSeconds} : une seconde simulée représente un nombre donné de secondes réelles.
+L'horloge métier utilisée par le DDMRP est
+\[
+heuresMetier(t) = \frac{(t - tempsDebutSimulation)\times simToRealSeconds}{3600},
+\]
+où \jv{tempsDebutSimulation} est l'instant de début effectif du run. Le temps écoulé avant ce
+début, par exemple pendant le démarrage interactif, n'entre donc pas dans l'ADU.
+
+L'ADU, le lead time et les zones sont calculés en temps métier. La fonction \jv{dureeEchelle()}
+sert seulement à planifier les événements dans AnyLogic, par exemple l'arrivée d'une réception.
+Modifier \jv{simToRealSeconds} accélère ou ralentit le déroulement du run sans changer le sens
+économique du buffer : à état métier identique, les zones ne changent pas (\cref{ch:cas}).
+Les délais de promesse client suivent la même règle : ils sont exprimés en secondes métier et
+convertis une seule fois en instant de simulation (\jv{echeancePromesse}).

@@ -1,0 +1,109 @@
+% Compilation requise : XeLaTeX (latexmk -xelatex main.tex)
+% Style repris du projet SCONTO-SVU (preamble.tex racine), complete par TikZ.
+\usepackage[a4paper,margin=2.5cm]{geometry}
+\usepackage{fontspec}
+\usepackage[french]{babel}
+\usepackage{microtype}
+\usepackage{setspace}
+\usepackage{titlesec}
+\usepackage[normalem]{ulem}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{siunitx}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,calc,fit,backgrounds,shapes.geometric,decorations.pathreplacing}
+\usepackage{amsmath,amssymb}
+\usepackage{hyperref}
+\usepackage[nameinlink,noabbrev]{cleveref}
+\crefname{chapter}{chapitre}{chapitres}
+\Crefname{chapter}{Chapitre}{Chapitres}
+\crefname{figure}{figure}{figures}
+\Crefname{figure}{Figure}{Figures}
+\crefname{table}{tableau}{tableaux}
+\Crefname{table}{Tableau}{Tableaux}
+\crefname{equation}{équation}{équations}
+\Crefname{equation}{Équation}{Équations}
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+\usepackage{ifthen}
+
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+\IfFontExistsTF{Times New Roman}{
+  \setmainfont{Times New Roman}
+}{
+  \setmainfont{TeX Gyre Termes}
+}
+
+\IfFontExistsTF{Arial}{
+  \newfontfamily\ArialFont{Arial}
+}{
+  \newfontfamily\ArialFont{TeX Gyre Heros}
+}
+
+\IfFontExistsTF{Arial Black}{
+  \newfontfamily\ArialBlackFont{Arial Black}
+}{
+  \newfontfamily\ArialBlackFont{TeX Gyre Heros}[BoldFont=* Bold]
+}
+
+% Palette sobre, utilisee uniquement pour donner un sens aux schemas.
+\definecolor{ink}{RGB}{33,33,33}
+\definecolor{muted}{RGB}{110,110,110}
+\definecolor{paper}{RGB}{246,246,244}
+\definecolor{mtsc}{RGB}{70,110,160}     % MTS / stock
+\definecolor{mtoc}{RGB}{190,120,40}     % MTO / commande
+\definecolor{ddmrpred}{RGB}{185,70,60}
+\definecolor{ddmrpyel}{RGB}{220,180,60}
+\definecolor{ddmrpgrn}{RGB}{90,150,90}
+\definecolor{osc}{RGB}{110,90,150}      % Open Supply
+\definecolor{resc}{RGB}{60,140,140}     % reservation
+
+\setstretch{1.12}
+\setlength{\parindent}{0.6cm}
+\setlength{\parskip}{0pt}
+\setlist{nosep,leftmargin=*}
+
+\titleformat{\chapter}[block]
+  {\ArialBlackFont\bfseries\fontsize{13}{15}\selectfont}
+  {\thechapter.}{0.6em}{}[\vspace{0.25ex}\titlerule]
+\titlespacing*{\chapter}{0pt}{-10pt}{16pt}
+
+\titleformat{\section}
+  {\ArialFont\bfseries\fontsize{11}{13}\selectfont}
+  {\thesection}{0.6em}{}
+\titleformat{\subsection}
+  {\ArialFont\bfseries\fontsize{11}{13}\selectfont}
+  {\thesubsection}{0.6em}{}
+
+\captionsetup{font=small,labelfont=bf,justification=centering}
+\sisetup{locale=FR,detect-all}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  citecolor=black,
+  urlcolor=black,
+  pdftitle={Intégration des stratégies MTO et DDMRP dans SCONTO-SVU},
+  pdfauthor={}
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small SCONTO-SVU : MTO et DDMRP}
+\fancyhead[R]{\small Présentation technique et validation}
+\fancyfoot[C]{\small Page \thepage\ sur \pageref{LastPage}}
+\renewcommand{\headrulewidth}{0.3pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% Terme technique : code Java en police machine, premiere occurrence expliquee dans le texte.
+\newcommand{\jv}[1]{\texttt{#1}}
+\newcommand{\Etat}[1]{\texttt{#1}}

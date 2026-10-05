@@ -1,0 +1,24 @@
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[font=\small, >=Stealth, node distance=1.0cm,
+    dec/.style={draw=ink, diamond, aspect=2.4, align=center, inner sep=2pt, fill=white},
+    act/.style={draw=ink, rounded corners=3pt, align=center, inner sep=3pt, fill=white, text width=3.0cm},
+    tr/.style={-{Stealth[length=2mm]}, thick}]
+    \node[act] (rcv) {Traiter les réceptions\\échues de la matière};
+    \node[dec, below=of rcv] (ddm) {Matière gérée\\par DDMRP ?};
+    \node[act, fill=ddmrpgrn!20, below=of ddm, xshift=-3.8cm] (dec) {\texttt{decisionDDMRP()}\\NFP, zones, ordre DDMRP};
+    \node[act, below=1.2cm of dec] (end1) {Sortie : (s,Q) non appliquée\\à cette matière};
+    \node[dec, below=of ddm, xshift=3.8cm] (rea) {Production autonome\\REAPPRO en cours ?};
+    \node[act, below=1.2cm of rea, fill=ink!6] (skip) {Passer la décision (s,Q)\\pour cette matière};
+    \node[act, fill=mtsc!15, right=0.9cm of rea] (sq) {Politique (s,Q) historique\\point de commande, Q*};
+    \draw[tr] (rcv) -- (ddm);
+    \draw[tr] (ddm) -- node[above, font=\scriptsize] {oui} (dec);
+    \draw[tr] (dec) -- (end1);
+    \draw[tr] (ddm) -- node[above, font=\scriptsize] {non} (rea);
+    \draw[tr] (rea) -- node[above, font=\scriptsize] {oui} (skip);
+    \draw[tr] (rea) -- node[above, font=\scriptsize] {non} (sq);
+  \end{tikzpicture}
+  \caption{Coexistence : une matière est pilotée soit par DDMRP, soit par la politique (s,Q),
+    jamais par les deux.}
+  \label{fig:arbre}
+\end{figure}

@@ -1,0 +1,47 @@
+\chapter{Réservation matière : renforcement MTO-2}\label{ch:mto2}
+
+Chaque matière est décrite par une fiche (classe \jv{FicheMatiere}). Son champ
+\jv{stockDisponible} représente le stock physique : la quantité réellement présente. MTO-2
+ajoute à la fiche une table \jv{reservations}, qui associe à chaque commande la quantité
+qu'elle a engagée. La quantité libre pour une nouvelle production s'obtient par soustraction :
+\[
+\text{disponibilité opérationnelle} = \text{stock physique} - \sum \text{réservations}.
+\]
+Une réservation ne modifie pas le stock physique ; elle modifie seulement la disponibilité.
+\cref{fig:reservation} illustre ce point avec 200 unités de GPL : \jv{CMD\_1} en réserve
+125, et la disponibilité tombe à 75 unités.
+
+\input{figures/fig-reservation}
+
+\section{Réservation atomique}
+
+Une commande est réservée de manière atomique : soit toutes les matières de sa nomenclature
+sont réservables, soit elle n'engage aucune matière. Une commande qui demande du GPL, des
+bouteilles et des accessoires ne réserve pas le GPL seul si les bouteilles manquent. Cette
+règle évite de bloquer de la matière sans pouvoir produire. La fonction
+\jv{reserverMatierePourCommande} contrôle toutes les lignes avant d'écrire la moindre
+réservation.
+
+\section{Consommation contrôlée}
+
+La consommation physique se fait unité par unité, au poste qui consomme la matière. La
+fonction \jv{consommerMatieresPourUnite} identifie la commande à laquelle appartient l'unité,
+puis décrémente à la fois le stock physique et la réservation de cette commande. Deux cas
+refusent la consommation : la commande n'a pas de réservation suffisante, ou le stock
+physique est insuffisant. Le système lève alors une erreur explicite, au lieu de ramener la
+quantité à zéro.
+
+Ce choix corrige un défaut de la version antérieure. Le modèle consommait la matière demandée
+même lorsque le stock était insuffisant, en le ramenant à zéro. Des unités étaient fabriquées
+sans matière disponible, sans signalement. Le \cref{ch:cas} rapporte cette observation.
+
+\section{Invariants matière}
+
+Quatre invariants sont contrôlés à chaque clôture de commande, et leur résultat est journalisé :
+\begin{itemize}
+  \item le stock physique n'est jamais négatif ;
+  \item la somme des réservations ne dépasse pas le stock physique ;
+  \item une production ne démarre pas sans matière engagée ;
+  \item aucune réservation ne reste orpheline à l'état terminal de la commande.
+\end{itemize}
+Le journal \jv{[INVARIANT MATIERE] cloture CMD\_1 : OK} atteste que ces contrôles sont satisfaits.

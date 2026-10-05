@@ -1,0 +1,59 @@
+\chapter{Architecture et Open Supply unifié}\label{ch:architecture}
+
+\section{Quatre classes}
+
+Quatre classes portent le mécanisme (\cref{fig:uml}). Les noms sont ceux du code à la révision
+validée ; les autres attributs ne sont pas représentés.
+
+\begin{itemize}
+  \item \jv{CommandeAgent} : une commande client ou un ordre autonome \jv{REAPPRO\_n}. Elle porte
+    son type (MTS, MTO ou ETO), sa quantité, son échéance et son statut.
+  \item \jv{FicheMatiere} : une matière. Elle porte le stock physique (\jv{stockDisponible}), les
+    réservations, les réceptions attendues et, optionnellement, un buffer DDMRP.
+  \item \jv{DDMRPBuffer} : les paramètres et l'état du buffer d'une matière (ADU, lead time, zones,
+    NFP, Qualified Demand décomposée, statut). Il ne contient pas de logique : les calculs sont
+    dans les fonctions de la classe principale.
+  \item \jv{ReceptionAttendue} : une quantité commandée et non encore reçue, avec son échéance,
+    son origine, son statut et ses allocations à des commandes.
+\end{itemize}
+
+\input{figures/fig-uml}
+
+La fiche matière est la source de vérité pour le stock. Une réservation ne modifie pas ce stock ;
+elle réduit la disponibilité opérationnelle. Le buffer ne possède aucun stock : il décrit une
+situation et en déduit une décision. Une réception n'est jamais un stock : elle le devient lorsqu'elle
+est créditée.
+
+\section{Open Supply : une représentation unique}
+
+Toute matière commandée mais non encore reçue est une \jv{ReceptionAttendue} dans la fiche
+matière. L'ensemble de ces réceptions forme l'Open Supply de la matière. Cette représentation
+unique répond à un problème précis. Auparavant, l'approvisionnement lancé par une commande MTO
+était crédité directement au moment de la finalisation, sans être visible pour les autres
+décisions. Une politique DDMRP, qui doit savoir ce qui est déjà commandé, ne pouvait pas le voir.
+
+Le cycle de vie d'une réception est représenté sur \cref{fig:open-supply}. Elle est créée, reste
+ouverte jusqu'à son échéance, est créditée une seule fois, puis retirée de l'Open Supply.
+Deux fonctions portent ce cycle. \jv{creerReceptionOpenSupply} est le seul point de création.
+\jv{traiterReceptionsEchues} est le seul point de crédit du stock : il ajoute la quantité au stock
+physique et retire la réception de la liste dans la même opération. Une réception ne peut donc pas
+être créditée deux fois.
+
+\input{figures/fig-open-supply}
+
+\section{Allocation et réservation}
+
+Une commande peut recevoir une allocation sur une réception ouverte. Cette allocation signifie
+« cette commande attend cette part de la réception ». Elle sert à la coordination du workflow MTO :
+une commande n'ouvre pas une seconde réception pour une quantité déjà couverte. L'allocation ne
+réduit pas la demande qualifiée du DDMRP. Elle n'est pas non plus une réservation physique : la
+réservation n'a lieu qu'une fois la matière effectivement créditée, et elle est décrite au
+\cref{ch:mto2}.
+
+\section{Origine des réceptions}
+
+L'origine trace la décision qui a créé la réception. Cinq valeurs sont possibles. \texttt{S\_Q}
+désigne la politique (s,Q) historique, pour les matières non gérées par DDMRP. \texttt{DDMRP}
+désigne une décision du buffer. \texttt{MTS}, \texttt{MTO} et \texttt{ETO} désignent le type réel de
+la commande ayant déclenché l'approvisionnement. Les ordres REAPPRO sont des commandes MTS : leurs
+réceptions portent l'origine \texttt{MTS}. L'origine sert à la traçabilité, et aucune décision ne la lit.

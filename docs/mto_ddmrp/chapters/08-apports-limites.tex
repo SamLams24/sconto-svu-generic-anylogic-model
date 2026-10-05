@@ -1,0 +1,51 @@
+\chapter{Apports, limites et perspectives}\label{ch:apports}
+
+\section{Apports}
+
+Le travail apporte les éléments suivants au simulateur. Les engagements matière sont
+désormais explicites, et le stock physique est séparé du stock libre. Les approvisionnements en
+transit sont représentés comme des réceptions ouvertes, et le crédit du stock passe par un point unique,
+ce qui supprime les doubles crédits. MTO et DDMRP se coordonnent par l'Open Supply : une commande
+n'ouvre pas d'approvisionnement redondant lorsqu'une réception ouverte suffit à la couvrir. Le mode
+MTS historique reste compatible, comme le montre la non-régression. Les matières pilotées par DDMRP
+ne sont plus soumises à la politique (s,Q). Enfin, l'ensemble est observable par les journaux, le
+tableur et l'export sémantique.
+
+\section{Limites}
+
+Ce travail implémente un noyau DDMRP de gestion matière. Il ne reproduit pas toute la méthodologie
+DDMRP. Le positionnement stratégique des stocks n'est pas traité. Les paramètres des buffers sont
+expérimentaux, et doivent être calibrés sur des données industrielles, à commencer par celles de ZENER.
+Certaines règles de dimensionnement, notamment la composante \emph{orderCycle} et la sécurité
+rouge, doivent encore être consolidées bibliographiquement. Les valeurs des promesses client sont
+des valeurs par défaut à valider métier. L'allocation de l'Open Supply suit un ordre FIFO, sans
+optimisation. Les pics de demande sont détectés et signalés, mais ils ne font pas encore l'objet
+d'une politique avancée. Les valeurs des fixtures ne doivent jamais être lues comme des paramètres
+optimaux pour ZENER.
+
+Une observation du run C illustre une limite de réactivité. La réception GPL est arrivée
+physiquement vers $T \approx 556{,}1$, mais la reprise MTO et la réservation n'ont eu lieu que vers
+$T \approx 713$. La cause est la programmation de la vérification finale de l'approvisionnement, qui
+attendait une échéance ultérieure. Le mécanisme est correct : la matière est réservée avant Make, et
+aucune consommation n'a eu lieu sans engagement. Il s'agit donc d'une possibilité d'amélioration, non d'un
+échec du test.
+
+\section{Perspectives}
+
+Plusieurs prolongements sont envisagés, par ordre de maturité. La première est la reprise
+événementielle : lors de la réception d'un Open Supply alloué, la commande reprend immédiatement au lieu
+d'attendre le prochain contrôle programmé. La deuxième est la calibration des paramètres DDMRP avec les
+données ZENER, puis l'analyse de sensibilité des facteurs de lead time et de variabilité. La troisième
+est la comparaison expérimentale MTS, MTO et MTO avec DDMRP, sur un même jeu de commandes. Les
+prolongements suivants sont plus ouverts : passer à des campagnes multi-commandes à plus grande échelle,
+étendre le mécanisme à la stratégie ETO, coupler les décisions aux indicateurs SCOR et VSM, préparer
+leur exploitation par l'expert VSM, et tester le mécanisme sur d'autres jeux de données, par exemple
+DataCo.
+
+\section{Lecture des références}
+
+La bibliographie distingue deux natures d'éléments. Les références \cite{orlicky} et \cite{ptak} portent
+les concepts du MRP et du DDMRP. La référence \cite{apics2017} porte le modèle SCOR. Les formules des
+zones et la règle de décision, telles qu'implémentées dans SCONTO-SVU, sont décrites au
+\cref{ch:ddmrp} avec leur statut : elles relèvent de l'implémentation expérimentale, et non d'une
+référence démontrée.

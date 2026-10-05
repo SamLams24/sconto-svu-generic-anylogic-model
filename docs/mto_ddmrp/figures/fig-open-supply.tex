@@ -1,0 +1,20 @@
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[font=\small, >=Stealth, node distance=1.5cm,
+    st/.style={draw=ink, rounded corners=3pt, minimum width=5.2cm, minimum height=0.95cm, align=center, fill=white},
+    tr/.style={-{Stealth[length=2.2mm]}, thick},
+    lb/.style={font=\scriptsize, align=left, text width=4.6cm}]
+    \node[st, fill=ink!8] (cr) {Création\\\texttt{creerReceptionOpenSupply}};
+    \node[st, fill=osc!22, below=of cr] (op) {OUVERTE : compte dans Open Supply};
+    \node[st, fill=ddmrpgrn!22, below=of op] (rc) {RECUE : crédit physique\\\texttt{traiterReceptionsEchues}};
+    \node[st, fill=ink!8, below=of rc] (sup) {Retirée de la liste : Open Supply réduit};
+    \draw[tr] (cr) -- node[lb, right, xshift=2.7cm] {ajout de la réception} (op);
+    \draw[tr] (op) -- node[lb, right, xshift=2.7cm] {échéance atteinte} (rc);
+    \draw[tr] (rc) -- node[lb, right, xshift=2.7cm] {retrait immédiat} (sup);
+    \draw[tr, dashed] (op.west) -- ++(-0.9,0) |- node[lb, left, pos=0.25, xshift=-0.1cm, align=right, text width=3.2cm] {allocation d'une part à une commande}
+      ($(op.west)+(-0.9,0)$);
+  \end{tikzpicture}
+  \caption{Cycle de vie d'une réception : elle est créée, reste ouverte jusqu'à l'échéance,
+    est créditée une seule fois et disparaît de l'Open Supply.}
+  \label{fig:open-supply}
+\end{figure}

@@ -1,0 +1,42 @@
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[scale=0.84, transform shape, font=\scriptsize, >=Stealth,
+    head/.style={draw=ink, rounded corners=2pt, fill=white, align=center, inner sep=2pt, minimum width=1.7cm, minimum height=0.8cm},
+    msg/.style={-{Stealth[length=1.8mm]}, thick},
+    lab/.style={fill=white, inner sep=0.8pt, font=\scriptsize, align=center}]
+    % lignes de vie
+    \foreach \xpos/\nomligne/\couleur in {0/Client/ink, 2.1/CommandeAgent/ink, 4.2/MTO/mtoc, 6.3/FicheMatiere/resc,
+                          8.4/DDMRP/ddmrpgrn, 10.5/Reception/osc, 12.6/Source/ink, 14.7/Make/mtsc, 16.8/Deliver/ink} {
+      \node[head, draw=\couleur] (h\nomligne) at (\xpos,0) {\nomligne};
+      \draw[dashed, muted] (\xpos,-0.45) -- (\xpos,-15.6);
+    }
+    % 1. decision DDMRP
+    \node[lab, fill=ddmrpgrn!15] at (8.4,-0.9) {1. NFP inférieure au TOY};
+    % 2 à 3. creation de la reception DDMRP
+    \draw[msg] (8.4,-1.8) -- (10.5,-1.8) node[lab, midway, above] {2. créer réception DDMRP};
+    \draw[msg] (10.5,-2.6) -- (6.3,-2.6) node[lab, midway, above] {3. Open Supply = 4250};
+    % 4 à 5. arrivee de la commande
+    \draw[msg] (0,-3.4) -- (2.1,-3.4) node[lab, midway, above] {4. CMD\_1 (10 u), T≈348};
+    \draw[msg] (2.1,-4.2) -- (4.2,-4.2) node[lab, midway, above] {5. besoin 125 / 10 / 10};
+    % 6 a 7. stock insuffisant, consultation Open Supply
+    \draw[msg] (4.2,-5.0) -- (6.3,-5.0) node[lab, midway, above] {6. stock physique 0};
+    \draw[msg] (4.2,-5.8) -- (10.5,-5.8) node[lab, midway, above] {7. consulter Open Supply existant};
+    % 8 a 9. allocation sans reception MTO
+    \draw[msg] (10.5,-6.6) -- (4.2,-6.6) node[lab, midway, above] {8. allouer 125 GPL};
+    \node[lab, fill=mtoc!12] at (4.2,-7.4) {9. aucune réception MTO créée};
+    % 10 a 11. credit physique de la reception DDMRP
+    \draw[msg] (10.5,-8.2) -- (6.3,-8.2) node[lab, midway, above] {10. crédit physique T≈556,1 : 4250};
+    \node[lab, fill=osc!12] at (6.3,-8.9) {11. Open Supply retiré};
+    % 12 a 13. reservation et autorisation Make
+    \draw[msg] (4.2,-9.7) -- (6.3,-9.7) node[lab, midway, above] {12. réservation T≈713};
+    \draw[msg] (4.2,-10.5) -- (14.7,-10.5) node[lab, midway, above] {13. autorisation Make};
+    % 14 a 15. consommation et livraison
+    \draw[msg] (14.7,-11.3) -- (6.3,-11.3) node[lab, midway, above] {14. consommation 125 / 10 / 10};
+    \draw[msg] (14.7,-12.1) -- (16.8,-12.1) node[lab, midway, above] {15. livraison};
+    % 16. invariant final
+    \node[lab, fill=resc!15] at (6.3,-13.2) {16. invariant OK, CMD\_1 SERVIE (T≈1876,3)};
+  \end{tikzpicture}
+  \caption{Séquence complète du cas DDMRP-C, du buffer à la clôture de la commande.
+    Les temps sont ceux du run final validé ; les mentions T≈ sont des instants simulés.}
+  \label{fig:sequence}
+\end{figure}

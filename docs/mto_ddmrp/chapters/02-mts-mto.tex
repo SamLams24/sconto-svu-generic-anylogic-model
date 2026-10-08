@@ -1,0 +1,55 @@
+\chapter{MTS et MTO : principes}\label{ch:mts-mto}
+
+Une stratégie de production répond à une question : à quel moment la production est-elle
+décidée, par rapport à la demande client ?
+
+La stratégie MTS (\textit{Make-To-Stock}) produit par anticipation vers un stock de produits
+finis. La demande est servie depuis ce stock, et la production ne dépend pas d'une commande
+précise. La stratégie MTO (\textit{Make-To-Order}) produit à partir d'une commande client.
+La nomenclature de la commande fixe les matières nécessaires, et la production ne démarre
+qu'une fois ces matières disponibles pour cette commande. \cref{tab:mts-mto} résume les
+différences, et \cref{fig:mts-mto} les chemins correspondants. Aucune de ces stratégies
+n'est supérieure dans l'absolu : le choix dépend de la variabilité de la demande, du coût de
+stockage et de la tolérance du client au délai.
+
+\begin{table}[H]
+  \centering
+  \caption{Comparaison des stratégies MTS et MTO dans SCONTO-SVU.}\label{tab:mts-mto}
+  \begin{tabularx}{\textwidth}{@{}>{\bfseries}L{3.2cm}YY@{}}
+    \toprule
+    Critère & MTS (\textit{Make-To-Stock}) & MTO (\textit{Make-To-Order}) \\
+    \midrule
+    Déclencheur de production & seuil de stock de produits finis (REAPPRO) & commande client \\
+    Source de la demande servie & stock de produits finis & production dédiée à la commande \\
+    Besoin matière & calculé sur la production anticipée & calculé par commande, selon la nomenclature \\
+    Délai client & court si le stock couvre la commande & temps de production et d'approvisionnement \\
+    Risque principal & immobilisation de stock & engagement de matière non disponible \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\input{figures/fig-mts-mto}
+
+\section{Le chemin d'une commande MTO}
+
+Pour une commande MTO, la chaîne logique est la suivante. Le client émet une commande. Le
+système lit la nomenclature du produit, c'est-à-dire la liste des matières et des quantités
+par unité produite, puis calcule le besoin matière de la commande. Si ce besoin n'est pas
+couvert, il déclenche un approvisionnement. Quand les matières sont disponibles, la
+production (Make) démarre. Les unités circulent sur les postes, consomment la matière à
+l'étape concernée, puis sont livrées (Deliver). La commande est clôturée à la date de
+livraison, avec le statut \Etat{SERVIE} si elle est livrée dans le délai promis, et
+\Etat{EN\_RETARD} sinon.
+
+Cette chaîne suppose implicitement que la disponibilité matière est une quantité libre,
+qui n'est pas partagée avec d'autres commandes. Le chapitre suivant montre que cette
+hypothèse ne tient plus dès que plusieurs commandes existent.
+
+\section{Le problème de l'engagement}
+
+Imaginons un stock de 200 unités de GPL en vrac. La commande \jv{CMD\_1} demande 125 unités.
+Si le système lit le stock physique seul, la commande voit 200 unités disponibles. Mais si
+\jv{CMD\_1} est acceptée et engage 125 unités, il ne reste que 75 unités réellement libres,
+même si les 200 unités sont physiquement présentes. Une deuxième commande demandant 125
+unités ne doit donc pas pouvoir consommer ce qui appartient déjà à \jv{CMD\_1}. Cette
+distinction entre stock physique et stock libre est formalisée au chapitre suivant.

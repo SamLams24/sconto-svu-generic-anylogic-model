@@ -1,0 +1,20 @@
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[font=\small]
+    \draw[ink, fill=white] (0,0) rectangle (1.6,0.001);
+    \node[below] at (0.8,-0.05) {On Hand};
+    \node[anchor=west] at (1.8,0.0) {\small $0$};
+    \draw[osc, fill=osc!25] (3,0) rectangle (4.6,3.5);
+    \node[below] at (3.8,-0.05) {Open Supply};
+    \node[anchor=west] at (4.8,1.75) {\small $500$};
+    \draw[mtoc, fill=mtoc!30] (6,0) rectangle (7.6,0.875);
+    \node[below] at (6.8,-0.05) {Qualified Demand};
+    \node[anchor=west] at (7.8,0.44) {\small $125$};
+    \node[anchor=west, font=\small\bfseries] at (9.2,1.2) {NFP = 0 + 500 - 125 = 375};
+    \node at (2.4,1.8) {\Large $+$};
+    \node at (5.3,1.8) {\Large $-$};
+  \end{tikzpicture}
+  \caption{Position de flux net dans un cas simple : l'approvisionnement ouvert compense
+    la demande qualifiée.}
+  \label{fig:nfp}
+\end{figure}

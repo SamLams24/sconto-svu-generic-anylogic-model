@@ -1,0 +1,15 @@
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[font=\small]
+    \draw[ink, fill=white] (0,0) rectangle (8,1.1);
+    \draw[resc, fill=resc!30] (0,0) rectangle (5,1.1);
+    \draw[mtoc, fill=mtoc!10, dashed] (5,0) rectangle (8,1.1);
+    \node[font=\small\bfseries] at (2.5,0.55) {réservée à CMD\_1 : 125};
+    \node[font=\small] at (6.5,0.55) {libre : 75};
+    \node[above=2pt] at (4,1.1) {stock physique : 200 unités de GPL};
+    \draw[{Stealth[length=2mm]}-{Stealth[length=2mm]}, ink] (0,-0.35) -- (8,-0.35);
+    \node[below] at (4,-0.4) {\small une deuxième commande de 125 unités ne peut pas consommer la zone réservée};
+  \end{tikzpicture}
+  \caption{Stock physique de 200 unités, dont 125 engagées : la disponibilité est de 75 unités.}
+  \label{fig:reservation}
+\end{figure}

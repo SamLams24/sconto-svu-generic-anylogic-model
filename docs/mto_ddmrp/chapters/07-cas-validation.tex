@@ -1,0 +1,97 @@
+\chapter{Cas expérimental et validation}\label{ch:cas}
+
+\section{Principe des fixtures}
+
+Les fixtures sont des scénarios de test, construits à partir du scénario ZENER et complétés par des
+paramètres DDMRP explicites. Elles ne sont pas des paramètres industriels : leur rôle est de faire
+apparaître un comportement précis. Chaque fixture isole une situation (stock en zone verte, stock
+nul, commande pendant un approvisionnement ouvert, reprise de la non-régression MTS).
+
+\section{Étude de cas principale : DDMRP-C}
+
+La configuration est la suivante : stratégie MTO, une commande client de 10 unités, stocks matière
+initialement à zéro, buffer DDMRP actif sur les trois matières. Pour le GPL, le lead time est de
+60~h métier et la fenêtre de qualification de la demande est de 400~h. Le délai de première commande
+configuré vaut 180~s simulées.
+
+Le déroulement observé dans le run final validé est le suivant. Avant la création de \jv{CMD\_1},
+le DDMRP a déjà créé un Open Supply GPL de 4250 unités. Lorsque la commande arrive, on a
+$OnHand = 0$, $OpenSupply = 4250$, $QualifiedDemand = 125$, donc
+\[
+NFP = 0 + 4250 - 125 = 4125.
+\]
+Cette position est très au-dessus du TOY ; le buffer ne demande donc aucune nouvelle commande. La
+réception GPL, de 4250 unités, est physiquement créditée vers $T \approx 556{,}1$. La réservation
+sur les trois matières et l'autorisation de Make ont lieu vers $T \approx 713$. La commande est clôturée
+vers $T \approx 1876{,}3$, avec l'invariant \jv{[INVARIANT MATIERE] cloture CMD\_1 : OK} et le statut
+\Etat{SERVIE} pour 10 unités.
+
+Le résultat essentiel est le suivant : \emph{aucune réception d'origine MTO n'a été créée} pour couvrir
+les 125 unités de GPL. La commande a utilisé l'Open Supply DDMRP déjà ouvert. Les temps cités sont des
+observations du run final ; les anciennes valeurs de préparation des fixtures ne sont pas reprises.
+
+\input{figures/fig-sequence}
+
+Une observation mérite d'être notée. La réception GPL est arrivée physiquement vers $T \approx 556{,}1$,
+mais la reprise de la commande et sa réservation n'ont eu lieu que vers $T \approx 713$. La vérification
+finale de l'approvisionnement avait en effet été planifiée à une échéance ultérieure. Le mécanisme est
+correct, puisque la matière est bien réservée avant Make. Il reste toutefois une marge d'optimisation :
+une reprise événementielle, lancée dès la réception d'un Open Supply alloué, éviterait cette attente.
+Cette piste est traitée au \cref{ch:apports}.
+
+Les instants de cette chronologie sont de deux natures. Le run a démarré effectivement à $T \approx 166{,}1$
+sur l'horloge absolue d'AnyLogic. Le délai de première commande, $T+181{,}9$, est relatif à ce démarrage
+effectif. La création de \jv{CMD\_1} est donc observée à l'instant absolu
+\[
+166{,}1 + 181{,}9 \approx 348{,}0,
+\]
+ce qui correspond au $T \approx 348$ des observations. Cette distinction entre temps relatif et temps
+absolu est celle de la section « Temps métier et temps de simulation » du \cref{ch:ddmrp}.
+
+\section{Synthèse de la campagne}
+
+\begin{table}[H]
+  \centering
+  \caption{Résultats de la campagne runtime validée.}\label{tab:campagne}
+  \begin{tabularx}{\textwidth}{@{}L{3.2cm}L{2.4cm}Y@{}}
+    \toprule
+    Essai & Résultat & Observation \\
+    \midrule
+    MTO-2 & PASS & réservation et consommation avec invariant \\
+    DDMRP-A & PASS & stock initial en zone verte : aucune commande \\
+    DDMRP-B & PASS & stock nul : création d'un approvisionnement, puis retour en zone verte ;
+      GPL 500, bouteilles 80 (TOG $\approx$ 71{,}73 arrondi au MOQ 10), accessoires 40 \\
+    DDMRP-C & PASS complet & MTO utilisant un Open Supply DDMRP préexistant, sans double approvisionnement \\
+    Non-régression MTS & PASS fonctionnel & REAPPRO\_1 produit 10/10 ; invariants OK ; CMD\_1 livrée et clôturée \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Dans le test de non-régression, la commande a été livrée en retard. Ce test est volontairement sévère :
+le stock de produits finis et les matières sont à zéro, et la livraison attend la reconstitution complète du
+stock. Ce retard résulte donc de la reconstruction du stock, et ne signale pas une panne du mécanisme. Aucune
+logique DDMRP n'était active dans ce run.
+
+Une anomalie a été corrigée pendant la campagne : les réceptions des ordres REAPPRO étaient étiquetées
+\texttt{origine=MTO} alors qu'elles relèvent de commandes MTS. L'étiquette reflète désormais le type réel de
+la commande. Seule la trace est modifiée : quantités, allocations, échéances et décisions sont inchangées.
+
+\section{Coexistence avec la politique (s,Q)}
+
+Une matière est pilotée soit par DDMRP, soit par la politique (s,Q) historique, jamais par les deux. Dans
+\jv{calculerBesoinsNets()}, les réceptions échues sont d'abord traitées. Si la matière est gérée par DDMRP,
+la décision DDMRP est prise puis la boucle passe à la matière suivante. Sinon, la politique (s,Q) historique
+s'applique (\cref{fig:arbre}).
+
+\input{figures/fig-arbre}
+
+\section{Observabilité}
+
+Le système se rend observable par trois canaux. Les journaux comportent les étiquettes \texttt{[DDMRP]} (une
+ligne par décision, avec NFP, zones et action), \texttt{[OPEN SUPPLY]} (création et crédit de réceptions),
+\texttt{[MATIERE]} (réservations) et \texttt{[INVARIANT MATIERE]} (contrôles à la clôture). La feuille
+\texttt{DDMRP} du tableur d'export donne, pour chaque matière, le stock physique, les réservations, la
+disponibilité opérationnelle, l'Open Supply, la demande qualifiée et ses sous-totaux, la NFP, l'ADU, le lead
+time, les zones, les seuils TOR, TOY et TOG, la quantité recommandée, le statut et la priorité. Les mêmes
+grandeurs sont exportées dans le graphe ABox sous la forme de triplets \texttt{run:ddmrp*}, ce qui permet
+une exploitation sémantique ultérieure.

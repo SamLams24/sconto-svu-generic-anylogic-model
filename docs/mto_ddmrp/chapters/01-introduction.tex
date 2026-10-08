@@ -1,0 +1,43 @@
+\chapter{Introduction}\label{ch:intro}
+
+SCONTO-SVU est un modèle de simulation construit avec AnyLogic 8.9. Il représente une
+chaîne logistique selon le modèle de référence SCOR~\cite{apics2017} et une lecture VSM
+(\textit{Value Stream Mapping}). Chaque poste, acteur et commande y est un agent, et les
+décisions de pilotage sont prises par des holons organisés en niveaux stratégique,
+tactique et opérationnel.
+
+Avant les travaux présentés ici, le modèle disposait de deux stratégies de production et
+d'une politique de réapprovisionnement de type (s,Q). La stratégie MTS
+(\textit{Make-To-Stock}) produit vers un stock de produits finis. La stratégie MTO
+(\textit{Make-To-Order}) lance une production à partir d'une commande client. La politique
+(s,Q) commande une quantité économique lorsque le stock projeté passe sous un point de
+commande. Ces mécanismes fonctionnaient, mais trois problèmes restaient ouverts.
+
+Le premier concerne les engagements matière. Une matière physiquement présente pouvait être
+lue comme disponible par deux commandes à la fois. Le deuxième concerne la visibilité : une
+matière commandée mais non encore reçue n'était pas représentée comme une quantité engagée,
+et elle n'apparaissait qu'au moment de la réception. Le troisième concerne la coordination :
+une commande MTO pouvait déclencher un approvisionnement alors que le stock en transit le
+couvrait déjà.
+
+Le travail décrit ici répond à ces trois problèmes. Il introduit une réservation explicite
+de matière pour chaque commande, puis un noyau DDMRP (\textit{Demand Driven Material
+Requirements Planning}) de gestion matière, avec une représentation unique des
+approvisionnements en transit. Il règle enfin la coexistence entre ce noyau et la politique
+(s,Q) historique.
+
+La portée doit être énoncée clairement. Ce travail implémente un \emph{noyau DDMRP} de
+gestion matière. Il ne reproduit pas la méthodologie DDMRP complète : le positionnement
+stratégique des stocks (\textit{Strategic Inventory Positioning}) n'est pas traité. Les
+paramètres des buffers sont expérimentaux. Les jeux utilisés pour la validation sont des
+jeux de test, et ne sont pas des paramètres réels de ZENER.
+
+Le document suit une progression volontaire, de la distinction MTS / MTO jusqu'à la
+validation expérimentale. La phrase qui résume l'architecture est la suivante :
+\begin{quote}
+\itshape DDMRP anticipe, Open Supply mémorise, MTO alloue, la réservation sécurise,
+Make consomme et Deliver clôture.
+\end{quote}
+Chaque verbe correspond à une partie du simulateur (\cref{fig:chaine}).
+
+\input{figures/fig-chaine}

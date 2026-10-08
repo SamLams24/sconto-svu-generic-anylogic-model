@@ -1,0 +1,25 @@
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[font=\small]
+    \fill[ddmrpgrn!35] (0,4.2) rectangle (3,6.0);
+    \fill[ddmrpyel!45] (0,2.4) rectangle (3,4.2);
+    \fill[ddmrpred!35] (0,0) rectangle (3,2.4);
+    \draw[ink, thick] (0,0) rectangle (3,6.0);
+    \node[left] at (0,4.2) {\small TOY};
+    \node[left] at (0,2.4) {\small TOR};
+    \node[left] at (0,6.0) {\small TOG};
+    \node at (1.5,5.1) {zone verte};
+    \node at (1.5,3.3) {zone jaune};
+    \node at (1.5,1.2) {zone rouge};
+    \draw[-{Stealth[length=2mm]}, ink] (3.4,0.2) -- (3.4,5.8);
+    \node[rotate=90, anchor=south] at (3.9,3.0) {NFP croissant};
+    \node[right, text width=5.4cm, align=left] at (4.1,5.1)
+      {Position saine : aucune commande.};
+    \node[right, text width=5.4cm, align=left] at (4.1,3.3)
+      {Planifier un réapprovisionnement jusqu'au TOG.};
+    \node[right, text width=5.4cm, align=left] at (4.1,1.2)
+      {Action immédiate, priorité maximale.};
+  \end{tikzpicture}
+  \caption{Buffer DDMRP : zones verte, jaune et rouge, séparées par TOY et TOR.}
+  \label{fig:buffer}
+\end{figure}

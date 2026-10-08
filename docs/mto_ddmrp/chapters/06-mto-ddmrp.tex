@@ -1,0 +1,37 @@
+\chapter{Comment MTO et DDMRP se complètent}\label{ch:mto-ddmrp}
+
+DDMRP ne remplace pas MTO. Les deux mécanismes répondent à deux questions différentes.
+DDMRP répond à la question : \emph{combien de matière faut-il protéger ou réapprovisionner ?}
+MTO répond à la question : \emph{quelle commande doit recevoir et consommer cette matière ?}
+
+\begin{table}[H]
+  \centering
+  \caption{Responsabilités respectives de MTO et de DDMRP dans le modèle.}\label{tab:mto-ddmrp}
+  \begin{tabularx}{\textwidth}{@{}>{\bfseries}L{3.6cm}YY@{}}
+    \toprule
+    Fonction & MTO & DDMRP \\
+    \midrule
+    Déclencheur & commande client & position de flux net sous le seuil \\
+    Besoin & calculé par commande, selon la nomenclature & demande qualifiée agrégée par matière \\
+    Réservation & engagement de matière par commande, atomique & aucune : DDMRP n'engage pas de matière \\
+    Open Supply & alloue une part d'une réception à la commande & compte la totalité des réceptions ouvertes \\
+    Anticipation & aucune : réagit à une commande & oui : protège la matière par des zones \\
+    Décision de réapprovisionnement & ouvre au plus une réception pour le manque non couvert & ouvre une réception vers le TOG \\
+    Exécution Make & lance la production une fois la matière réservée & non concerné \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Cette répartition évite deux erreurs. La première serait de laisser DDMRP décider de l'ordre de
+production : une commande perdrait alors son lien avec la matière qu'elle consomme. La seconde
+serait de laisser une commande ouvrir un approvisionnement sans regarder l'Open Supply : la même
+quantité serait commandée deux fois. La coordination passe par la NFP et par l'allocation.
+
+La demande d'une commande entre dans la demande qualifiée tant qu'elle n'est pas satisfaite
+physiquement. Une réservation ne la retire donc pas de la demande qualifiée ; la consommation, elle,
+la retire. Cette convention garantit qu'une même demande n'est soustraite qu'une fois. La
+réservation reste un mécanisme d'intégrité physique : elle empêche d'engager deux fois la même
+matière, mais elle ne modifie pas la définition DDMRP de la demande.
+
+Une fois ces règles posées, le cas expérimental principal permet de voir l'ensemble en action
+(\cref{ch:cas}).

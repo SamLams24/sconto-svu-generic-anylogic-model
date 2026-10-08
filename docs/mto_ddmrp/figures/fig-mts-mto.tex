@@ -1,0 +1,27 @@
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[font=\small, >=Stealth, node distance=0pt,
+    st/.style={draw=ink, rounded corners=3pt, minimum width=2.2cm, minimum height=0.9cm, align=center, fill=white}]
+    % MTS : production anticipee vers le stock
+    \node[font=\bfseries] at (0,3.4) {MTS : production anticipée};
+    \node[st, fill=mtsc!18] (p1) at (0,2.4) {Production\\prévisionnelle};
+    \node[st, fill=mtsc!18] (s1) at (3.2,2.4) {Stock de\\produits finis};
+    \node[st] (c1) at (6.4,2.4) {Commande\\client};
+    \node[st] (d1) at (9.6,2.4) {Livraison\\immédiate};
+    \draw[->, thick] (p1) -- (s1);
+    \draw[->, thick] (s1) -- (c1);
+    \draw[->, thick] (c1) -- (d1);
+    % MTO : production declenchee par la commande
+    \node[font=\bfseries] at (0,0.9) {MTO : production à la commande};
+    \node[st, fill=mtoc!22] (c2) at (0,-0.1) {Commande\\client};
+    \node[st, fill=mtoc!22] (n2) at (3.2,-0.1) {Nomenclature\\et besoin matière};
+    \node[st, fill=mtoc!22] (m2) at (6.4,-0.1) {Make\\(production)};
+    \node[st] (d2) at (9.6,-0.1) {Deliver\\(livraison)};
+    \draw[->, thick] (c2) -- (n2);
+    \draw[->, thick] (n2) -- (m2);
+    \draw[->, thick] (m2) -- (d2);
+  \end{tikzpicture}
+  \caption{Comparaison des chemins MTS (haut) et MTO (bas). En MTS, la commande est servie
+    depuis un stock produit ; en MTO, elle déclenche sa propre production.}
+  \label{fig:mts-mto}
+\end{figure}

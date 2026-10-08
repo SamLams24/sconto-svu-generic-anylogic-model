@@ -1,0 +1,17 @@
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[font=\small, >=Stealth,
+    stp/.style={draw=ink, rounded corners=3pt, minimum width=2.1cm, minimum height=1.25cm,
+                 align=center, fill=white}]
+    \node[stp, fill=ddmrpgrn!25] (a) {DDMRP\\anticipe};
+    \node[stp, fill=osc!22, right=0.55cm of a] (b) {Open Supply\\mémorise};
+    \node[stp, fill=mtoc!25, right=0.55cm of b] (c) {MTO\\alloue};
+    \node[stp, fill=resc!25, right=0.55cm of c] (d) {Réservation\\sécurise};
+    \node[stp, fill=mtsc!20, right=0.55cm of d] (e) {Make\\consomme};
+    \node[stp, fill=ink!10, right=0.55cm of e] (f) {Deliver\\clôture};
+    \foreach \x/\y in {a/b,b/c,c/d,d/e,e/f} \draw[->, thick] (\x) -- (\y);
+  \end{tikzpicture}
+  \caption{Schéma central : DDMRP anticipe, Open Supply mémorise, MTO alloue, la réservation
+    sécurise, Make consomme et Deliver clôture.}
+  \label{fig:chaine}
+\end{figure}
